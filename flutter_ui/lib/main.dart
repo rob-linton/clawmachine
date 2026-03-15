@@ -34,6 +34,9 @@ final _router = GoRouter(
 );
 
 void main() {
+  final binding = WidgetsFlutterBinding.ensureInitialized();
+  // Enable semantics so Playwright can find DOM text nodes via accessibility tree
+  binding.ensureSemantics();
   runApp(const ProviderScope(child: ClawApp()));
 }
 
