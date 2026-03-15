@@ -1,5 +1,5 @@
 [package]
-name = "claw-api"
+name = "claw-scheduler"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,13 +7,13 @@ edition = "2021"
 claw-models = { path = "../claw-models" }
 claw-redis = { path = "../claw-redis" }
 tokio = { workspace = true }
-axum = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-tower-http = { workspace = true }
 dotenvy = { workspace = true }
-deadpool-redis = { workspace = true }
-uuid = { workspace = true }
+notify = { workspace = true }
 cron = { workspace = true }
+deadpool-redis = { workspace = true }

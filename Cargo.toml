@@ -6,6 +6,7 @@ members = [
     "crates/claw-api",
     "crates/claw-worker",
     "crates/claw-cli",
+    "crates/claw-scheduler",
 ]
 
 [workspace.dependencies]
@@ -26,3 +27,5 @@ dotenvy = "0.15"
 strum = { version = "0.26", features = ["derive"] }
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 tokio-util = "0.7"
+notify = "7"
+cron = "0.15"
