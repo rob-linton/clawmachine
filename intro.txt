@@ -1,0 +1,95 @@
+
+Ok Claude. I’ve tried to use openclaw and it sucks. (Https://openclaw.ai)
+
+I think I want to use Claude code to automate some tasks at work. So I would like to schedule some jobs and get Claude code to do some work. However Claude code runs in a terminal. 
+
+So wheat are my options?
+
+22:12
+
+Evaluated practical scheduling solutions for Claude Code automation
+Evaluated practical scheduling solutions for Claude Code automation
+Here are your main options for running Claude Code on a schedule:
+
+1. Cron + Claude Code CLI The simplest approach. Claude Code has a non-interactive/headless mode (claude -p "prompt here") that works perfectly in cron jobs, systemd timers, or any scheduler. No TTY needed.
+
+2. CI/CD Pipelines GitHub Actions, GitLab CI, etc. — trigger Claude Code on a schedule (cron in workflow YAML), on PR events, or via webhook. This is probably the cleanest option if your tasks are repo-related.
+
+3. Task queue / orchestrator If you need something more robust — Temporal, Airflow, or even a simple Node/Python script with a scheduler library that shells out to claude -p.
+
+4. SDK approach Skip the CLI entirely and use the Anthropic API directly from a scheduled script. More control, no CLI dependency, but you lose Claude Code's agentic file-editing capabilities unless you rebuild that yourself.
+
+The key insight: claude -p "your prompt" and claude -p "your prompt" --output-format json are your friends. They run headlessly, accept stdin, and return results to stdout. You can pipe files in, chain commands, etc.
+
+What kinds of tasks are you looking to automate? That'll narrow down which approach fits best.
+
+I would really like Claude code to get the input from jobs and then deal with it. So Claude is always running. Rather than on one shotting it. Maybe some kind of work queue that feeds prompts and jobs to a Claude code instance. I really like the idea of a single Claude code instance running in a terminal with prompts being fed to it when the terminal device sees that is is no longer busy.
+
+22:17
+
+Weighed queue-based architectures for persistent Claude instance management
+Weighed queue-based architectures for persistent Claude instance management
+Interesting idea. A few approaches, ranging from simple to sophisticated:
+
+Simple: Sequential queue poller A bash loop that pulls from a queue (Redis, SQS, even a directory of .job files) and runs claude -p per job. Claude Code exits between jobs, but this is dead simple and robust.
+
+bash
+while true; do
+  job=$(next_job_from_queue)  # however you dequeue
+  [[ -z "$job" ]] && sleep 5 && continue
+  claude -p "$job" --output-format json | handle_result
+done
+Downside: no persistent context between jobs. Each invocation is a cold start.
+
+Persistent session via named pipe / PTY This is what you're actually describing — a single Claude Code session with a fake terminal feeding it prompts. You'd use something like expect, tmux send-keys, or a PTY wrapper in Python (pexpect) to:
+
+Launch Claude Code interactively in a tmux/screen session
+Monitor output for the idle prompt (> or similar)
+Send the next job when idle
+This is hackier but gives you persistent conversation context — Claude remembers previous jobs, which could be powerful or dangerous depending on the task.
+
+The concern I'd flag: a long-running Claude Code session will accumulate context window usage. After enough jobs, you'll hit the context limit and behavior degrades. You'd need a strategy for when to --resume vs start fresh.
+
+Middle ground worth considering: use claude -p per job (clean context) but pass a shared state file or summary of previous work as part of each prompt. You get isolation without losing continuity.
+
+What's the nature of the jobs? Are they related (benefiting from shared context) or independent tasks? That's the key design decision here.
+
+I like the middle ground. I like the idea of creating skills as part of a one shot that can be used be subsequent one shot jobs. Also somehow passing shared state? I can see this working for one sequential clause code instance. However as soon as we get to 2 parallel instances that falls over somewhat.
+
+22:21
+
+Weighed parallel instance coordination against shared state constraints
+Weighed parallel instance coordination against shared state constraints
+Yeah, this is essentially a distributed worker problem now. The interesting bits:
+
+Skills as artifacts — Claude Code already supports CLAUDE.md files and custom commands. A job could produce a skill (a markdown file, a script, a prompt template) that gets committed to a shared repo or written to a shared filesystem. Subsequent jobs reference it. That scales fine across parallel instances since skills are write-once, read-many.
+
+Shared state is the hard part. Options:
+
+Git as state store — each instance commits results to a repo. Works surprisingly well for async coordination, but merge conflicts kill you if two instances touch the same files. Good for independent tasks that produce separate outputs.
+Database/KV store — Redis, SQLite (with WAL mode for concurrent reads), or Postgres. Each job reads/writes state through a well-defined schema. Claude Code can interact with this via CLI tools (sqlite3, redis-cli, curl to an API).
+File-based with locking — a shared directory with .lock files or advisory locks. Crude but works if contention is low.
+Architecture I'd lean toward:
+
+Job Queue (Redis/SQS/DB)
+    │
+    ├── Worker 1: claude -p "$job" (reads shared state, writes results)
+    ├── Worker 2: claude -p "$job"  
+    └── Worker N: claude -p "$job"
+    
+Shared:
+  /skills/          ← git repo of reusable prompts/scripts
+  /state/           ← DB or structured files
+  /outputs/         ← results per job
+Each job prompt gets templated with: the task, relevant skills (cat /skills/relevant-skill.md), and a state snapshot (sqlite3 state.db "SELECT ..."). The worker script handles all that before invoking Claude Code — Claude just sees a rich prompt.
+
+The gotcha with parallelism: you need idempotent jobs or a coordination layer. Two instances shouldn't pick up the same job, and if they both produce a new skill, you need a merge strategy. A simple job-type partitioning (instance 1 handles PR reviews, instance 2 handles data tasks) sidesteps most of this.
+
+Want to sketch this out as an actual implementation? I'm thinking a small Python/Node orchestrator that wraps Claude Code — would be a fairly contained project.
+
+
+
+
+
+
+Claude is AI and can make mistakes. Please double-check responses.
