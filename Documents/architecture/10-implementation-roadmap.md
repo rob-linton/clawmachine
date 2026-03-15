@@ -24,8 +24,8 @@ The project is delivered in 8 phases (0-7). Each phase produces a working, testa
 # Start Redis
 docker run -d -p 6379:6379 redis:7-alpine
 
-# Start prototype worker
-ANTHROPIC_API_KEY=sk-... cargo run
+# Start prototype worker (uses host user's Claude Code OAuth session)
+cargo run
 
 # Submit a job (via redis-cli)
 redis-cli RPUSH claw:queue:pending '{"id":"test-1","prompt":"What is 2+2?"}'
@@ -91,8 +91,8 @@ docker run -d -p 6379:6379 redis:7-alpine
 # Start API server
 cargo run -p claw-api &
 
-# Start worker
-ANTHROPIC_API_KEY=sk-... cargo run -p claw-worker &
+# Start worker (uses host user's Claude Code OAuth session)
+cargo run -p claw-worker &
 
 # Submit a job (CLI → API → Redis)
 cargo run -p claw-cli -- submit "What is 2 + 2?"
@@ -406,7 +406,8 @@ flutter_ui/lib/models/cron_schedule.dart
 docker compose -f docker/docker-compose.yml build
 
 # Start
-ANTHROPIC_API_KEY=sk-... docker compose -f docker/docker-compose.yml up -d
+# Worker uses OAuth — ~/.claude/ is mounted into the container
+docker compose -f docker/docker-compose.yml up -d
 
 # Verify all healthy
 docker compose -f docker/docker-compose.yml ps
@@ -511,8 +512,8 @@ claude --version
 docker --version   # 24+
 docker compose version
 
-# Anthropic API key
-echo $ANTHROPIC_API_KEY  # Must be set
+# Claude Code auth (OAuth)
+claude --version  # Must be logged in (run `claude` interactively to complete OAuth if needed)
 ```
 
 ## 10. Continuous Self-Testing — "Use It Like a Human"

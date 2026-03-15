@@ -127,8 +127,9 @@ The subprocess inherits a controlled set of environment variables:
 fn build_env(job: &Job, config: &WorkerConfig) -> HashMap<String, String> {
     let mut env = HashMap::new();
 
-    // Required for claude CLI
-    env.insert("ANTHROPIC_API_KEY", config.anthropic_api_key.clone());
+    // Claude Code uses OAuth — the worker inherits the host user's session.
+    // HOME must point to a directory containing ~/.claude/ with OAuth tokens.
+    // No ANTHROPIC_API_KEY needed when using OAuth auth.
     env.insert("HOME", config.home_dir.clone());
     env.insert("PATH", config.path.clone());
 

@@ -111,7 +111,7 @@ claw-api
 
 **Requires**:
 - Claude Code CLI installed and on PATH
-- `ANTHROPIC_API_KEY` environment variable set
+- Claude Code CLI authenticated (OAuth session — the worker inherits the host user's logged-in session)
 - Network access to Redis
 - Filesystem access to working directories and output directories
 
@@ -390,7 +390,8 @@ CLAW_WORKER_CONCURRENCY=2                 # Number of concurrent worker tasks
 CLAW_WORKER_TIMEOUT_SECS=1800            # Max job execution time (30 min)
 CLAW_SKILLS_DIR=/app/skills              # Skills directory for seeding
 CLAW_OUTPUT_DIR=/app/output              # Default file output directory
-ANTHROPIC_API_KEY=sk-ant-...             # Required for claude CLI
+# Claude Code auth: uses the host user's OAuth session (no API key needed)
+# Workers must run as a user who has run `claude` and completed OAuth login
 
 # Scheduler-specific
 CLAW_JOBS_WATCH_DIR=/app/jobs            # Directory to watch for .job files

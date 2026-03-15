@@ -92,7 +92,7 @@ The system runs as 4 separate Rust binaries (`claw-api`, `claw-worker`, `claw-sc
 - **Independent scaling** — run 5 worker containers but 1 API server
 - **Isolation** — workers need `claude` CLI installed; API server doesn't
 - **Independent restarts** — restart a crashed worker without downtime on the API
-- **Security** — workers run with `ANTHROPIC_API_KEY`; API server doesn't need it
+- **Security** — workers need Claude Code's OAuth session; API server doesn't
 
 ### 7.2 Redis as Single State Store
 

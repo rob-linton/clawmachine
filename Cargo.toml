@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/claw-models",
+    "crates/claw-redis",
+    "crates/claw-api",
+    "crates/claw-worker",
+    "crates/claw-cli",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+redis = { version = "0.27", features = ["tokio-comp"] }
+deadpool-redis = "0.18"
+axum = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+reqwest = { version = "0.12", features = ["json"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+dotenvy = "0.15"
+strum = { version = "0.26", features = ["derive"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+tokio-util = "0.7"

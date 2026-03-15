@@ -157,14 +157,15 @@ Job prompts and results may contain sensitive information (code, credentials, in
 | Stats counters | No | Permanent |
 | Worker heartbeats | No | 30s TTL |
 
-### 4.3 API Key Handling
+### 4.3 Authentication / OAuth Token Handling
 
-The `ANTHROPIC_API_KEY` is:
-- Passed to worker containers via environment variable
-- Never stored in Redis
-- Never included in log output
-- Never returned by any API endpoint
-- Never included in job metadata
+Claude Code authenticates via OAuth. Tokens are stored in `~/.claude/` on the host. For Docker deployments, this directory is bind-mounted read-only into the worker container.
+
+- OAuth tokens are **never** stored in Redis
+- OAuth tokens are **never** included in log output or API responses
+- The worker container mounts `~/.claude/:ro` to prevent token modification
+- If tokens expire, re-run `claude` on the host to refresh the OAuth session
+- For API key auth (alternative): set `ANTHROPIC_API_KEY` env var on the worker — Claude Code will use it instead of OAuth
 
 ## 5. Reliability
 

@@ -102,7 +102,8 @@ services:
       CLAW_WORKER_TIMEOUT_SECS: "${CLAW_WORKER_TIMEOUT:-1800}"
       CLAW_SKILLS_DIR: /app/skills
       CLAW_OUTPUT_DIR: /app/output
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY is required}"
+      # Claude Code uses OAuth — mount the host user's ~/.claude/ for tokens
+      # No ANTHROPIC_API_KEY needed when using OAuth auth
       RUST_LOG: "${RUST_LOG:-info,claw_worker=debug}"
       HOME: /home/claw
     depends_on:
@@ -112,6 +113,7 @@ services:
       - ../output:/app/output
       - ../skills:/app/skills
       - ../workspaces:/app/workspaces
+      - ${HOME}/.claude:/home/claw/.claude:ro  # Mount OAuth tokens from host
     deploy:
       replicas: ${CLAW_WORKER_REPLICAS:-1}
 
@@ -229,9 +231,9 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 RUN useradd -m -s /bin/bash claw
 USER claw
 
-# Accept Claude Code terms (headless)
-RUN mkdir -p /home/claw/.claude && \
-    echo '{"acceptedTerms": true}' > /home/claw/.claude/settings.json
+# Claude Code OAuth tokens are mounted at runtime from the host's ~/.claude/
+# The host user must have completed OAuth login via `claude` before starting workers
+# Alternatively, set ANTHROPIC_API_KEY env var for API key auth
 
 COPY --from=builder /build/target/release/claw-worker /usr/local/bin/
 
@@ -272,8 +274,9 @@ ENTRYPOINT ["claw"]
 ```bash
 # .env (used by docker compose)
 
-# Required
-ANTHROPIC_API_KEY=sk-ant-api03-...
+# Claude Code auth: OAuth-based (no API key needed)
+# The worker container mounts ~/.claude/ from the host for OAuth tokens.
+# Ensure you have run `claude` locally and completed OAuth login first.
 
 # Optional overrides
 CLAW_API_PORT=8080
@@ -385,7 +388,7 @@ For development, you don't need Docker for the Rust services — run them direct
 - Flutter 3.24+ (`flutter upgrade`)
 - Redis 7+ (local install or Docker)
 - Claude Code CLI (`npm install -g @anthropic-ai/claude-code`)
-- `ANTHROPIC_API_KEY` environment variable set
+- Claude Code CLI authenticated via OAuth (`claude` has been run and login completed)
 
 ### 6.2 Start Redis
 
@@ -406,7 +409,7 @@ Each in a separate terminal:
 cargo run -p claw-api
 
 # Terminal 2: Worker
-ANTHROPIC_API_KEY=sk-ant-... cargo run -p claw-worker
+cargo run -p claw-worker  # Uses host user's OAuth session automatically
 
 # Terminal 3: Scheduler
 cargo run -p claw-scheduler
@@ -443,7 +446,7 @@ claw submit "hello world"
 | `CLAW_WORKER_TIMEOUT_SECS` | worker | `1800` | Default job timeout |
 | `CLAW_SKILLS_DIR` | worker | `./skills` | Skills filesystem directory |
 | `CLAW_OUTPUT_DIR` | worker | `./output` | Default file output directory |
-| `ANTHROPIC_API_KEY` | worker | (required) | API key for Claude |
+| (OAuth session) | worker | (required) | Claude Code OAuth tokens mounted from host `~/.claude/` |
 | `CLAW_JOBS_WATCH_DIR` | scheduler | `./jobs` | Directory for .job files |
 | `CLAW_CRON_SYNC_INTERVAL_SECS` | scheduler | `60` | Cron definition re-sync interval |
 | `CLAW_FAILURE_WEBHOOK_URL` | worker | (none) | Webhook URL to POST on job failure (Slack, PagerDuty, etc.) |
@@ -561,11 +564,12 @@ RUST_LOG=error
 
 ## 10. Security Considerations
 
-### 10.1 API Key Protection
+### 10.1 Authentication Protection
 
-- `ANTHROPIC_API_KEY` is only passed to the worker container
-- Never logged, never stored in Redis
-- Docker secret or environment variable in `.env` (gitignored)
+- Claude Code uses OAuth by default — tokens live in `~/.claude/` on the host
+- The worker container mounts `~/.claude/` as read-only
+- OAuth tokens are never logged, never stored in Redis
+- Alternative: if using API key auth (`ANTHROPIC_API_KEY`), pass it as a Docker secret or env var in `.env` (gitignored)
 
 ### 10.2 Claude Code Permissions
 
