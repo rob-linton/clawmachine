@@ -62,7 +62,10 @@ green "  Redis: OK (DB $REDIS_DB)"
 echo ""
 echo "Building Rust workspace..."
 cd "$PROJECT_DIR"
-cargo build --workspace 2>&1 | tail -1
+if ! cargo build --workspace 2>&1 | tail -3; then
+    red "  Rust build failed!"
+    exit 1
+fi
 green "  Rust: OK"
 
 # --- 3. Build Flutter ---
@@ -71,7 +74,10 @@ echo "Building Flutter web..."
 cd "$FLUTTER_DIR"
 flutter clean > /dev/null 2>&1
 flutter pub get > /dev/null 2>&1
-flutter build web --release --no-tree-shake-icons 2>&1 | tail -1
+if ! flutter build web --release --no-tree-shake-icons 2>&1 | tail -3; then
+    red "  Flutter build failed!"
+    exit 1
+fi
 green "  Flutter: OK"
 
 # --- 4. Start services ---
@@ -79,15 +85,15 @@ echo ""
 echo "Starting services..."
 cd "$PROJECT_DIR"
 
-cargo run -p claw-api > "$LOG_DIR/api.log" 2>&1 &
+nohup cargo run -p claw-api > "$LOG_DIR/api.log" 2>&1 &
 echo $! > "$PIDS_DIR/api.pid"
 echo "  API server:  pid $! (log: .logs/api.log)"
 
-cargo run -p claw-worker > "$LOG_DIR/worker.log" 2>&1 &
+nohup cargo run -p claw-worker > "$LOG_DIR/worker.log" 2>&1 &
 echo $! > "$PIDS_DIR/worker.pid"
 echo "  Worker:      pid $! (log: .logs/worker.log)"
 
-cargo run -p claw-scheduler > "$LOG_DIR/scheduler.log" 2>&1 &
+nohup cargo run -p claw-scheduler > "$LOG_DIR/scheduler.log" 2>&1 &
 echo $! > "$PIDS_DIR/scheduler.pid"
 echo "  Scheduler:   pid $! (log: .logs/scheduler.log)"
 
