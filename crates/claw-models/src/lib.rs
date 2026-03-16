@@ -83,15 +83,6 @@ mod tests {
     }
 
     #[test]
-    fn skill_type_round_trip() {
-        let t = SkillType::ClaudeConfig;
-        let json = serde_json::to_string(&t).unwrap();
-        assert_eq!(json, "\"claude_config\"");
-        let parsed: SkillType = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed, SkillType::ClaudeConfig);
-    }
-
-    #[test]
     fn cron_schedule_defaults() {
         let json = r#"{"name":"test","schedule":"0 * * * * *","prompt":"hi"}"#;
         let req: CreateCronRequest = serde_json::from_str(json).unwrap();

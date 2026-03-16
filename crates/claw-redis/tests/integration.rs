@@ -192,7 +192,7 @@ async fn skill_crud() {
     let pool = test_pool();
     flush_test_db(&pool).await;
 
-    let skill = new_skill("test-skill", "Test", SkillType::Template, "content here", "desc", vec!["tag1".into()], Default::default());
+    let skill = new_skill("test-skill", "Test", "content here", "desc", vec!["tag1".into()], Default::default());
     create_skill(&pool, &skill).await.unwrap();
 
     let fetched = get_skill(&pool, "test-skill").await.unwrap().unwrap();
@@ -213,8 +213,8 @@ async fn skill_resolution() {
     let pool = test_pool();
     flush_test_db(&pool).await;
 
-    let s1 = new_skill("s1", "Skill 1", SkillType::Template, "content1", "", vec!["rust".into()], Default::default());
-    let s2 = new_skill("s2", "Skill 2", SkillType::Template, "content2", "", vec!["python".into()], Default::default());
+    let s1 = new_skill("s1", "Skill 1", "content1", "", vec!["rust".into()], Default::default());
+    let s2 = new_skill("s2", "Skill 2", "content2", "", vec!["python".into()], Default::default());
     create_skill(&pool, &s1).await.unwrap();
     create_skill(&pool, &s2).await.unwrap();
 

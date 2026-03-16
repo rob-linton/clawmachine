@@ -291,7 +291,7 @@ async fn main() {
                     }
                 };
                 let tags: Vec<String> = tags.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
-                match client.create_skill(&id, &name, &r#type, &content, &description, &tags).await {
+                match client.create_skill(&id, &name, &content, &description, &tags).await {
                     Ok(_) => println!("Skill '{id}' created."),
                     Err(e) => eprintln!("Error: {e}"),
                 }
@@ -305,11 +305,11 @@ async fn main() {
                     }
                     for item in &items {
                         let id = item["id"].as_str().unwrap_or("?");
-                        let st = item["skill_type"].as_str().unwrap_or("?");
                         let desc = item["description"].as_str().unwrap_or("");
                         let tags_arr = item["tags"].as_array();
                         let tags_str = tags_arr.map(|t| t.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(", ")).unwrap_or_default();
-                        println!("  {:<20} {:<14} {}", id, st, if !tags_str.is_empty() { format!("[{}] {}", tags_str, desc) } else { desc.to_string() });
+                        let name = item["name"].as_str().unwrap_or("");
+                        println!("  {:<20} {:<20} {}", id, name, if !tags_str.is_empty() { format!("[{}] {}", tags_str, desc) } else { desc.to_string() });
                     }
                 }
                 Err(e) => eprintln!("Error: {e}"),
@@ -318,7 +318,7 @@ async fn main() {
                 Ok(skill) => {
                     println!("ID:          {}", skill["id"].as_str().unwrap_or("?"));
                     println!("Name:        {}", skill["name"].as_str().unwrap_or("?"));
-                    println!("Type:        {}", skill["skill_type"].as_str().unwrap_or("?"));
+                    println!("Files:       {}", skill["files"].as_object().map(|f| f.len()).unwrap_or(0));
                     println!("Description: {}", skill["description"].as_str().unwrap_or(""));
                     println!("");
                     println!("{}", skill["content"].as_str().unwrap_or(""));

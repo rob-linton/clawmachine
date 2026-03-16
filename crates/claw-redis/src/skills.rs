@@ -114,7 +114,6 @@ pub async fn resolve_skills(pool: &Pool, skill_ids: &[String], skill_tags: &[Str
 pub fn new_skill(
     id: &str,
     name: &str,
-    skill_type: SkillType,
     content: &str,
     description: &str,
     tags: Vec<String>,
@@ -124,7 +123,6 @@ pub fn new_skill(
     Skill {
         id: id.to_string(),
         name: name.to_string(),
-        skill_type,
         content: content.to_string(),
         description: description.to_string(),
         tags,

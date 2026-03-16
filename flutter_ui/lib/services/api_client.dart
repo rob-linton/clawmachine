@@ -191,12 +191,12 @@ class ApiClient {
   }
 
   Future<Skill> uploadSkillZip(Uint8List zipBytes, {
-    required String id, required String name, required String skillType,
+    required String id, required String name,
     String description = '', List<String> tags = const [],
   }) async {
     final formData = FormData.fromMap({
       'file': MultipartFile.fromBytes(zipBytes, filename: 'skill.zip'),
-      'id': id, 'name': name, 'skill_type': skillType,
+      'id': id, 'name': name,
       'description': description, 'tags': tags.join(','),
     });
     final resp = await _dio.post('/skills/upload', data: formData);

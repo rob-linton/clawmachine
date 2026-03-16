@@ -5,7 +5,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use claw_models::*;
 use serde::Deserialize;
 use std::collections::HashMap;
 
@@ -23,7 +22,6 @@ pub fn router() -> Router<AppState> {
 struct CreateSkillRequest {
     id: String,
     name: String,
-    skill_type: SkillType,
     content: String,
     #[serde(default)]
     description: String,
@@ -38,7 +36,7 @@ async fn create_skill(
     Json(req): Json<CreateSkillRequest>,
 ) -> impl IntoResponse {
     let skill = claw_redis::new_skill(
-        &req.id, &req.name, req.skill_type, &req.content, &req.description, req.tags, req.files,
+        &req.id, &req.name, &req.content, &req.description, req.tags, req.files,
     );
     match claw_redis::create_skill(&state.pool, &skill).await {
         Ok(()) => (StatusCode::CREATED, Json(skill)).into_response(),
@@ -70,7 +68,7 @@ async fn update_skill(
     Json(req): Json<CreateSkillRequest>,
 ) -> impl IntoResponse {
     let mut skill = claw_redis::new_skill(
-        &id, &req.name, req.skill_type, &req.content, &req.description, req.tags, req.files,
+        &id, &req.name, &req.content, &req.description, req.tags, req.files,
     );
     if let Ok(Some(existing)) = claw_redis::get_skill(&state.pool, &id).await {
         skill.created_at = existing.created_at;
@@ -100,7 +98,6 @@ async fn upload_skill_zip(
     let mut zip_data: Option<Vec<u8>> = None;
     let mut id = String::new();
     let mut name = String::new();
-    let mut skill_type_str = String::from("script");
     let mut description = String::new();
     let mut tags_str = String::new();
 
@@ -115,7 +112,6 @@ async fn upload_skill_zip(
             }
             "id" => { id = field.text().await.unwrap_or_default(); }
             "name" => { name = field.text().await.unwrap_or_default(); }
-            "skill_type" => { skill_type_str = field.text().await.unwrap_or_default(); }
             "description" => { description = field.text().await.unwrap_or_default(); }
             "tags" => { tags_str = field.text().await.unwrap_or_default(); }
             _ => {}
@@ -130,11 +126,8 @@ async fn upload_skill_zip(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "No file field in upload"}))).into_response();
     };
 
-    let skill_type: SkillType = serde_json::from_str(&format!("\"{}\"", skill_type_str))
-        .unwrap_or(SkillType::Script);
-
     let limits = ExtractLimits {
-        max_total_size: 50 * 1024 * 1024, // 50MB for skills
+        max_total_size: 50 * 1024 * 1024,
         ..Default::default()
     };
 
@@ -143,7 +136,6 @@ async fn upload_skill_zip(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
     };
 
-    // Extract SKILL.md as the main content
     let content = files.remove("SKILL.md").unwrap_or_default();
 
     let tags: Vec<String> = if tags_str.is_empty() {
@@ -152,9 +144,8 @@ async fn upload_skill_zip(
         tags_str.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
     };
 
-    let skill = claw_redis::new_skill(&id, &name, skill_type, &content, &description, tags, files);
+    let skill = claw_redis::new_skill(&id, &name, &content, &description, tags, files);
 
-    // Check if exists → update or create
     let result = match claw_redis::get_skill(&state.pool, &id).await {
         Ok(Some(existing)) => {
             let mut updated = skill;

@@ -131,12 +131,11 @@ impl ApiClient {
     }
 
     pub async fn create_skill(
-        &self, id: &str, name: &str, skill_type: &str, content: &str, description: &str, tags: &[String],
+        &self, id: &str, name: &str, content: &str, description: &str, tags: &[String],
     ) -> Result<(), String> {
         let body = serde_json::json!({
             "id": id,
             "name": name,
-            "skill_type": skill_type,
             "content": content,
             "description": description,
             "tags": tags,
