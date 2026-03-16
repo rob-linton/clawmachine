@@ -11,11 +11,12 @@ pub struct ExecutionResult {
     pub duration_ms: u64,
 }
 
-/// Execute a job, streaming log lines to the provided channel.
+/// Execute a job in the given working directory.
 /// Cancellation is cooperative via the CancellationToken.
 /// Times out after job.timeout_secs (default 1800s / 30min).
 pub async fn execute_job(
     job: &Job,
+    working_dir: &std::path::Path,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
@@ -40,10 +41,7 @@ pub async fn execute_job(
         }
     }
 
-    let wd = &job.working_dir;
-    if wd.exists() && wd.is_dir() {
-        cmd.current_dir(wd);
-    }
+    cmd.current_dir(working_dir);
 
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());

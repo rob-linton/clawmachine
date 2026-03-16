@@ -7,6 +7,7 @@ use axum::{
 };
 use claw_models::*;
 use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::AppState;
 
@@ -26,6 +27,8 @@ struct CreateSkillRequest {
     description: String,
     #[serde(default)]
     tags: Vec<String>,
+    #[serde(default)]
+    files: HashMap<String, String>,
 }
 
 async fn create_skill(
@@ -33,7 +36,7 @@ async fn create_skill(
     Json(req): Json<CreateSkillRequest>,
 ) -> impl IntoResponse {
     let skill = claw_redis::new_skill(
-        &req.id, &req.name, req.skill_type, &req.content, &req.description, req.tags,
+        &req.id, &req.name, req.skill_type, &req.content, &req.description, req.tags, req.files,
     );
     match claw_redis::create_skill(&state.pool, &skill).await {
         Ok(()) => (StatusCode::CREATED, Json(skill)).into_response(),
@@ -65,9 +68,8 @@ async fn update_skill(
     Json(req): Json<CreateSkillRequest>,
 ) -> impl IntoResponse {
     let mut skill = claw_redis::new_skill(
-        &id, &req.name, req.skill_type, &req.content, &req.description, req.tags,
+        &id, &req.name, req.skill_type, &req.content, &req.description, req.tags, req.files,
     );
-    // Preserve original created_at if updating
     if let Ok(Some(existing)) = claw_redis::get_skill(&state.pool, &id).await {
         skill.created_at = existing.created_at;
     }

@@ -3,9 +3,11 @@ pub mod jobs;
 pub mod logs;
 pub mod skills;
 pub mod crons;
+pub mod workspaces;
 
 pub use pool::*;
 pub use jobs::*;
 pub use logs::*;
 pub use skills::*;
 pub use crons::*;
+pub use workspaces::*;

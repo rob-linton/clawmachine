@@ -48,6 +48,8 @@ class AppShell extends StatelessWidget {
               NavigationRailDestination(
                   icon: Icon(Icons.schedule), label: Text('Schedules')),
               NavigationRailDestination(
+                  icon: Icon(Icons.folder_open), label: Text('Workspaces')),
+              NavigationRailDestination(
                   icon: Icon(Icons.auto_fix_high), label: Text('Skills')),
             ],
             onDestinationSelected: (i) {
@@ -59,6 +61,8 @@ class AppShell extends StatelessWidget {
                 case 2:
                   context.go('/schedules');
                 case 3:
+                  context.go('/workspaces');
+                case 4:
                   context.go('/skills');
               }
             },
@@ -73,7 +77,8 @@ class AppShell extends StatelessWidget {
   int _indexForLocation(String location) {
     if (location.startsWith('/jobs')) return 1;
     if (location.startsWith('/schedules')) return 2;
-    if (location.startsWith('/skills')) return 3;
+    if (location.startsWith('/workspaces')) return 3;
+    if (location.startsWith('/skills')) return 4;
     if (location.startsWith('/settings')) return -1;
     return 0;
   }

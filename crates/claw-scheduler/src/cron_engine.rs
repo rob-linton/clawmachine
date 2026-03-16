@@ -91,6 +91,7 @@ async fn check_and_fire(pool: &Pool) -> Result<(), Box<dyn std::error::Error>> {
             tags: cron.tags.clone(),
             priority: Some(cron.priority),
             timeout_secs: None,
+            workspace_id: cron.workspace_id,
         };
 
         match claw_redis::submit_job(pool, &req, JobSource::Cron).await {

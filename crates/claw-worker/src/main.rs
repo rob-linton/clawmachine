@@ -1,3 +1,4 @@
+mod environment;
 mod executor;
 mod prompt_builder;
 
@@ -36,6 +37,9 @@ async fn main() {
             .await
             .expect("Redis PING failed");
     }
+
+    // Crash recovery from previous unclean shutdowns
+    environment::crash_recovery().await;
 
     let worker_id = format!(
         "{}-{}",
@@ -116,13 +120,72 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     "Job claimed, executing"
                 );
 
-                // Build prompt with skill injection
-                let built = prompt_builder::build_prompt(&pool, &job).await;
+                // 1. Resolve workspace (if workspace_id set)
+                let workspace = if let Some(ws_id) = job.workspace_id {
+                    match claw_redis::get_workspace(&pool, ws_id).await {
+                        Ok(ws) => ws,
+                        Err(e) => {
+                            tracing::error!(job_id = %job_id, error = %e, "Failed to load workspace");
+                            claw_redis::fail_job(&pool, job_id, &format!("Workspace load failed: {e}")).await.ok();
+                            continue;
+                        }
+                    }
+                } else {
+                    None
+                };
+
+                // 2. Acquire workspace lock (if persistent workspace)
+                if let Some(ws_id) = job.workspace_id {
+                    let ttl = job.timeout_secs.unwrap_or(1800) + 60;
+                    match claw_redis::acquire_workspace_lock(&pool, ws_id, job_id, ttl).await {
+                        Ok(true) => {} // Lock acquired
+                        Ok(false) => {
+                            // Workspace busy — re-queue
+                            claw_redis::requeue_job(&pool, job_id, job.priority).await.ok();
+                            tracing::info!(job_id = %job_id, workspace_id = %ws_id, "Workspace locked, re-queued");
+                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                            continue;
+                        }
+                        Err(e) => {
+                            tracing::error!(job_id = %job_id, error = %e, "Failed to acquire workspace lock");
+                            claw_redis::fail_job(&pool, job_id, &format!("Workspace lock failed: {e}")).await.ok();
+                            continue;
+                        }
+                    }
+                }
+
+                // 3. Resolve skills (workspace defaults + job-specific, deduplicated)
+                let mut all_skill_ids = Vec::new();
+                if let Some(ref ws) = workspace {
+                    all_skill_ids.extend(ws.skill_ids.iter().cloned());
+                }
+                all_skill_ids.extend(job.skill_ids.iter().cloned());
+                // Deduplicate
+                let mut seen = std::collections::HashSet::new();
+                all_skill_ids.retain(|id| seen.insert(id.clone()));
+
+                let skills = claw_redis::resolve_skills(&pool, &all_skill_ids, &job.skill_tags)
+                    .await
+                    .unwrap_or_default();
+
+                // 4. Prepare environment (workspace dir, CLAUDE.md, skill files)
+                let prepared_env = match environment::prepare_environment(&job, workspace.as_ref(), &skills).await {
+                    Ok(env) => env,
+                    Err(e) => {
+                        tracing::error!(job_id = %job_id, error = %e, "Failed to prepare environment");
+                        claw_redis::fail_job(&pool, job_id, &format!("Environment setup failed: {e}")).await.ok();
+                        if let Some(ws_id) = job.workspace_id {
+                            claw_redis::release_workspace_lock(&pool, ws_id, job_id).await.ok();
+                        }
+                        continue;
+                    }
+                };
+
+                // 5. Build prompt (templates only now — config/scripts are on disk)
+                let built = prompt_builder::build_prompt(&job, &skills);
                 let mut job = job;
                 job.assembled_prompt = Some(built.prompt.clone());
                 job.skill_snapshot = Some(built.skill_snapshot);
-
-                // Persist the skill snapshot to Redis
                 claw_redis::update_job_fields(&pool, job_id, &job.skill_snapshot, &job.assembled_prompt).await.ok();
 
                 // Publish running event
@@ -138,7 +201,6 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                 let (log_tx, mut log_rx) = mpsc::channel::<String>(256);
                 let cancel = CancellationToken::new();
 
-                // Log forwarder task
                 let log_pool = pool.clone();
                 let log_handle = tokio::spawn(async move {
                     while let Some(line) = log_rx.recv().await {
@@ -146,7 +208,6 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     }
                 });
 
-                // Cancellation watcher task
                 let cancel_pool = pool.clone();
                 let cancel_clone = cancel.clone();
                 let cancel_handle = tokio::spawn(async move {
@@ -160,16 +221,36 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     }
                 });
 
-                // Execute
-                let result = executor::execute_job(&job, log_tx, cancel).await;
+                // 6. Execute in prepared workspace
+                let result = executor::execute_job(&job, &prepared_env.working_dir, log_tx, cancel).await;
 
                 // Stop helper tasks
                 cancel_handle.abort();
                 log_handle.await.ok();
-
-                // Clean up cancel flag
                 claw_redis::clear_cancel_flag(&pool, job_id).await.ok();
 
+                // 7. Harvest new skills from workspace
+                let harvested = environment::harvest_skills(&prepared_env).await;
+                for new_skill in &harvested.new_skills {
+                    tracing::info!(skill_id = %new_skill.id, job_id = %job_id, "Harvested new skill");
+                    claw_redis::create_skill(&pool, new_skill).await.ok();
+                }
+                // Update workspace CLAUDE.md if modified
+                if let (Some(ref modified_md), Some(ref ws)) = (&harvested.modified_claude_md, &workspace) {
+                    let mut updated_ws = ws.clone();
+                    updated_ws.claude_md = Some(modified_md.clone());
+                    claw_redis::update_workspace(&pool, &updated_ws).await.ok();
+                }
+
+                // 8. Teardown environment
+                environment::teardown_environment(&prepared_env).await;
+
+                // 9. Release workspace lock
+                if let Some(ws_id) = job.workspace_id {
+                    claw_redis::release_workspace_lock(&pool, ws_id, job_id).await.ok();
+                }
+
+                // 10. Handle result
                 match result {
                     Ok(r) => {
                         if let Err(e) = claw_redis::complete_job(
@@ -178,7 +259,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                             tracing::error!(job_id = %job_id, error = %e, "Failed to store completion");
                         }
 
-                        // File output if configured
+                        // File output
                         if let claw_models::OutputDest::File { path } = &job.output_dest {
                             if let Err(e) = tokio::fs::create_dir_all(path).await {
                                 tracing::warn!(job_id = %job_id, error = %e, "Failed to create output dir");
@@ -198,7 +279,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                             }
                         }
 
-                        // Webhook output if configured
+                        // Webhook output
                         if let claw_models::OutputDest::Webhook { url } = &job.output_dest {
                             let payload = serde_json::json!({
                                 "job_id": job_id.to_string(),
@@ -236,7 +317,6 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                             if let Err(re) = claw_redis::fail_job(&pool, job_id, &e).await {
                                 tracing::error!(job_id = %job_id, error = %re, "Failed to store failure");
                             }
-                            // Failure webhook
                             if let Ok(url) = std::env::var("CLAW_FAILURE_WEBHOOK_URL") {
                                 let prompt_preview: String = job.prompt.chars().take(200).collect();
                                 let payload = serde_json::json!({

@@ -56,13 +56,33 @@ else
     FLUTTER_BUILD="$FLUTTER_DIR/build/web/index.html"
     FLUTTER_SRC="$FLUTTER_DIR/lib/main.dart"
 
+    NEEDS_REBUILD=false
     if [ ! -f "$FLUTTER_BUILD" ] || [ "$FLUTTER_SRC" -nt "$FLUTTER_BUILD" ]; then
+        NEEDS_REBUILD=true
         echo "Building Flutter web..."
         cd "$FLUTTER_DIR"
         flutter build web --release 2>&1 | tail -1
         green "  Build: OK"
     else
         green "  Flutter: Up to date"
+    fi
+
+    # Restart API if we rebuilt (so it serves the new files)
+    if [ "$NEEDS_REBUILD" = true ] && [ -f "$PROJECT_DIR/.pids/api.pid" ]; then
+        echo ""
+        yellow "  Restarting API to serve new build..."
+        API_PID=$(cat "$PROJECT_DIR/.pids/api.pid")
+        kill "$API_PID" 2>/dev/null || true
+        sleep 1
+        cd "$PROJECT_DIR"
+        cargo run -p claw-api > "$PROJECT_DIR/.logs/api.log" 2>&1 &
+        echo $! > "$PROJECT_DIR/.pids/api.pid"
+        # Wait for it
+        for i in $(seq 1 10); do
+            curl -s http://localhost:8080/api/v1/status > /dev/null 2>&1 && break
+            sleep 1
+        done
+        green "  API restarted"
     fi
 
     # Verify it's being served

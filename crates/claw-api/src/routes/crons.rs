@@ -83,6 +83,7 @@ async fn update_cron(
         output_dest: req.output_dest,
         tags: req.tags,
         priority: req.priority.unwrap_or(5),
+        workspace_id: req.workspace_id,
         last_run: existing.last_run,
         last_job_id: existing.last_job_id,
         created_at: existing.created_at,
@@ -126,6 +127,7 @@ async fn trigger_cron(
         tags: cron.tags,
         priority: Some(cron.priority),
         timeout_secs: None,
+        workspace_id: cron.workspace_id,
     };
 
     match claw_redis::submit_job(&state.pool, &req, JobSource::Cron).await {

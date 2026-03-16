@@ -24,6 +24,7 @@ pub async fn create_cron(pool: &Pool, req: &CreateCronRequest) -> Result<CronSch
         output_dest: req.output_dest.clone(),
         tags: req.tags.clone(),
         priority: req.priority.unwrap_or(5),
+        workspace_id: req.workspace_id,
         last_run: None,
         last_job_id: None,
         created_at: now,
@@ -92,16 +93,32 @@ pub async fn delete_cron(pool: &Pool, cron_id: Uuid) -> Result<(), RedisError> {
     Ok(())
 }
 
-/// Record that a cron just fired: update last_run and last_job_id.
+/// Record that a cron just fired: atomically update only last_run and last_job_id
+/// without overwriting other fields (prevents race with concurrent PUT updates).
 pub async fn record_cron_fire(pool: &Pool, cron_id: Uuid, job_id: Uuid) -> Result<(), RedisError> {
     let mut conn = pool.get().await?;
     let key = format!("claw:cron:{}", cron_id);
-    let json: Option<String> = conn.get(&key).await?;
-    let Some(j) = json else { return Ok(()) };
-    let mut cron: CronSchedule = serde_json::from_str(&j)?;
-    cron.last_run = Some(Utc::now());
-    cron.last_job_id = Some(job_id);
-    let updated = serde_json::to_string(&cron)?;
-    let _: () = conn.set(&key, &updated).await?;
+    let now = Utc::now().to_rfc3339();
+
+    // Lua script: atomically read-modify-write only last_run and last_job_id
+    let script = redis::Script::new(
+        r#"
+        local json = redis.call('GET', KEYS[1])
+        if not json then return 0 end
+        local cron = cjson.decode(json)
+        cron['last_run'] = ARGV[1]
+        cron['last_job_id'] = ARGV[2]
+        redis.call('SET', KEYS[1], cjson.encode(cron))
+        return 1
+        "#,
+    );
+
+    let _: i32 = script
+        .key(&key)
+        .arg(&now)
+        .arg(job_id.to_string())
+        .invoke_async(&mut *conn)
+        .await?;
+
     Ok(())
 }

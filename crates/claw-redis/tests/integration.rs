@@ -32,7 +32,7 @@ async fn submit_and_get_job() {
         output_dest: OutputDest::Redis,
         tags: vec!["test".into()],
         priority: Some(7),
-        timeout_secs: None,
+        timeout_secs: None, workspace_id: None,
     };
 
     let job = submit_job(&pool, &req, JobSource::Api).await.unwrap();
@@ -58,7 +58,7 @@ async fn claim_job_returns_highest_priority() {
         prompt: "low priority".into(),
         skill_ids: vec![], skill_tags: vec![], working_dir: None,
         model: None, max_budget_usd: None, allowed_tools: None,
-        output_dest: OutputDest::Redis, tags: vec![], priority: Some(1), timeout_secs: None,
+        output_dest: OutputDest::Redis, tags: vec![], priority: Some(1), timeout_secs: None, workspace_id: None,
     };
     submit_job(&pool, &low, JobSource::Api).await.unwrap();
 
@@ -86,7 +86,7 @@ async fn complete_and_get_result() {
         prompt: "math".into(),
         skill_ids: vec![], skill_tags: vec![], working_dir: None,
         model: None, max_budget_usd: None, allowed_tools: None,
-        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None,
+        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None, workspace_id: None,
     };
     let job = submit_job(&pool, &req, JobSource::Cli).await.unwrap();
     claim_job(&pool, "w1").await.unwrap();
@@ -112,7 +112,7 @@ async fn fail_job_stores_error() {
         prompt: "will fail".into(),
         skill_ids: vec![], skill_tags: vec![], working_dir: None,
         model: None, max_budget_usd: None, allowed_tools: None,
-        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None,
+        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None, workspace_id: None,
     };
     let job = submit_job(&pool, &req, JobSource::Api).await.unwrap();
     claim_job(&pool, "w1").await.unwrap();
@@ -134,7 +134,7 @@ async fn cancel_pending_job() {
         prompt: "cancel me".into(),
         skill_ids: vec![], skill_tags: vec![], working_dir: None,
         model: None, max_budget_usd: None, allowed_tools: None,
-        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None,
+        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None, workspace_id: None,
     };
     let job = submit_job(&pool, &req, JobSource::Api).await.unwrap();
 
@@ -154,7 +154,7 @@ async fn list_jobs_returns_all() {
         prompt: "job 1".into(),
         skill_ids: vec![], skill_tags: vec![], working_dir: None,
         model: None, max_budget_usd: None, allowed_tools: None,
-        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None,
+        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None, workspace_id: None,
     };
     submit_job(&pool, &req, JobSource::Api).await.unwrap();
 
@@ -175,7 +175,7 @@ async fn delete_job_removes_all_data() {
         prompt: "delete me".into(),
         skill_ids: vec![], skill_tags: vec![], working_dir: None,
         model: None, max_budget_usd: None, allowed_tools: None,
-        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None,
+        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None, workspace_id: None,
     };
     let job = submit_job(&pool, &req, JobSource::Api).await.unwrap();
     cancel_job(&pool, job.id).await.unwrap();
@@ -192,7 +192,7 @@ async fn skill_crud() {
     let pool = test_pool();
     flush_test_db(&pool).await;
 
-    let skill = new_skill("test-skill", "Test", SkillType::Template, "content here", "desc", vec!["tag1".into()]);
+    let skill = new_skill("test-skill", "Test", SkillType::Template, "content here", "desc", vec!["tag1".into()], Default::default());
     create_skill(&pool, &skill).await.unwrap();
 
     let fetched = get_skill(&pool, "test-skill").await.unwrap().unwrap();
@@ -213,8 +213,8 @@ async fn skill_resolution() {
     let pool = test_pool();
     flush_test_db(&pool).await;
 
-    let s1 = new_skill("s1", "Skill 1", SkillType::Template, "content1", "", vec!["rust".into()]);
-    let s2 = new_skill("s2", "Skill 2", SkillType::Template, "content2", "", vec!["python".into()]);
+    let s1 = new_skill("s1", "Skill 1", SkillType::Template, "content1", "", vec!["rust".into()], Default::default());
+    let s2 = new_skill("s2", "Skill 2", SkillType::Template, "content2", "", vec!["python".into()], Default::default());
     create_skill(&pool, &s1).await.unwrap();
     create_skill(&pool, &s2).await.unwrap();
 
@@ -297,7 +297,7 @@ async fn queue_status_counts() {
         prompt: "p".into(),
         skill_ids: vec![], skill_tags: vec![], working_dir: None,
         model: None, max_budget_usd: None, allowed_tools: None,
-        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None,
+        output_dest: OutputDest::Redis, tags: vec![], priority: None, timeout_secs: None, workspace_id: None,
     };
     submit_job(&pool, &req, JobSource::Api).await.unwrap();
     submit_job(&pool, &req, JobSource::Api).await.unwrap();

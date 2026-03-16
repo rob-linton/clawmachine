@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../main.dart';
 import '../models/skill.dart';
+import '../models/workspace.dart';
 
 class SubmitJobScreen extends ConsumerStatefulWidget {
   const SubmitJobScreen({super.key});
@@ -22,6 +23,8 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
   double _priority = 5;
   final _selectedSkills = <String>{};
   List<Skill> _availableSkills = [];
+  List<Workspace> _availableWorkspaces = [];
+  String? _selectedWorkspaceId;
   bool _submitting = false;
   bool _showAdvanced = false;
   String _outputType = 'redis'; // redis, file, webhook
@@ -29,13 +32,18 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
   @override
   void initState() {
     super.initState();
-    _loadSkills();
+    _loadData();
   }
 
-  Future<void> _loadSkills() async {
+  Future<void> _loadData() async {
+    final api = ref.read(apiClientProvider);
     try {
-      final skills = await ref.read(apiClientProvider).listSkills();
+      final skills = await api.listSkills();
       setState(() => _availableSkills = skills);
+    } catch (_) {}
+    try {
+      final workspaces = await api.listWorkspaces();
+      setState(() => _availableWorkspaces = workspaces);
     } catch (_) {}
   }
 
@@ -69,7 +77,8 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
             skillIds: _selectedSkills.toList(),
             model: _model,
             priority: _priority.round(),
-            workingDir: workingDir.isEmpty ? null : workingDir,
+            workspaceId: _selectedWorkspaceId,
+            workingDir: workingDir.isEmpty || _selectedWorkspaceId != null ? null : workingDir,
             timeoutSecs: timeout,
             outputDest: _buildOutputDest(),
             allowedTools: allowedTools.isEmpty
@@ -224,14 +233,38 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            TextField(
-                              controller: _workingDirController,
+                            // Workspace selector
+                            DropdownButtonFormField<String?>(
+                              value: _selectedWorkspaceId,
                               decoration: const InputDecoration(
-                                labelText: 'Working Directory',
-                                hintText: '/path/to/project',
+                                labelText: 'Workspace',
                                 border: OutlineInputBorder(),
                               ),
+                              items: [
+                                const DropdownMenuItem(
+                                  value: null,
+                                  child: Text('None (temp workspace)'),
+                                ),
+                                ..._availableWorkspaces.map((ws) =>
+                                    DropdownMenuItem(
+                                      value: ws.id,
+                                      child: Text('${ws.name} — ${ws.path}'),
+                                    )),
+                              ],
+                              onChanged: (v) =>
+                                  setState(() => _selectedWorkspaceId = v),
                             ),
+                            const SizedBox(height: 12),
+                            if (_selectedWorkspaceId == null)
+                              TextField(
+                                controller: _workingDirController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Working Directory (if no workspace)',
+                                  hintText: '/path/to/project',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                            if (_selectedWorkspaceId == null)
                             const SizedBox(height: 12),
                             TextField(
                               controller: _timeoutController,

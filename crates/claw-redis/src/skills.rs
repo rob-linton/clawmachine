@@ -111,7 +111,15 @@ pub async fn resolve_skills(pool: &Pool, skill_ids: &[String], skill_tags: &[Str
 }
 
 /// Build a CreateSkill helper for CLI/API usage.
-pub fn new_skill(id: &str, name: &str, skill_type: SkillType, content: &str, description: &str, tags: Vec<String>) -> Skill {
+pub fn new_skill(
+    id: &str,
+    name: &str,
+    skill_type: SkillType,
+    content: &str,
+    description: &str,
+    tags: Vec<String>,
+    files: std::collections::HashMap<String, String>,
+) -> Skill {
     let now = Utc::now();
     Skill {
         id: id.to_string(),
@@ -120,6 +128,7 @@ pub fn new_skill(id: &str, name: &str, skill_type: SkillType, content: &str, des
         content: content.to_string(),
         description: description.to_string(),
         tags,
+        files,
         created_at: now,
         updated_at: now,
     }

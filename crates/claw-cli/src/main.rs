@@ -140,6 +140,7 @@ async fn main() {
                 tags: tag,
                 priority,
                 timeout_secs: None,
+                workspace_id: None,
             };
 
             match client.submit_job(&req).await {

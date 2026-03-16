@@ -7,6 +7,7 @@ import 'screens/job_detail_screen.dart';
 import 'screens/submit_job_screen.dart';
 import 'screens/skills_screen.dart';
 import 'screens/schedules_screen.dart';
+import 'screens/workspaces_screen.dart';
 import 'screens/settings_screen.dart';
 import 'services/api_client.dart';
 import 'widgets/app_shell.dart';
@@ -32,6 +33,14 @@ final _router = GoRouter(
         GoRoute(
             path: '/schedules',
             builder: (_, __) => const SchedulesScreen()),
+        GoRoute(
+            path: '/workspaces',
+            builder: (_, __) => const WorkspacesScreen()),
+        GoRoute(
+          path: '/workspaces/:id',
+          builder: (_, state) =>
+              WorkspaceDetailScreen(workspaceId: state.pathParameters['id']!),
+        ),
         GoRoute(path: '/skills', builder: (_, __) => const SkillsScreen()),
         GoRoute(
             path: '/settings', builder: (_, __) => const SettingsScreen()),

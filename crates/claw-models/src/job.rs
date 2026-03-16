@@ -35,6 +35,7 @@ pub struct Job {
     #[serde(default)]
     pub retry_count: u32,
     pub timeout_secs: Option<u64>,
+    pub workspace_id: Option<Uuid>,
     pub cron_id: Option<Uuid>,
     pub skill_snapshot: Option<serde_json::Value>,
     pub assembled_prompt: Option<String>,
@@ -66,6 +67,7 @@ pub struct CreateJobRequest {
     pub tags: Vec<String>,
     pub priority: Option<u8>,
     pub timeout_secs: Option<u64>,
+    pub workspace_id: Option<Uuid>,
 }
 
 /// Summary returned after submitting a job.

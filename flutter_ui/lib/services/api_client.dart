@@ -2,6 +2,7 @@ import 'package:dio/dio.dart';
 import '../models/job.dart';
 import '../models/skill.dart';
 import '../models/cron_schedule.dart';
+import '../models/workspace.dart';
 
 class ApiClient {
   final Dio _dio;
@@ -26,6 +27,7 @@ class ApiClient {
     int? timeoutSecs,
     Map<String, dynamic>? outputDest,
     List<String>? allowedTools,
+    String? workspaceId,
   }) async {
     final resp = await _dio.post('/jobs', data: {
       'prompt': prompt,
@@ -40,6 +42,7 @@ class ApiClient {
       if (outputDest != null) 'output_dest': outputDest,
       if (allowedTools != null && allowedTools.isNotEmpty)
         'allowed_tools': allowedTools,
+      if (workspaceId != null) 'workspace_id': workspaceId,
     });
     return resp.data;
   }
@@ -133,5 +136,43 @@ class ApiClient {
   Future<Map<String, dynamic>> triggerCron(String id) async {
     final resp = await _dio.post('/crons/$id/trigger');
     return resp.data;
+  }
+
+  // Workspaces
+  Future<List<Workspace>> listWorkspaces() async {
+    final resp = await _dio.get('/workspaces');
+    final items = resp.data['items'] as List? ?? [];
+    return items.map((w) => Workspace.fromJson(w)).toList();
+  }
+
+  Future<Workspace> getWorkspace(String id) async {
+    final resp = await _dio.get('/workspaces/$id');
+    return Workspace.fromJson(resp.data);
+  }
+
+  Future<Workspace> createWorkspace(Map<String, dynamic> data) async {
+    final resp = await _dio.post('/workspaces', data: data);
+    return Workspace.fromJson(resp.data);
+  }
+
+  Future<Workspace> updateWorkspace(String id, Map<String, dynamic> data) async {
+    final resp = await _dio.put('/workspaces/$id', data: data);
+    return Workspace.fromJson(resp.data);
+  }
+
+  Future<void> deleteWorkspace(String id, {bool deleteFiles = false}) async {
+    await _dio.delete('/workspaces/$id', queryParameters: {
+      if (deleteFiles) 'delete_files': 'true',
+    });
+  }
+
+  Future<List<dynamic>> listWorkspaceFiles(String id) async {
+    final resp = await _dio.get('/workspaces/$id/files');
+    return resp.data['files'] as List? ?? [];
+  }
+
+  Future<String> getWorkspaceFile(String id, String path) async {
+    final resp = await _dio.get('/workspaces/$id/files/$path');
+    return resp.data['content'] ?? '';
   }
 }

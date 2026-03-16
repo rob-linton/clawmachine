@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Skill {
@@ -11,6 +12,10 @@ pub struct Skill {
     pub description: String,
     #[serde(default)]
     pub tags: Vec<String>,
+    /// Bundled files for directory-based skills (Script type).
+    /// Keys are relative paths (e.g. "scripts/run.sh"), values are text file contents.
+    #[serde(default)]
+    pub files: HashMap<String, String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

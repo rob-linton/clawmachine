@@ -17,3 +17,4 @@ dotenvy = { workspace = true }
 deadpool-redis = { workspace = true }
 uuid = { workspace = true }
 cron = { workspace = true }
+chrono = { workspace = true, features = ["serde"] }

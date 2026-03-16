@@ -46,6 +46,7 @@ pub async fn submit_job(pool: &Pool, req: &CreateJobRequest, source: JobSource) 
         duration_ms: None,
         retry_count: 0,
         timeout_secs: req.timeout_secs,
+        workspace_id: req.workspace_id,
         cron_id: None,
         skill_snapshot: None,
         assembled_prompt: None,
