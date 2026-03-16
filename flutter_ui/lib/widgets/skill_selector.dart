@@ -1,9 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/skill.dart';
 
-/// Reusable skill selector widget.
-/// Shows available skills as FilterChips with multi-select.
-/// Can also open a full dialog for browsing skills with descriptions.
+/// Compact skill selector that shows selected count and opens a dialog to pick skills.
 class SkillSelector extends StatelessWidget {
   final List<Skill> availableSkills;
   final Set<String> selectedIds;
@@ -20,10 +18,10 @@ class SkillSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (availableSkills.isEmpty) {
-      return Text('No skills available. Import skills first.',
-          style: TextStyle(color: Colors.grey[500], fontSize: 13));
-    }
+    final selectedNames = availableSkills
+        .where((s) => selectedIds.contains(s.id))
+        .map((s) => s.name)
+        .toList();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -32,105 +30,181 @@ class SkillSelector extends StatelessWidget {
           children: [
             Text(label, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
             const Spacer(),
-            if (selectedIds.isNotEmpty)
-              TextButton(
-                onPressed: () => onChanged({}),
-                child: Text('Clear (${selectedIds.length})', style: const TextStyle(fontSize: 12)),
+            OutlinedButton.icon(
+              onPressed: () async {
+                final result = await _showSelectionDialog(context);
+                if (result != null) {
+                  onChanged(result);
+                }
+              },
+              icon: const Icon(Icons.checklist, size: 16),
+              label: Text(
+                selectedIds.isEmpty
+                    ? 'Select Skills'
+                    : '${selectedIds.length} selected',
               ),
+            ),
           ],
         ),
-        const SizedBox(height: 4),
-        Wrap(
-          spacing: 6,
-          runSpacing: 4,
-          children: availableSkills.map((skill) {
-            final selected = selectedIds.contains(skill.id);
-            return Semantics(
-              label: 'Skill ${skill.name}',
-              child: FilterChip(
-                label: Text(skill.name),
-                tooltip: skill.description.isNotEmpty ? skill.description : skill.id,
-                selected: selected,
-                onSelected: (v) {
-                  final updated = Set<String>.from(selectedIds);
-                  if (v) {
-                    updated.add(skill.id);
-                  } else {
-                    updated.remove(skill.id);
-                  }
-                  onChanged(updated);
-                },
-              ),
-            );
-          }).toList(),
-        ),
+        if (selectedNames.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6,
+            runSpacing: 4,
+            children: selectedNames
+                .map((name) => Chip(
+                      label: Text(name, style: const TextStyle(fontSize: 12)),
+                      visualDensity: VisualDensity.compact,
+                      deleteIcon: const Icon(Icons.close, size: 14),
+                      onDeleted: () {
+                        final updated = Set<String>.from(selectedIds);
+                        final skill = availableSkills.firstWhere((s) => s.name == name);
+                        updated.remove(skill.id);
+                        onChanged(updated);
+                      },
+                    ))
+                .toList(),
+          ),
+        ],
+        if (availableSkills.isEmpty)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Text('No skills available. Import skills first.',
+                style: TextStyle(color: Colors.grey[500], fontSize: 12)),
+          ),
       ],
     );
   }
-}
 
-/// Shows a dialog to select skills. Returns the updated set of selected IDs.
-Future<Set<String>?> showSkillSelectorDialog({
-  required BuildContext context,
-  required List<Skill> availableSkills,
-  required Set<String> currentSelection,
-  String title = 'Select Skills',
-}) async {
-  final selected = Set<String>.from(currentSelection);
+  Future<Set<String>?> _showSelectionDialog(BuildContext context) async {
+    final selected = Set<String>.from(selectedIds);
+    final searchCtrl = TextEditingController();
+    var filtered = List<Skill>.from(availableSkills);
 
-  return showDialog<Set<String>>(
-    context: context,
-    builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setDialogState) => AlertDialog(
-        title: Text(title),
-        content: SizedBox(
-          width: 500,
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+    return showDialog<Set<String>>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          void updateFilter() {
+            final query = searchCtrl.text.toLowerCase();
+            filtered = query.isEmpty
+                ? List<Skill>.from(availableSkills)
+                : availableSkills
+                    .where((s) =>
+                        s.name.toLowerCase().contains(query) ||
+                        s.id.toLowerCase().contains(query) ||
+                        s.description.toLowerCase().contains(query) ||
+                        s.tags.any((t) => t.toLowerCase().contains(query)))
+                    .toList();
+          }
+
+          return AlertDialog(
+            title: Row(
               children: [
-                if (availableSkills.isEmpty)
-                  const Padding(
-                    padding: EdgeInsets.all(24),
-                    child: Text('No skills available. Import skills first.'),
-                  )
-                else
-                  ...availableSkills.map((skill) => CheckboxListTile(
-                        dense: true,
-                        value: selected.contains(skill.id),
-                        title: Text(skill.name),
-                        subtitle: skill.description.isNotEmpty
-                            ? Text(skill.description, maxLines: 1, overflow: TextOverflow.ellipsis)
-                            : Text(skill.id, style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                        secondary: skill.files.isNotEmpty
-                            ? Text('${skill.files.length} files',
-                                style: const TextStyle(fontSize: 11, color: Colors.grey))
-                            : null,
-                        onChanged: (v) {
-                          setDialogState(() {
-                            if (v == true) {
-                              selected.add(skill.id);
-                            } else {
-                              selected.remove(skill.id);
-                            }
-                          });
-                        },
-                      )),
+                const Text('Select Skills'),
+                const Spacer(),
+                Text('${selected.length} selected',
+                    style: TextStyle(fontSize: 14, color: Colors.grey[400])),
               ],
             ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, selected),
-            child: Text('Done (${selected.length} selected)'),
-          ),
-        ],
+            content: SizedBox(
+              width: 500,
+              height: 400,
+              child: Column(
+                children: [
+                  // Search bar
+                  TextField(
+                    controller: searchCtrl,
+                    decoration: const InputDecoration(
+                      hintText: 'Search skills by name, ID, or tag...',
+                      prefixIcon: Icon(Icons.search),
+                      isDense: true,
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (_) => setDialogState(() => updateFilter()),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // Skill list
+                  Expanded(
+                    child: filtered.isEmpty
+                        ? const Center(child: Text('No skills match your search.'))
+                        : ListView.builder(
+                            itemCount: filtered.length,
+                            itemBuilder: (context, i) {
+                              final skill = filtered[i];
+                              final isSelected = selected.contains(skill.id);
+                              return CheckboxListTile(
+                                dense: true,
+                                value: isSelected,
+                                title: Text(skill.name),
+                                subtitle: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    if (skill.description.isNotEmpty)
+                                      Text(skill.description,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: const TextStyle(fontSize: 12)),
+                                    Row(
+                                      children: [
+                                        Text(skill.id,
+                                            style: TextStyle(
+                                                fontSize: 11,
+                                                fontFamily: 'monospace',
+                                                color: Colors.grey[500])),
+                                        if (skill.files.isNotEmpty) ...[
+                                          const SizedBox(width: 8),
+                                          Text('${skill.files.length} files',
+                                              style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.grey[500])),
+                                        ],
+                                        if (skill.tags.isNotEmpty) ...[
+                                          const SizedBox(width: 8),
+                                          Text(skill.tags.join(', '),
+                                              style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.grey[500])),
+                                        ],
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                                onChanged: (v) {
+                                  setDialogState(() {
+                                    if (v == true) {
+                                      selected.add(skill.id);
+                                    } else {
+                                      selected.remove(skill.id);
+                                    }
+                                  });
+                                },
+                              );
+                            },
+                          ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              if (selected.isNotEmpty)
+                TextButton(
+                  onPressed: () => setDialogState(() => selected.clear()),
+                  child: const Text('Clear All'),
+                ),
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(ctx, selected),
+                child: Text('Done (${selected.length})'),
+              ),
+            ],
+          );
+        },
       ),
-    ),
-  );
+    );
+  }
 }
