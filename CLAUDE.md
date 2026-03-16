@@ -71,6 +71,19 @@ CLI → Axum API → Redis ← Workers (claude -p subprocess)
 - **Skill snapshotting** — `skill_snapshot` + `assembled_prompt` stored per-job for reproducibility
 - **CLAUDE.md crash recovery** — backup + marker files so worker cleanup survives unclean shutdown
 
+## Flutter Semantics Rule
+
+All Flutter widgets that display meaningful text (headings, names, labels, status indicators) **must** be wrapped with `Semantics` widgets. This is required for Playwright E2E testing since Flutter web renders to canvas and text is not in the DOM.
+
+```dart
+// ALWAYS do this for headings, list items, status text, etc.
+Semantics(header: true, label: 'Page Title', child: Text('Page Title', ...))
+Semantics(label: 'Skill ${skill.name}', child: Text(skill.name, ...))
+Semantics(label: 'Connected', child: Text('Connected to ...', ...))
+```
+
+Without `Semantics`, Playwright tests cannot find or verify text content.
+
 ## Self-Testing Rule
 
 Every phase must be validated end-to-end before proceeding. After writing code, exercise it as a real user: hit the API with curl, submit jobs via CLI, open the UI in a browser. See `10-implementation-roadmap.md` section 10 for the full testing protocol.

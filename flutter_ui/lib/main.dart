@@ -6,6 +6,8 @@ import 'screens/jobs_screen.dart';
 import 'screens/job_detail_screen.dart';
 import 'screens/submit_job_screen.dart';
 import 'screens/skills_screen.dart';
+import 'screens/schedules_screen.dart';
+import 'screens/settings_screen.dart';
 import 'services/api_client.dart';
 import 'widgets/app_shell.dart';
 
@@ -27,7 +29,12 @@ final _router = GoRouter(
           builder: (_, state) =>
               JobDetailScreen(jobId: state.pathParameters['id']!),
         ),
+        GoRoute(
+            path: '/schedules',
+            builder: (_, __) => const SchedulesScreen()),
         GoRoute(path: '/skills', builder: (_, __) => const SkillsScreen()),
+        GoRoute(
+            path: '/settings', builder: (_, __) => const SettingsScreen()),
       ],
     ),
   ],
@@ -35,7 +42,6 @@ final _router = GoRouter(
 
 void main() {
   final binding = WidgetsFlutterBinding.ensureInitialized();
-  // Enable semantics so Playwright can find DOM text nodes via accessibility tree
   binding.ensureSemantics();
   runApp(const ProviderScope(child: ClawApp()));
 }

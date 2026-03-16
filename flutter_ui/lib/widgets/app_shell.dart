@@ -14,7 +14,7 @@ class AppShell extends StatelessWidget {
       body: Row(
         children: [
           NavigationRail(
-            selectedIndex: idx,
+            selectedIndex: idx >= 0 ? idx : null,
             labelType: NavigationRailLabelType.all,
             leading: Padding(
               padding: const EdgeInsets.symmetric(vertical: 16),
@@ -24,11 +24,29 @@ class AppShell extends StatelessWidget {
                       .titleLarge
                       ?.copyWith(fontWeight: FontWeight.bold)),
             ),
+            trailing: Expanded(
+              child: Align(
+                alignment: Alignment.bottomCenter,
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: IconButton(
+                    icon: Icon(Icons.settings,
+                        color: location.startsWith('/settings')
+                            ? Theme.of(context).colorScheme.primary
+                            : null),
+                    tooltip: 'Settings',
+                    onPressed: () => context.go('/settings'),
+                  ),
+                ),
+              ),
+            ),
             destinations: const [
               NavigationRailDestination(
                   icon: Icon(Icons.dashboard), label: Text('Dashboard')),
               NavigationRailDestination(
                   icon: Icon(Icons.work), label: Text('Jobs')),
+              NavigationRailDestination(
+                  icon: Icon(Icons.schedule), label: Text('Schedules')),
               NavigationRailDestination(
                   icon: Icon(Icons.auto_fix_high), label: Text('Skills')),
             ],
@@ -39,6 +57,8 @@ class AppShell extends StatelessWidget {
                 case 1:
                   context.go('/jobs');
                 case 2:
+                  context.go('/schedules');
+                case 3:
                   context.go('/skills');
               }
             },
@@ -52,7 +72,9 @@ class AppShell extends StatelessWidget {
 
   int _indexForLocation(String location) {
     if (location.startsWith('/jobs')) return 1;
-    if (location.startsWith('/skills')) return 2;
+    if (location.startsWith('/schedules')) return 2;
+    if (location.startsWith('/skills')) return 3;
+    if (location.startsWith('/settings')) return -1;
     return 0;
   }
 }

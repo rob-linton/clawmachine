@@ -13,11 +13,18 @@ class SubmitJobScreen extends ConsumerStatefulWidget {
 
 class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
   final _promptController = TextEditingController();
+  final _workingDirController = TextEditingController();
+  final _timeoutController = TextEditingController(text: '1800');
+  final _outputPathController = TextEditingController();
+  final _webhookUrlController = TextEditingController();
+  final _allowedToolsController = TextEditingController();
   String? _model;
   double _priority = 5;
   final _selectedSkills = <String>{};
   List<Skill> _availableSkills = [];
   bool _submitting = false;
+  bool _showAdvanced = false;
+  String _outputType = 'redis'; // redis, file, webhook
 
   @override
   void initState() {
@@ -32,17 +39,42 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
     } catch (_) {}
   }
 
+  Map<String, dynamic>? _buildOutputDest() {
+    switch (_outputType) {
+      case 'file':
+        final path = _outputPathController.text.trim();
+        if (path.isEmpty) return null;
+        return {'File': {'path': path}};
+      case 'webhook':
+        final url = _webhookUrlController.text.trim();
+        if (url.isEmpty) return null;
+        return {'Webhook': {'url': url}};
+      default:
+        return null; // Redis is default
+    }
+  }
+
   Future<void> _submit() async {
     final prompt = _promptController.text.trim();
     if (prompt.isEmpty) return;
 
     setState(() => _submitting = true);
     try {
+      final workingDir = _workingDirController.text.trim();
+      final timeout = int.tryParse(_timeoutController.text.trim());
+      final allowedTools = _allowedToolsController.text.trim();
+
       final resp = await ref.read(apiClientProvider).submitJob(
             prompt: prompt,
             skillIds: _selectedSkills.toList(),
             model: _model,
             priority: _priority.round(),
+            workingDir: workingDir.isEmpty ? null : workingDir,
+            timeoutSecs: timeout,
+            outputDest: _buildOutputDest(),
+            allowedTools: allowedTools.isEmpty
+                ? null
+                : allowedTools.split(',').map((t) => t.trim()).toList(),
           );
       if (mounted) {
         context.go('/jobs/${resp['id']}');
@@ -60,6 +92,11 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
   @override
   void dispose() {
     _promptController.dispose();
+    _workingDirController.dispose();
+    _timeoutController.dispose();
+    _outputPathController.dispose();
+    _webhookUrlController.dispose();
+    _allowedToolsController.dispose();
     super.dispose();
   }
 
@@ -123,7 +160,6 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                   // Model + Priority row
                   Row(
                     children: [
-                      // Model
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -153,7 +189,6 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                         ),
                       ),
                       const SizedBox(width: 24),
-                      // Priority
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -171,6 +206,86 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                               onChanged: (v) =>
                                   setState(() => _priority = v),
                             ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Advanced Options
+                  ExpansionTile(
+                    title: const Text('Advanced Options'),
+                    initiallyExpanded: _showAdvanced,
+                    onExpansionChanged: (v) => setState(() => _showAdvanced = v),
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            TextField(
+                              controller: _workingDirController,
+                              decoration: const InputDecoration(
+                                labelText: 'Working Directory',
+                                hintText: '/path/to/project',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _timeoutController,
+                              decoration: const InputDecoration(
+                                labelText: 'Timeout (seconds)',
+                                border: OutlineInputBorder(),
+                              ),
+                              keyboardType: TextInputType.number,
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _allowedToolsController,
+                              decoration: const InputDecoration(
+                                labelText: 'Allowed Tools (comma-separated)',
+                                hintText: 'Read,Grep,Glob',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            Text('Output Destination',
+                                style: Theme.of(context).textTheme.titleSmall),
+                            const SizedBox(height: 8),
+                            SegmentedButton<String>(
+                              segments: const [
+                                ButtonSegment(value: 'redis', label: Text('Redis')),
+                                ButtonSegment(value: 'file', label: Text('File')),
+                                ButtonSegment(value: 'webhook', label: Text('Webhook')),
+                              ],
+                              selected: {_outputType},
+                              onSelectionChanged: (v) =>
+                                  setState(() => _outputType = v.first),
+                            ),
+                            if (_outputType == 'file') ...[
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _outputPathController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Output Directory',
+                                  hintText: '/path/to/output',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                            ],
+                            if (_outputType == 'webhook') ...[
+                              const SizedBox(height: 8),
+                              TextField(
+                                controller: _webhookUrlController,
+                                decoration: const InputDecoration(
+                                  labelText: 'Webhook URL',
+                                  hintText: 'https://example.com/webhook',
+                                  border: OutlineInputBorder(),
+                                ),
+                              ),
+                            ],
                           ],
                         ),
                       ),

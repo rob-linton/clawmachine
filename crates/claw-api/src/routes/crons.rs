@@ -13,7 +13,7 @@ use crate::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/crons", post(create_cron).get(list_crons))
-        .route("/crons/{id}", get(get_cron).delete(delete_cron))
+        .route("/crons/{id}", get(get_cron).put(update_cron).delete(delete_cron))
         .route("/crons/{id}/trigger", post(trigger_cron))
 }
 
@@ -48,6 +48,48 @@ async fn get_cron(
     match claw_redis::get_cron(&state.pool, id).await {
         Ok(Some(c)) => Json(c).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_cron(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<CreateCronRequest>,
+) -> impl IntoResponse {
+    // Validate cron expression
+    if cron::Schedule::from_str(&req.schedule).is_err() {
+        return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({
+            "error": format!("Invalid cron expression: {}", req.schedule)
+        }))).into_response();
+    }
+
+    let existing = match claw_redis::get_cron(&state.pool, id).await {
+        Ok(Some(c)) => c,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let updated = CronSchedule {
+        id,
+        name: req.name,
+        schedule: req.schedule,
+        enabled: req.enabled,
+        prompt: req.prompt,
+        skill_ids: req.skill_ids,
+        working_dir: req.working_dir.unwrap_or_else(|| ".".into()),
+        model: req.model,
+        max_budget_usd: req.max_budget_usd,
+        output_dest: req.output_dest,
+        tags: req.tags,
+        priority: req.priority.unwrap_or(5),
+        last_run: existing.last_run,
+        last_job_id: existing.last_job_id,
+        created_at: existing.created_at,
+    };
+
+    match claw_redis::update_cron(&state.pool, &updated).await {
+        Ok(()) => Json(updated).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }

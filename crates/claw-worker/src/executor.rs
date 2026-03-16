@@ -34,6 +34,12 @@ pub async fn execute_job(
         cmd.arg("--model").arg(model);
     }
 
+    if let Some(tools) = &job.allowed_tools {
+        if !tools.is_empty() {
+            cmd.arg("--allowedTools").arg(tools.join(","));
+        }
+    }
+
     let wd = &job.working_dir;
     if wd.exists() && wd.is_dir() {
         cmd.current_dir(wd);

@@ -34,6 +34,18 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
   }
 
   Future<void> _delete(String id) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Skill'),
+        content: const Text('Are you sure?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
     try {
       await ref.read(apiClientProvider).deleteSkill(id);
       _refresh();
@@ -45,68 +57,129 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
     }
   }
 
-  void _showDetail(Skill skill) {
-    showDialog(
+  Future<void> _showCreateEditDialog({Skill? existing}) async {
+    final idCtrl = TextEditingController(text: existing?.id ?? '');
+    final nameCtrl = TextEditingController(text: existing?.name ?? '');
+    final descCtrl = TextEditingController(text: existing?.description ?? '');
+    final contentCtrl = TextEditingController(text: existing?.content ?? '');
+    final tagsCtrl = TextEditingController(text: existing?.tags.join(', ') ?? '');
+    String skillType = existing?.skillType ?? 'template';
+    String? errorText;
+    final isEdit = existing != null;
+
+    final saved = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: Text(skill.name),
-        content: SizedBox(
-          width: 600,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _infoRow('ID', skill.id),
-                _infoRow('Type', skill.skillType),
-                _infoRow('Description', skill.description),
-                if (skill.tags.isNotEmpty)
-                  _infoRow('Tags', skill.tags.join(', ')),
-                const SizedBox(height: 16),
-                const Text('Content:',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(8),
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(isEdit ? 'Edit Skill' : 'New Skill'),
+          content: SizedBox(
+            width: 600,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (!isEdit)
+                    TextField(
+                      controller: idCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'ID',
+                        helperText: 'Unique identifier (e.g. code-review)',
+                      ),
+                    ),
+                  if (!isEdit) const SizedBox(height: 12),
+                  TextField(
+                    controller: nameCtrl,
+                    decoration: const InputDecoration(labelText: 'Name'),
                   ),
-                  child: SelectableText(
-                    skill.content,
-                    style: const TextStyle(
-                        fontFamily: 'monospace', fontSize: 13),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: skillType,
+                    decoration: const InputDecoration(labelText: 'Type'),
+                    items: const [
+                      DropdownMenuItem(value: 'template', child: Text('Template')),
+                      DropdownMenuItem(value: 'claude_config', child: Text('Claude Config')),
+                      DropdownMenuItem(value: 'script', child: Text('Script')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) setDialogState(() => skillType = v);
+                    },
                   ),
-                ),
-              ],
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: descCtrl,
+                    decoration: const InputDecoration(labelText: 'Description'),
+                    maxLines: 2,
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: contentCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Content',
+                      alignLabelWithHint: true,
+                    ),
+                    maxLines: 8,
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: tagsCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Tags (comma-separated)',
+                    ),
+                  ),
+                  if (errorText != null) ...[
+                    const SizedBox(height: 8),
+                    Text(errorText!, style: const TextStyle(color: Colors.red)),
+                  ],
+                ],
+              ),
             ),
           ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                final id = isEdit ? existing.id : idCtrl.text.trim();
+                final name = nameCtrl.text.trim();
+                final content = contentCtrl.text.trim();
+                if (id.isEmpty || name.isEmpty || content.isEmpty) {
+                  setDialogState(() => errorText = 'ID, name, and content are required');
+                  return;
+                }
+                final tags = tagsCtrl.text
+                    .split(',')
+                    .map((t) => t.trim())
+                    .where((t) => t.isNotEmpty)
+                    .toList();
+                final skill = Skill(
+                  id: id,
+                  name: name,
+                  skillType: skillType,
+                  content: content,
+                  description: descCtrl.text.trim(),
+                  tags: tags,
+                );
+                try {
+                  final api = ref.read(apiClientProvider);
+                  if (isEdit) {
+                    await api.updateSkill(id, skill);
+                  } else {
+                    await api.createSkill(skill);
+                  }
+                  if (ctx.mounted) Navigator.pop(ctx, true);
+                } catch (e) {
+                  setDialogState(() => errorText = 'Failed: $e');
+                }
+              },
+              child: Text(isEdit ? 'Save' : 'Create'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Close'),
-          ),
-        ],
       ),
     );
-  }
-
-  Widget _infoRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-              width: 90,
-              child: Text('$label:',
-                  style: const TextStyle(fontWeight: FontWeight.bold))),
-          Expanded(child: Text(value)),
-        ],
-      ),
-    );
+    if (saved == true) _refresh();
   }
 
   @override
@@ -118,9 +191,15 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
         children: [
           Row(
             children: [
-              Text('Skills',
-                  style: Theme.of(context).textTheme.headlineMedium),
+              Semantics(header: true, label: 'Skills', child: Text('Skills',
+                  style: Theme.of(context).textTheme.headlineMedium)),
               const Spacer(),
+              FilledButton.icon(
+                onPressed: () => _showCreateEditDialog(),
+                icon: const Icon(Icons.add),
+                label: const Text('New Skill'),
+              ),
+              const SizedBox(width: 8),
               IconButton(
                   onPressed: _refresh, icon: const Icon(Icons.refresh)),
             ],
@@ -130,7 +209,7 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
             const Expanded(
                 child: Center(child: CircularProgressIndicator()))
           else if (_skills.isEmpty)
-            const Expanded(child: Center(child: Text('No skills created yet. Use the CLI to create skills.')))
+            const Expanded(child: Center(child: Text('No skills created yet.')))
           else
             Expanded(
               child: GridView.builder(
@@ -145,8 +224,10 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                   final skill = _skills[i];
                   return Card(
                     clipBehavior: Clip.antiAlias,
-                    child: InkWell(
-                      onTap: () => _showDetail(skill),
+                    child: Semantics(
+                      label: 'Skill ${skill.name}',
+                      child: InkWell(
+                      onTap: () => _showCreateEditDialog(existing: skill),
                       child: Padding(
                         padding: const EdgeInsets.all(16),
                         child: Column(
@@ -155,10 +236,10 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                             Row(
                               children: [
                                 Expanded(
-                                  child: Text(skill.name,
+                                  child: Semantics(label: 'Skill ${skill.name}', child: Text(skill.name,
                                       style: Theme.of(context)
                                           .textTheme
-                                          .titleMedium),
+                                          .titleMedium)),
                                 ),
                                 IconButton(
                                   icon: const Icon(Icons.delete, size: 18),
@@ -199,7 +280,7 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                         ),
                       ),
                     ),
-                  );
+                  ));
                 },
               ),
             ),

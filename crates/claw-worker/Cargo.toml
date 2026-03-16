@@ -17,3 +17,4 @@ uuid = { workspace = true }
 hostname = "0.4"
 reqwest = { workspace = true }
 tokio-util = { workspace = true }
+chrono.workspace = true

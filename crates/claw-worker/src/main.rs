@@ -178,6 +178,26 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                             tracing::error!(job_id = %job_id, error = %e, "Failed to store completion");
                         }
 
+                        // File output if configured
+                        if let claw_models::OutputDest::File { path } = &job.output_dest {
+                            if let Err(e) = tokio::fs::create_dir_all(path).await {
+                                tracing::warn!(job_id = %job_id, error = %e, "Failed to create output dir");
+                            } else {
+                                let out_path = path.join(format!("{}.json", job_id));
+                                let payload = serde_json::json!({
+                                    "job_id": job_id.to_string(),
+                                    "result": r.result_text,
+                                    "cost_usd": r.cost_usd,
+                                    "duration_ms": r.duration_ms,
+                                    "completed_at": chrono::Utc::now().to_rfc3339(),
+                                });
+                                match tokio::fs::write(&out_path, serde_json::to_string_pretty(&payload).unwrap_or_default()).await {
+                                    Ok(()) => tracing::info!(job_id = %job_id, path = %out_path.display(), "File output written"),
+                                    Err(e) => tracing::warn!(job_id = %job_id, error = %e, "Failed to write file output"),
+                                }
+                            }
+                        }
+
                         // Webhook output if configured
                         if let claw_models::OutputDest::Webhook { url } = &job.output_dest {
                             let payload = serde_json::json!({
@@ -212,8 +232,32 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                             if let Err(re) = claw_redis::cancel_job(&pool, job_id).await {
                                 tracing::error!(job_id = %job_id, error = %re, "Failed to store cancellation");
                             }
-                        } else if let Err(re) = claw_redis::fail_job(&pool, job_id, &e).await {
-                            tracing::error!(job_id = %job_id, error = %re, "Failed to store failure");
+                        } else {
+                            if let Err(re) = claw_redis::fail_job(&pool, job_id, &e).await {
+                                tracing::error!(job_id = %job_id, error = %re, "Failed to store failure");
+                            }
+                            // Failure webhook
+                            if let Ok(url) = std::env::var("CLAW_FAILURE_WEBHOOK_URL") {
+                                let prompt_preview: String = job.prompt.chars().take(200).collect();
+                                let payload = serde_json::json!({
+                                    "job_id": job_id.to_string(),
+                                    "prompt_preview": prompt_preview,
+                                    "error": e,
+                                    "source": format!("{:?}", job.source),
+                                    "worker_id": task_id,
+                                    "failed_at": chrono::Utc::now().to_rfc3339(),
+                                });
+                                match reqwest::Client::new()
+                                    .post(&url)
+                                    .json(&payload)
+                                    .timeout(std::time::Duration::from_secs(10))
+                                    .send()
+                                    .await
+                                {
+                                    Ok(resp) => tracing::info!(job_id = %job_id, status = %resp.status(), "Failure webhook delivered"),
+                                    Err(we) => tracing::error!(job_id = %job_id, error = %we, "Failure webhook failed"),
+                                }
+                            }
                         }
                         let event = serde_json::json!({
                             "type": "job_update",

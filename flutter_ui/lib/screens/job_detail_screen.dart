@@ -1,5 +1,7 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../main.dart';
 import '../models/job.dart';
 import '../widgets/status_badge.dart';
@@ -34,7 +36,6 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
         _loading = false;
       });
 
-      // Load result if completed
       if (job.status == 'completed') {
         try {
           final result = await api.getResult(widget.jobId);
@@ -42,7 +43,6 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
         } catch (_) {}
       }
 
-      // Load logs
       try {
         final logs = await api.getLogs(widget.jobId);
         setState(() => _logs = logs);
@@ -64,6 +64,60 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
     }
   }
 
+  Future<void> _delete() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete Job'),
+        content: const Text('Delete this job and all its data?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await ref.read(apiClientProvider).deleteJob(widget.jobId);
+      if (mounted) context.go('/jobs');
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _resubmit() async {
+    final job = _job;
+    if (job == null) return;
+    try {
+      final resp = await ref.read(apiClientProvider).submitJob(
+            prompt: job.prompt,
+            skillIds: job.skillIds,
+            skillTags: job.skillTags,
+            model: job.model,
+            priority: job.priority,
+            tags: job.tags,
+            workingDir: job.workingDir != '.' ? job.workingDir : null,
+            outputDest: job.outputDest,
+            allowedTools: job.allowedTools,
+          );
+      if (mounted) {
+        context.go('/jobs/${resp['id']}');
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Re-submit failed: $e')));
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (_loading) {
@@ -73,6 +127,10 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
     if (job == null) {
       return const Center(child: Text('Job not found'));
     }
+
+    final isTerminal = job.status == 'completed' ||
+        job.status == 'failed' ||
+        job.status == 'cancelled';
 
     return Padding(
       padding: const EdgeInsets.all(24),
@@ -85,7 +143,7 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
               children: [
                 IconButton(
                   icon: const Icon(Icons.arrow_back),
-                  onPressed: () => Navigator.of(context).maybePop(),
+                  onPressed: () => context.go('/jobs'),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
@@ -93,13 +151,27 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
                       style: Theme.of(context).textTheme.headlineMedium),
                 ),
                 StatusBadge(status: job.status),
-                const SizedBox(width: 16),
+                const SizedBox(width: 8),
                 if (job.status == 'pending' || job.status == 'running')
                   OutlinedButton.icon(
                     onPressed: _cancel,
                     icon: const Icon(Icons.cancel),
                     label: const Text('Cancel'),
                   ),
+                if (isTerminal) ...[
+                  OutlinedButton.icon(
+                    onPressed: _resubmit,
+                    icon: const Icon(Icons.replay),
+                    label: const Text('Re-submit'),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton.icon(
+                    onPressed: _delete,
+                    icon: const Icon(Icons.delete, color: Colors.red),
+                    label: const Text('Delete'),
+                  ),
+                ],
+                const SizedBox(width: 8),
                 IconButton(
                     onPressed: _refresh, icon: const Icon(Icons.refresh)),
               ],
@@ -115,11 +187,10 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
                   children: [
                     _row('ID', job.id),
                     _row('Status', job.status),
+                    if (job.source != null) _row('Source', job.source!),
                     _row('Created', job.createdAt),
-                    if (job.startedAt != null)
-                      _row('Started', job.startedAt!),
-                    if (job.completedAt != null)
-                      _row('Completed', job.completedAt!),
+                    if (job.startedAt != null) _row('Started', job.startedAt!),
+                    if (job.completedAt != null) _row('Completed', job.completedAt!),
                     if (job.model != null) _row('Model', job.model!),
                     if (job.workerId != null) _row('Worker', job.workerId!),
                     if (job.costUsd != null)
@@ -127,6 +198,17 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
                     if (job.durationMs != null)
                       _row('Duration',
                           '${(job.durationMs! / 1000).toStringAsFixed(1)}s'),
+                    if (job.workingDir != '.')
+                      _row('Working Dir', job.workingDir),
+                    if (job.timeoutSecs != null)
+                      _row('Timeout', '${job.timeoutSecs}s'),
+                    if (job.retryCount > 0)
+                      _row('Retries', job.retryCount.toString()),
+                    if (job.cronId != null) _row('Cron ID', job.cronId!),
+                    _row('Priority', job.priority.toString()),
+                    if (job.tags.isNotEmpty) _row('Tags', job.tags.join(', ')),
+                    if (job.skillIds.isNotEmpty)
+                      _row('Skills', job.skillIds.join(', ')),
                     if (job.error != null) _row('Error', job.error!),
                   ],
                 ),
@@ -159,6 +241,43 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
                 ),
               ),
               const SizedBox(height: 16),
+            ],
+
+            // Skill Snapshot
+            if (job.skillSnapshot != null) ...[
+              ExpansionTile(
+                title: const Text('Skill Snapshot'),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: SelectableText(
+                      const JsonEncoder.withIndent('  ')
+                          .convert(job.skillSnapshot),
+                      style: const TextStyle(
+                          fontFamily: 'monospace', fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+            ],
+
+            // Assembled Prompt
+            if (job.assembledPrompt != null) ...[
+              ExpansionTile(
+                title: const Text('Assembled Prompt'),
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: SelectableText(
+                      job.assembledPrompt!,
+                      style: const TextStyle(
+                          fontFamily: 'monospace', fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
             ],
 
             // Logs

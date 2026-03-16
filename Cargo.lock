@@ -344,6 +344,7 @@ dependencies = [
 name = "claw-worker"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "claw-models",
  "claw-redis",
  "deadpool-redis",
