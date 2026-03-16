@@ -41,12 +41,14 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
     final nameCtrl = TextEditingController();
     final descCtrl = TextEditingController();
     final steps = <Map<String, TextEditingController>>[];
+    final stepModels = <String?>[]; // model per step
 
     void addStep() {
       steps.add({
         'name': TextEditingController(),
         'prompt': TextEditingController(),
       });
+      stepModels.add(null);
     }
 
     addStep(); // Start with one step
@@ -93,7 +95,7 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                                   IconButton(
                                     icon: const Icon(Icons.delete, size: 18),
                                     onPressed: () =>
-                                        setDialogState(() => steps.removeAt(i)),
+                                        setDialogState(() { steps.removeAt(i); stepModels.removeAt(i); }),
                                   ),
                               ],
                             ),
@@ -115,6 +117,19 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                               maxLines: 3,
                               style: const TextStyle(
                                   fontFamily: 'monospace', fontSize: 13),
+                            ),
+                            const SizedBox(height: 8),
+                            DropdownButtonFormField<String?>(
+                              value: stepModels[i],
+                              decoration: const InputDecoration(
+                                  labelText: 'Model', isDense: true),
+                              items: const [
+                                DropdownMenuItem(value: null, child: Text('Default')),
+                                DropdownMenuItem(value: 'sonnet', child: Text('Sonnet')),
+                                DropdownMenuItem(value: 'opus', child: Text('Opus')),
+                                DropdownMenuItem(value: 'haiku', child: Text('Haiku')),
+                              ],
+                              onChanged: (v) => setDialogState(() => stepModels[i] = v),
                             ),
                           ],
                         ),
@@ -154,11 +169,15 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                     'name': nameCtrl.text.trim(),
                     'description': descCtrl.text.trim(),
                     'steps': steps
-                        .map((s) => <String, dynamic>{
-                              'name': s['name']!.text.trim().isEmpty
-                                  ? 'Step'
-                                  : s['name']!.text.trim(),
-                              'prompt': s['prompt']!.text.trim(),
+                        .asMap()
+                        .entries
+                        .map((entry) => <String, dynamic>{
+                              'name': entry.value['name']!.text.trim().isEmpty
+                                  ? 'Step ${entry.key + 1}'
+                                  : entry.value['name']!.text.trim(),
+                              'prompt': entry.value['prompt']!.text.trim(),
+                              if (stepModels[entry.key] != null)
+                                'model': stepModels[entry.key],
                             })
                         .toList(),
                   });

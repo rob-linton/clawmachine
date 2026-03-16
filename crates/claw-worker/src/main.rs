@@ -154,22 +154,26 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     None
                 };
 
-                // 2. Acquire workspace lock (if persistent workspace)
-                if let Some(ws_id) = job.workspace_id {
-                    let ttl = job.timeout_secs.unwrap_or(1800) + 60;
-                    match claw_redis::acquire_workspace_lock(&pool, ws_id, job_id, ttl).await {
-                        Ok(true) => {} // Lock acquired
-                        Ok(false) => {
-                            // Workspace busy — re-queue
-                            claw_redis::requeue_job(&pool, job_id, job.priority).await.ok();
-                            tracing::info!(job_id = %job_id, workspace_id = %ws_id, "Workspace locked, re-queued");
-                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                            continue;
-                        }
-                        Err(e) => {
-                            tracing::error!(job_id = %job_id, error = %e, "Failed to acquire workspace lock");
-                            claw_redis::fail_job(&pool, job_id, &format!("Workspace lock failed: {e}")).await.ok();
-                            continue;
+                // 2. Acquire workspace lock (if persistent workspace, and not part of a pipeline)
+                // Pipeline jobs skip per-job locking — the pipeline runner manages the lock
+                let is_pipeline_job = job.pipeline_run_id.is_some();
+                if !is_pipeline_job {
+                    if let Some(ws_id) = job.workspace_id {
+                        let ttl = job.timeout_secs.unwrap_or(1800) + 60;
+                        match claw_redis::acquire_workspace_lock(&pool, ws_id, job_id, ttl).await {
+                            Ok(true) => {} // Lock acquired
+                            Ok(false) => {
+                                // Workspace busy — re-queue
+                                claw_redis::requeue_job(&pool, job_id, job.priority).await.ok();
+                                tracing::info!(job_id = %job_id, workspace_id = %ws_id, "Workspace locked, re-queued");
+                                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                continue;
+                            }
+                            Err(e) => {
+                                tracing::error!(job_id = %job_id, error = %e, "Failed to acquire workspace lock");
+                                claw_redis::fail_job(&pool, job_id, &format!("Workspace lock failed: {e}")).await.ok();
+                                continue;
+                            }
                         }
                     }
                 }
@@ -283,9 +287,11 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     }).await.ok();
                 }
 
-                // 9. Release workspace lock
-                if let Some(ws_id) = job.workspace_id {
-                    claw_redis::release_workspace_lock(&pool, ws_id, job_id).await.ok();
+                // 9. Release workspace lock (skip for pipeline jobs — pipeline runner handles it)
+                if !is_pipeline_job {
+                    if let Some(ws_id) = job.workspace_id {
+                        claw_redis::release_workspace_lock(&pool, ws_id, job_id).await.ok();
+                    }
                 }
 
                 // 10. Handle result

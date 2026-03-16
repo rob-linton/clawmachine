@@ -26,6 +26,7 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
   List<Skill> _availableSkills = [];
   List<Workspace> _availableWorkspaces = [];
   List<Job> _recentJobs = [];
+  List<String> _workspaceSkillNames = [];
   final _selectedPreviousJobs = <String>{};
   String? _selectedWorkspaceId;
   bool _submitting = false;
@@ -83,6 +84,44 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
       default:
         return null; // Redis is default
     }
+  }
+
+  Future<void> _loadWorkspaceSkills(String? wsId) async {
+    if (wsId == null) {
+      setState(() => _workspaceSkillNames = []);
+      return;
+    }
+    try {
+      final files = await ref.read(apiClientProvider).listWorkspaceFiles(wsId);
+      final skillNames = <String>[];
+      for (final f in files) {
+        final path = (f['path'] ?? '').toString();
+        // Match .claude/skills/*/SKILL.md
+        if (path.startsWith('.claude/skills/') && path.endsWith('/SKILL.md')) {
+          final parts = path.split('/');
+          if (parts.length >= 4) {
+            skillNames.add(parts[2]); // the skill directory name
+          }
+        }
+      }
+      setState(() => _workspaceSkillNames = skillNames);
+    } catch (_) {
+      setState(() => _workspaceSkillNames = []);
+    }
+  }
+
+  int _estimatePromptSize() {
+    var size = _promptController.text.length;
+    // Add context from selected previous results
+    for (final jobId in _selectedPreviousJobs) {
+      final job = _recentJobs.where((j) => j.id == jobId).firstOrNull;
+      if (job != null) {
+        size += job.prompt.length.clamp(0, 200) + 100; // approximate context wrapper
+      }
+    }
+    // Add metadata overhead
+    size += 100; // [Job ID: ...] [Source: ...] etc.
+    return size;
   }
 
   String _buildPromptWithContext() {
@@ -183,9 +222,29 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                   ),
                   const SizedBox(height: 24),
 
-                  // Skills
+                  // Workspace Skills (read-only info)
+                  if (_workspaceSkillNames.isNotEmpty) ...[
+                    Text('Workspace Skills (already in workspace)',
+                        style: Theme.of(context).textTheme.titleSmall),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      children: _workspaceSkillNames
+                          .map((name) => Chip(
+                                label: Text(name, style: const TextStyle(fontSize: 12)),
+                                backgroundColor: Colors.green.withValues(alpha: 0.15),
+                                visualDensity: VisualDensity.compact,
+                              ))
+                          .toList(),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+
+                  // Additional Skills (injected at job time)
                   if (_availableSkills.isNotEmpty) ...[
-                    Text('Skills',
+                    Text(_workspaceSkillNames.isNotEmpty
+                            ? 'Additional Skills (injected for this job)'
+                            : 'Skills',
                         style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(height: 8),
                     Wrap(
@@ -209,6 +268,12 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                     ),
                     const SizedBox(height: 24),
                   ],
+                  if (_availableSkills.isEmpty && _workspaceSkillNames.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 16),
+                      child: Text('No skills imported yet. Go to Skills to import.',
+                          style: TextStyle(color: Colors.grey[500], fontSize: 13)),
+                    ),
 
                   // Model + Priority row
                   Row(
@@ -334,7 +399,10 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                                     )),
                               ],
                               onChanged: (v) =>
-                                  setState(() => _selectedWorkspaceId = v),
+                                  setState(() {
+                                    _selectedWorkspaceId = v;
+                                    _loadWorkspaceSkills(v);
+                                  }),
                             ),
                             const SizedBox(height: 12),
                             if (_selectedWorkspaceId == null)
@@ -406,7 +474,23 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 32),
+                  const SizedBox(height: 16),
+
+                  // Prompt size estimate
+                  Builder(builder: (context) {
+                    final size = _estimatePromptSize();
+                    final sizeKb = (size / 1024).toStringAsFixed(1);
+                    final color = size > 50000
+                        ? Colors.red
+                        : size > 20000
+                            ? Colors.orange
+                            : Colors.grey;
+                    return Text(
+                      'Estimated prompt size: ~$sizeKb KB ($size chars)',
+                      style: TextStyle(fontSize: 12, color: color),
+                    );
+                  }),
+                  const SizedBox(height: 16),
 
                   // Submit button
                   SizedBox(

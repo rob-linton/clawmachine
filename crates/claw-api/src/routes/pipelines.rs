@@ -81,6 +81,22 @@ async fn run_pipeline(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     };
 
+    // Acquire workspace lock for the entire pipeline run
+    if let Some(ws_id) = pipeline.workspace_id {
+        let ttl = pipeline.steps.iter()
+            .map(|s| s.timeout_secs.unwrap_or(1800))
+            .sum::<u64>() + 120; // sum of all step timeouts + buffer
+        match claw_redis::acquire_workspace_lock(&state.pool, ws_id, run.id, ttl).await {
+            Ok(true) => {}
+            Ok(false) => {
+                return (StatusCode::CONFLICT, Json(serde_json::json!({"error": "Workspace is busy"}))).into_response();
+            }
+            Err(e) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Lock failed: {e}")}))).into_response();
+            }
+        }
+    }
+
     // Submit first step as a job
     let step = &pipeline.steps[0];
     let req = CreateJobRequest {
