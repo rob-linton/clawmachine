@@ -236,9 +236,9 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                     DropdownButtonFormField<String?>(
                       value: null,
                       decoration: const InputDecoration(
-                        labelText: 'Use Template (optional)',
+                        labelText: 'Template',
                         border: OutlineInputBorder(),
-                        helperText: 'Select a template to pre-fill the form',
+                        helperText: 'Pre-fill from a saved template',
                       ),
                       items: [
                         const DropdownMenuItem(value: null, child: Text('None (ad-hoc)')),

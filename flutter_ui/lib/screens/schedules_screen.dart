@@ -87,6 +87,11 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
     String? model = existing?.model;
     int priority = existing?.priority ?? 5;
     bool enabled = existing?.enabled ?? true;
+    String? selectedTemplateId;
+    List<dynamic> templates = [];
+    try {
+      templates = await ref.read(apiClientProvider).listJobTemplates();
+    } catch (_) {}
     String? errorText;
 
     final saved = await showDialog<bool>(
@@ -105,6 +110,34 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                     decoration: const InputDecoration(labelText: 'Name'),
                   ),
                   const SizedBox(height: 12),
+                  if (templates.isNotEmpty)
+                    DropdownButtonFormField<String?>(
+                      value: selectedTemplateId,
+                      decoration: const InputDecoration(
+                        labelText: 'Template (optional)',
+                        helperText: 'Use a template instead of inline prompt',
+                      ),
+                      items: [
+                        const DropdownMenuItem(value: null, child: Text('None (inline)')),
+                        ...templates.map((t) => DropdownMenuItem(
+                              value: t['id'] as String?,
+                              child: Text(t['name'] ?? ''),
+                            )),
+                      ],
+                      onChanged: (id) {
+                        setDialogState(() {
+                          selectedTemplateId = id;
+                          if (id != null) {
+                            final tmpl = templates.firstWhere((t) => t['id'] == id, orElse: () => null);
+                            if (tmpl != null) {
+                              promptCtrl.text = tmpl['prompt'] ?? '';
+                              model = tmpl['model'];
+                            }
+                          }
+                        });
+                      },
+                    ),
+                  if (templates.isNotEmpty) const SizedBox(height: 12),
                   TextField(
                     controller: scheduleCtrl,
                     decoration: InputDecoration(
@@ -184,6 +217,8 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                   if (model != null) 'model': model,
                   if (workingDirCtrl.text.isNotEmpty)
                     'working_dir': workingDirCtrl.text,
+                  if (selectedTemplateId != null)
+                    'template_id': selectedTemplateId,
                 };
                 try {
                   final api = ref.read(apiClientProvider);

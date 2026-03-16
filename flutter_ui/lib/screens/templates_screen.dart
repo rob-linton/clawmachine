@@ -60,6 +60,94 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
     }
   }
 
+  Future<void> _showEditDialog(dynamic template) async {
+    final nameCtrl = TextEditingController(text: template['name'] ?? '');
+    final descCtrl = TextEditingController(text: template['description'] ?? '');
+    final promptCtrl = TextEditingController(text: template['prompt'] ?? '');
+    String? model = template['model'];
+    String? errorText;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Edit Template'),
+          content: SizedBox(
+            width: 600,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextField(
+                    controller: nameCtrl,
+                    decoration: const InputDecoration(labelText: 'Name'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: descCtrl,
+                    decoration: const InputDecoration(labelText: 'Description'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: promptCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Prompt',
+                      alignLabelWithHint: true,
+                    ),
+                    maxLines: 6,
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String?>(
+                    value: model,
+                    decoration: const InputDecoration(labelText: 'Model'),
+                    items: const [
+                      DropdownMenuItem(value: null, child: Text('Default')),
+                      DropdownMenuItem(value: 'sonnet', child: Text('Sonnet')),
+                      DropdownMenuItem(value: 'opus', child: Text('Opus')),
+                      DropdownMenuItem(value: 'haiku', child: Text('Haiku')),
+                    ],
+                    onChanged: (v) => setDialogState(() => model = v),
+                  ),
+                  if (errorText != null) ...[
+                    const SizedBox(height: 8),
+                    Text(errorText!, style: const TextStyle(color: Colors.red)),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                if (nameCtrl.text.trim().isEmpty || promptCtrl.text.trim().isEmpty) {
+                  setDialogState(() => errorText = 'Name and prompt are required');
+                  return;
+                }
+                try {
+                  await ref.read(apiClientProvider).updateJobTemplate(template['id'], {
+                    'name': nameCtrl.text.trim(),
+                    'description': descCtrl.text.trim(),
+                    'prompt': promptCtrl.text.trim(),
+                    if (model != null) 'model': model,
+                  });
+                  if (ctx.mounted) Navigator.pop(ctx, true);
+                } catch (e) {
+                  setDialogState(() => errorText = 'Failed: $e');
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) _refresh();
+  }
+
   Future<void> _showCreateDialog() async {
     final nameCtrl = TextEditingController();
     final descCtrl = TextEditingController();
@@ -197,6 +285,7 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
                       : prompt;
                   return Card(
                     child: ListTile(
+                      onTap: () => _showEditDialog(t),
                       title: Semantics(
                         label: 'Template $name',
                         child: Text(name,

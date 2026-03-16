@@ -22,8 +22,21 @@ pub fn router() -> Router<AppState> {
 
 async fn create_job(
     State(state): State<AppState>,
-    Json(req): Json<CreateJobRequest>,
+    Json(mut req): Json<CreateJobRequest>,
 ) -> impl IntoResponse {
+    // If template_id is set, load template and merge fields (request fields override template)
+    if let Some(tmpl_id) = req.template_id {
+        if let Ok(Some(tmpl)) = claw_redis::get_job_template(&state.pool, tmpl_id).await {
+            if req.prompt.is_empty() { req.prompt = tmpl.prompt; }
+            if req.skill_ids.is_empty() { req.skill_ids = tmpl.skill_ids; }
+            if req.model.is_none() { req.model = tmpl.model; }
+            if req.workspace_id.is_none() { req.workspace_id = tmpl.workspace_id; }
+            if req.timeout_secs.is_none() { req.timeout_secs = tmpl.timeout_secs; }
+            if req.allowed_tools.is_none() { req.allowed_tools = tmpl.allowed_tools; }
+            if req.priority.is_none() { req.priority = Some(tmpl.priority); }
+            if req.tags.is_empty() { req.tags = tmpl.tags; }
+        }
+    }
     match claw_redis::submit_job(&state.pool, &req, JobSource::Api).await {
         Ok(job) => {
             let resp = CreateJobResponse {
