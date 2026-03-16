@@ -14,8 +14,10 @@ import 'screens/settings_screen.dart';
 import 'services/api_client.dart';
 import 'widgets/app_shell.dart';
 
+const _apiUrl = String.fromEnvironment('API_URL', defaultValue: 'http://localhost:8080');
+
 final apiClientProvider = Provider<ApiClient>((ref) {
-  return ApiClient('http://localhost:8080');
+  return ApiClient(_apiUrl);
 });
 
 final _router = GoRouter(

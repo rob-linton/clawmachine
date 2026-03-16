@@ -31,13 +31,31 @@ cargo run -p claw-cli                  # CLI tool
 
 ## Scripts
 
+**Development (two terminals):**
 ```bash
-./scripts/startup.sh                   # Build everything, start all services, open browser
+# Terminal 1: Backend (API + Worker + Scheduler)
+./scripts/backend.sh                   # Build + start all backend services (live output)
+./scripts/backend.sh stop              # Stop all backend services
+
+# Terminal 2: Frontend (Flutter hot reload)
+./scripts/frontend.sh                  # Flutter dev server on :3000 with hot reload
+./scripts/frontend.sh build            # Build release version for production
+```
+
+**Other scripts:**
+```bash
+./scripts/startup.sh                   # All-in-one: build + start everything + open browser
 ./scripts/startup.sh stop              # Stop all services
-./scripts/startup.sh --dev             # Start backend + Flutter hot reload on :3000
 ./scripts/submit.sh "your prompt"      # Submit a job to Redis
 ./scripts/result.sh <job_id>           # Check job status and result
 ```
+
+**Log files:** All output is tee'd to `.logs/`:
+- `.logs/api.log`, `.logs/worker.log`, `.logs/scheduler.log` — backend service logs
+- `.logs/flutter-dev.log` — Flutter dev server output
+- `.logs/build-rust.log`, `.logs/build-flutter.log` — build output
+
+**Frontend config:** `flutter_ui/.env.dev` sets `API_URL` for development.
 
 ## Prerequisites
 
