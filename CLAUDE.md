@@ -32,11 +32,9 @@ cargo run -p claw-cli                  # CLI tool
 ## Scripts
 
 ```bash
-./scripts/dev.sh                       # Start backend (Redis + API + Worker + Scheduler)
-./scripts/dev.sh stop                  # Stop backend
-./scripts/startup.sh                   # Build + serve Flutter admin console
-./scripts/startup.sh --dev             # Flutter hot reload on :3000
-./scripts/startup.sh --build           # Build Flutter only
+./scripts/startup.sh                   # Build everything, start all services, open browser
+./scripts/startup.sh stop              # Stop all services
+./scripts/startup.sh --dev             # Start backend + Flutter hot reload on :3000
 ./scripts/submit.sh "your prompt"      # Submit a job to Redis
 ./scripts/result.sh <job_id>           # Check job status and result
 ```
