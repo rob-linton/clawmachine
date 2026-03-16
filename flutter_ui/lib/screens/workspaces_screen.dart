@@ -1,11 +1,11 @@
 import 'dart:typed_data';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../main.dart';
 import '../models/workspace.dart';
+import '../services/file_upload.dart';
 
 class WorkspacesScreen extends ConsumerStatefulWidget {
   const WorkspacesScreen({super.key});
@@ -494,11 +494,11 @@ class _WorkspaceDetailScreenState
   }
 
   Future<void> _uploadZip() async {
-    final FilePickerResult result;
+    final PickedFile file;
     try {
-      final r = await FilePicker.platform.pickFiles(withData: true);
-      if (r == null || r.files.isEmpty) return;
-      result = r;
+      final picked = await pickFile(accept: '.zip');
+      if (picked == null) return;
+      file = picked;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -507,7 +507,6 @@ class _WorkspaceDetailScreenState
       return;
     }
 
-    final file = result.files.single;
     if (!file.name.endsWith('.zip')) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -517,20 +516,13 @@ class _WorkspaceDetailScreenState
     }
 
     final bytes = file.bytes;
-    if (bytes == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Failed to read file')));
-      }
-      return;
-    }
 
     // Optional: ask for subdirectory prefix
     final prefixCtrl = TextEditingController();
     final shouldUpload = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Upload ${result.files.single.name}'),
+        title: Text('Upload ${file.name}'),
         content: SizedBox(
           width: 400,
           child: Column(

@@ -1,9 +1,9 @@
 import 'dart:typed_data';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../main.dart';
 import '../models/skill.dart';
+import '../services/file_upload.dart';
 
 class SkillsScreen extends ConsumerStatefulWidget {
   const SkillsScreen({super.key});
@@ -60,11 +60,11 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
   }
 
   Future<void> _importSkillZip() async {
-    final FilePickerResult result;
+    final PickedFile file;
     try {
-      final r = await FilePicker.platform.pickFiles(withData: true);
-      if (r == null || r.files.isEmpty) return;
-      result = r;
+      final picked = await pickFile(accept: '.zip');
+      if (picked == null) return;
+      file = picked;
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -73,7 +73,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
       return;
     }
 
-    final file = result.files.single;
     if (!file.name.endsWith('.zip')) {
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -83,13 +82,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
     }
 
     final bytes = file.bytes;
-    if (bytes == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Failed to read file')));
-      }
-      return;
-    }
 
     final idCtrl = TextEditingController();
     final nameCtrl = TextEditingController();
@@ -102,7 +94,7 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          title: Text('Import ${result.files.single.name}'),
+          title: Text('Import ${file.name}'),
           content: SizedBox(
             width: 500,
             child: SingleChildScrollView(
