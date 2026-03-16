@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../main.dart';
+import '../models/job.dart';
 import '../models/skill.dart';
 import '../models/workspace.dart';
 
@@ -24,15 +25,33 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
   final _selectedSkills = <String>{};
   List<Skill> _availableSkills = [];
   List<Workspace> _availableWorkspaces = [];
+  List<Job> _recentJobs = [];
+  final _selectedPreviousJobs = <String>{};
   String? _selectedWorkspaceId;
   bool _submitting = false;
   bool _showAdvanced = false;
-  String _outputType = 'redis'; // redis, file, webhook
+  String _outputType = 'redis';
 
   @override
   void initState() {
     super.initState();
     _loadData();
+    // Read prefill params from URL (from "Use in New Job")
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final uri = GoRouterState.of(context).uri;
+      final prefillResult = uri.queryParameters['prefill_result'];
+      final wsId = uri.queryParameters['workspace_id'];
+      final model = uri.queryParameters['model'];
+      if (prefillResult != null && prefillResult.isNotEmpty) {
+        _promptController.text = '<previous_result>\n$prefillResult\n</previous_result>\n\n';
+      }
+      if (wsId != null && wsId.isNotEmpty) {
+        setState(() => _selectedWorkspaceId = wsId);
+      }
+      if (model != null && model.isNotEmpty) {
+        setState(() => _model = model);
+      }
+    });
   }
 
   Future<void> _loadData() async {
@@ -44,6 +63,10 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
     try {
       final workspaces = await api.listWorkspaces();
       setState(() => _availableWorkspaces = workspaces);
+    } catch (_) {}
+    try {
+      final jobs = await api.listJobs(status: 'completed', limit: 10);
+      setState(() => _recentJobs = jobs);
     } catch (_) {}
   }
 
@@ -62,8 +85,29 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
     }
   }
 
+  String _buildPromptWithContext() {
+    var prompt = _promptController.text.trim();
+    // Inject selected previous results
+    if (_selectedPreviousJobs.isNotEmpty) {
+      final context = StringBuffer();
+      for (final jobId in _selectedPreviousJobs) {
+        final job = _recentJobs.where((j) => j.id == jobId).firstOrNull;
+        if (job != null) {
+          context.writeln('<previous_result job_id="${job.shortId}">');
+          final preview = job.prompt.length > 100 ? '${job.prompt.substring(0, 100)}...' : job.prompt;
+          context.writeln('Prompt: $preview');
+          context.writeln('(Result will be fetched at execution time)');
+          context.writeln('</previous_result>');
+          context.writeln();
+        }
+      }
+      prompt = '${context}$prompt';
+    }
+    return prompt;
+  }
+
   Future<void> _submit() async {
-    final prompt = _promptController.text.trim();
+    final prompt = _buildPromptWithContext();
     if (prompt.isEmpty) return;
 
     setState(() => _submitting = true);
@@ -221,6 +265,44 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                     ],
                   ),
                   const SizedBox(height: 16),
+
+                  // Previous Results
+                  if (_recentJobs.isNotEmpty) ...[
+                    ExpansionTile(
+                      title: const Text('Include Previous Results'),
+                      subtitle: _selectedPreviousJobs.isNotEmpty
+                          ? Text('${_selectedPreviousJobs.length} selected')
+                          : null,
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                          child: Column(
+                            children: _recentJobs.map((job) {
+                              final selected = _selectedPreviousJobs.contains(job.id);
+                              return CheckboxListTile(
+                                dense: true,
+                                value: selected,
+                                title: Text(job.promptPreview,
+                                    style: const TextStyle(fontSize: 13)),
+                                subtitle: Text('${job.shortId} - ${job.status}',
+                                    style: const TextStyle(fontSize: 11)),
+                                onChanged: (v) {
+                                  setState(() {
+                                    if (v == true) {
+                                      _selectedPreviousJobs.add(job.id);
+                                    } else {
+                                      _selectedPreviousJobs.remove(job.id);
+                                    }
+                                  });
+                                },
+                              );
+                            }).toList(),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                  ],
 
                   // Advanced Options
                   ExpansionTile(

@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../main.dart';
@@ -230,14 +231,43 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
 
             // Result
             if (_result != null) ...[
-              Text('Result', style: Theme.of(context).textTheme.titleMedium),
+              Row(
+                children: [
+                  Text('Result', style: Theme.of(context).textTheme.titleMedium),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.copy, size: 18),
+                    tooltip: 'Copy result',
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: _result!.result));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Result copied'), duration: Duration(seconds: 1)),
+                      );
+                    },
+                  ),
+                  if (isTerminal)
+                    TextButton.icon(
+                      icon: const Icon(Icons.arrow_forward, size: 16),
+                      label: const Text('Use in New Job'),
+                      onPressed: () {
+                        // Pass context to submit form via query params for simple values
+                        // Result goes via a shared provider
+                        context.go('/jobs/new?prefill_result=${Uri.encodeComponent(_result!.result.length > 5000 ? _result!.result.substring(0, 5000) : _result!.result)}'
+                            '&workspace_id=${job.workspaceId ?? ""}'
+                            '&model=${job.model ?? ""}');
+                      },
+                    ),
+                ],
+              ),
               const SizedBox(height: 8),
               Card(
                 color: Theme.of(context).colorScheme.primaryContainer,
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: SelectableText(_result!.result,
-                      style: const TextStyle(fontFamily: 'monospace')),
+                  child: SelectableText(
+                    _formatResult(_result!.result),
+                    style: const TextStyle(fontFamily: 'monospace'),
+                  ),
                 ),
               ),
               const SizedBox(height: 16),
@@ -326,6 +356,38 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
         ],
       ),
     );
+  }
+
+  /// Try to detect and pretty-print JSON in the result.
+  String _formatResult(String raw) {
+    // Try full parse
+    try {
+      final decoded = json.decode(raw);
+      return const JsonEncoder.withIndent('  ').convert(decoded);
+    } catch (_) {}
+
+    // Try from first { or [
+    final firstBrace = raw.indexOf('{');
+    final firstBracket = raw.indexOf('[');
+    int start = -1;
+    if (firstBrace >= 0 && firstBracket >= 0) {
+      start = firstBrace < firstBracket ? firstBrace : firstBracket;
+    } else if (firstBrace >= 0) {
+      start = firstBrace;
+    } else if (firstBracket >= 0) {
+      start = firstBracket;
+    }
+
+    if (start > 0) {
+      try {
+        final decoded = json.decode(raw.substring(start));
+        final prefix = raw.substring(0, start).trimRight();
+        return '$prefix\n${const JsonEncoder.withIndent('  ').convert(decoded)}';
+      } catch (_) {}
+    }
+
+    // Plain text fallback
+    return raw;
   }
 
   String _formatLogLine(String raw) {

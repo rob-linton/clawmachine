@@ -100,17 +100,27 @@ pub async fn harvest_skills(env: &PreparedEnvironment) -> HarvestedSkills {
 }
 
 /// Clean up the environment after job execution.
+/// For persistent workspaces: CLAUDE.md is NOT restored — let it evolve.
+/// For temp workspaces: restore CLAUDE.md (it gets deleted with the dir anyway).
 pub async fn teardown_environment(env: &PreparedEnvironment) {
-    if let Some(backup_path) = &env.claude_md_backup {
-        let claude_md_path = env.working_dir.join("CLAUDE.md");
-        if let Err(e) = tokio::fs::copy(backup_path, &claude_md_path).await {
-            tracing::warn!(error = %e, "Failed to restore CLAUDE.md from backup");
+    if env.is_temp {
+        // Only restore CLAUDE.md for temp workspaces
+        if let Some(backup_path) = &env.claude_md_backup {
+            let claude_md_path = env.working_dir.join("CLAUDE.md");
+            if let Err(e) = tokio::fs::copy(backup_path, &claude_md_path).await {
+                tracing::warn!(error = %e, "Failed to restore CLAUDE.md from backup");
+            }
+            tokio::fs::remove_file(backup_path).await.ok();
+        } else if env.original_claude_md.is_none() {
+            let claude_md_path = env.working_dir.join("CLAUDE.md");
+            if claude_md_path.exists() {
+                tokio::fs::remove_file(&claude_md_path).await.ok();
+            }
         }
-        tokio::fs::remove_file(backup_path).await.ok();
-    } else if env.original_claude_md.is_none() {
-        let claude_md_path = env.working_dir.join("CLAUDE.md");
-        if claude_md_path.exists() {
-            tokio::fs::remove_file(&claude_md_path).await.ok();
+    } else {
+        // Persistent workspace: just clean up the backup file, leave CLAUDE.md as-is
+        if let Some(backup_path) = &env.claude_md_backup {
+            tokio::fs::remove_file(backup_path).await.ok();
         }
     }
 
