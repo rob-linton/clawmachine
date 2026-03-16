@@ -38,6 +38,25 @@ async fn main() {
             .expect("Redis PING failed");
     }
 
+    // Verify Claude CLI is available
+    match tokio::process::Command::new("claude").arg("--version").output().await {
+        Ok(output) if output.status.success() => {
+            let version = String::from_utf8_lossy(&output.stdout);
+            tracing::info!(version = %version.trim(), "Claude CLI verified");
+        }
+        Ok(output) => {
+            tracing::error!(
+                stderr = %String::from_utf8_lossy(&output.stderr),
+                "Claude CLI returned error. Is it installed and authenticated?"
+            );
+            std::process::exit(1);
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "Claude CLI not found. Install it: https://claude.ai/code");
+            std::process::exit(1);
+        }
+    }
+
     // Crash recovery from previous unclean shutdowns
     environment::crash_recovery().await;
 

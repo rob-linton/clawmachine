@@ -35,9 +35,14 @@ pub async fn execute_job(
         cmd.arg("--model").arg(model);
     }
 
-    if let Some(tools) = &job.allowed_tools {
-        if !tools.is_empty() {
+    // Apply allowed tools: explicit list from job, or safe default
+    match &job.allowed_tools {
+        Some(tools) if !tools.is_empty() => {
             cmd.arg("--allowedTools").arg(tools.join(","));
+        }
+        _ => {
+            // Default safe set — allows code work but not network/agent tools
+            cmd.arg("--allowedTools").arg("Read,Write,Edit,Glob,Grep,Bash");
         }
     }
 
@@ -110,11 +115,12 @@ pub async fn execute_job(
         ));
     }
 
-    let cost_usd = final_result
-        .as_ref()
-        .and_then(|r| r.get("cost_usd"))
-        .and_then(|c| c.as_f64())
-        .unwrap_or(0.0);
+    // Try multiple fields for cost extraction (varies by Claude session type)
+    let cost_usd = final_result.as_ref().and_then(|r| {
+        r.get("cost_usd").and_then(|c| c.as_f64())
+            .or_else(|| r.get("total_cost").and_then(|c| c.as_f64()))
+            .or_else(|| r.get("usage").and_then(|u| u.get("cost_usd")).and_then(|c| c.as_f64()))
+    }).unwrap_or(0.0);
 
     Ok(ExecutionResult {
         result_text,
