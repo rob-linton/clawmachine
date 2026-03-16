@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../main.dart';
 import '../models/cron_schedule.dart';
+import '../models/skill.dart';
+import '../models/workspace.dart';
 
 class SchedulesScreen extends ConsumerStatefulWidget {
   const SchedulesScreen({super.key});
@@ -88,10 +90,19 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
     int priority = existing?.priority ?? 5;
     bool enabled = existing?.enabled ?? true;
     String? selectedTemplateId;
+    String? workspaceId;
+    final selectedSkills = <String>{...existing?.skillIds ?? []};
+    final budgetCtrl = TextEditingController(text: existing?.maxBudgetUsd?.toString() ?? '');
+    final tagsCtrl = TextEditingController(text: existing?.tags.join(', ') ?? '');
+    String outputType = 'redis';
+    final outputPathCtrl = TextEditingController();
+    final webhookUrlCtrl = TextEditingController();
     List<dynamic> templates = [];
-    try {
-      templates = await ref.read(apiClientProvider).listJobTemplates();
-    } catch (_) {}
+    List<Skill> skills = [];
+    List<Workspace> workspaces = [];
+    try { templates = await ref.read(apiClientProvider).listJobTemplates(); } catch (_) {}
+    try { skills = await ref.read(apiClientProvider).listSkills(); } catch (_) {}
+    try { workspaces = await ref.read(apiClientProvider).listWorkspaces(); } catch (_) {}
     String? errorText;
 
     final saved = await showDialog<bool>(
@@ -189,6 +200,79 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                       Text('$priority'),
                     ],
                   ),
+                  // Workspace
+                  if (workspaces.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String?>(
+                      value: workspaceId,
+                      decoration: const InputDecoration(labelText: 'Workspace'),
+                      items: [
+                        const DropdownMenuItem(value: null, child: Text('None')),
+                        ...workspaces.map((w) => DropdownMenuItem(value: w.id, child: Text(w.name))),
+                      ],
+                      onChanged: (v) => setDialogState(() => workspaceId = v),
+                    ),
+                  ],
+
+                  // Skills
+                  if (skills.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    const Text('Skills', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      children: skills.map((s) {
+                        final selected = selectedSkills.contains(s.id);
+                        return FilterChip(
+                          label: Text(s.name),
+                          selected: selected,
+                          onSelected: (v) {
+                            setDialogState(() {
+                              if (v) selectedSkills.add(s.id); else selectedSkills.remove(s.id);
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ],
+
+                  // Advanced: budget, output, tags
+                  ExpansionTile(
+                    title: const Text('Advanced'),
+                    tilePadding: EdgeInsets.zero,
+                    children: [
+                      TextField(
+                        controller: budgetCtrl,
+                        decoration: const InputDecoration(labelText: 'Max Budget USD (approximate)'),
+                        keyboardType: TextInputType.number,
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: tagsCtrl,
+                        decoration: const InputDecoration(labelText: 'Tags (comma-separated)'),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text('Output Destination', style: TextStyle(fontSize: 13)),
+                      SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment(value: 'redis', label: Text('Redis')),
+                          ButtonSegment(value: 'file', label: Text('File')),
+                          ButtonSegment(value: 'webhook', label: Text('Webhook')),
+                        ],
+                        selected: {outputType},
+                        onSelectionChanged: (v) => setDialogState(() => outputType = v.first),
+                      ),
+                      if (outputType == 'file') ...[
+                        const SizedBox(height: 8),
+                        TextField(controller: outputPathCtrl, decoration: const InputDecoration(labelText: 'Output Path')),
+                      ],
+                      if (outputType == 'webhook') ...[
+                        const SizedBox(height: 8),
+                        TextField(controller: webhookUrlCtrl, decoration: const InputDecoration(labelText: 'Webhook URL')),
+                      ],
+                    ],
+                  ),
+
                   SwitchListTile(
                     title: const Text('Enabled'),
                     value: enabled,
@@ -219,6 +303,16 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                     'working_dir': workingDirCtrl.text,
                   if (selectedTemplateId != null)
                     'template_id': selectedTemplateId,
+                  if (workspaceId != null) 'workspace_id': workspaceId,
+                  if (selectedSkills.isNotEmpty) 'skill_ids': selectedSkills.toList(),
+                  if (budgetCtrl.text.trim().isNotEmpty)
+                    'max_budget_usd': double.tryParse(budgetCtrl.text.trim()),
+                  if (tagsCtrl.text.trim().isNotEmpty)
+                    'tags': tagsCtrl.text.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).toList(),
+                  if (outputType == 'file' && outputPathCtrl.text.trim().isNotEmpty)
+                    'output_dest': {'type': 'file', 'path': outputPathCtrl.text.trim()},
+                  if (outputType == 'webhook' && webhookUrlCtrl.text.trim().isNotEmpty)
+                    'output_dest': {'type': 'webhook', 'url': webhookUrlCtrl.text.trim()},
                 };
                 try {
                   final api = ref.read(apiClientProvider);

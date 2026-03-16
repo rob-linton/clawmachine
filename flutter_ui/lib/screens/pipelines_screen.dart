@@ -43,21 +43,24 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
     final steps = <Map<String, TextEditingController>>[];
     final stepModels = <String?>[];
     final stepTemplateIds = <String?>[];
+    String? workspaceId;
     List<dynamic> templates = [];
-    try {
-      templates = await ref.read(apiClientProvider).listJobTemplates();
-    } catch (_) {}
+    List<dynamic> workspaces = [];
+    try { templates = await ref.read(apiClientProvider).listJobTemplates(); } catch (_) {}
+    try { workspaces = await ref.read(apiClientProvider).listWorkspaces(); } catch (_) {}
 
     void addStep() {
       steps.add({
         'name': TextEditingController(),
         'prompt': TextEditingController(),
+        'timeout': TextEditingController(),
+        'skills': TextEditingController(),
       });
       stepModels.add(null);
       stepTemplateIds.add(null);
     }
 
-    addStep(); // Start with one step
+    addStep();
     String? errorText;
 
     final saved = await showDialog<bool>(
@@ -80,6 +83,21 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                     controller: descCtrl,
                     decoration: const InputDecoration(labelText: 'Description'),
                   ),
+                  if (workspaces.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    DropdownButtonFormField<String?>(
+                      value: workspaceId,
+                      decoration: const InputDecoration(labelText: 'Workspace'),
+                      items: [
+                        const DropdownMenuItem(value: null, child: Text('None')),
+                        ...workspaces.map((w) => DropdownMenuItem(
+                              value: w['id'] as String?,
+                              child: Text(w['name'] ?? ''),
+                            )),
+                      ],
+                      onChanged: (v) => setDialogState(() => workspaceId = v),
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   const Text('Steps', style: TextStyle(fontWeight: FontWeight.bold)),
                   const SizedBox(height: 8),
@@ -168,6 +186,25 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                               ],
                               onChanged: (v) => setDialogState(() => stepModels[i] = v),
                             ),
+                            const SizedBox(height: 8),
+                            Row(
+                              children: [
+                                Expanded(
+                                  child: TextField(
+                                    controller: s['timeout'],
+                                    decoration: const InputDecoration(labelText: 'Timeout (sec)', isDense: true),
+                                    keyboardType: TextInputType.number,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: TextField(
+                                    controller: s['skills'],
+                                    decoration: const InputDecoration(labelText: 'Skill IDs (comma-sep)', isDense: true),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ],
                         ),
                       ),
@@ -205,6 +242,7 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                   await ref.read(apiClientProvider).createPipeline({
                     'name': nameCtrl.text.trim(),
                     'description': descCtrl.text.trim(),
+                    if (workspaceId != null) 'workspace_id': workspaceId,
                     'steps': steps
                         .asMap()
                         .entries
@@ -217,6 +255,10 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                                 'model': stepModels[entry.key],
                               if (stepTemplateIds[entry.key] != null)
                                 'template_id': stepTemplateIds[entry.key],
+                              if (entry.value['timeout']!.text.trim().isNotEmpty)
+                                'timeout_secs': int.tryParse(entry.value['timeout']!.text.trim()),
+                              if (entry.value['skills']!.text.trim().isNotEmpty)
+                                'skill_ids': entry.value['skills']!.text.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList(),
                             })
                         .toList(),
                   });

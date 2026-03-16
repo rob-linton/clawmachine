@@ -20,6 +20,8 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
   final _outputPathController = TextEditingController();
   final _webhookUrlController = TextEditingController();
   final _allowedToolsController = TextEditingController();
+  final _maxBudgetController = TextEditingController();
+  final _tagsController = TextEditingController();
   String? _model;
   double _priority = 5;
   final _selectedSkills = <String>{};
@@ -179,6 +181,9 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
       final timeout = int.tryParse(_timeoutController.text.trim());
       final allowedTools = _allowedToolsController.text.trim();
 
+      final maxBudget = double.tryParse(_maxBudgetController.text.trim());
+      final tags = _tagsController.text.split(',').map((t) => t.trim()).where((t) => t.isNotEmpty).toList();
+
       final resp = await ref.read(apiClientProvider).submitJob(
             prompt: prompt,
             skillIds: _selectedSkills.toList(),
@@ -191,6 +196,8 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
             allowedTools: allowedTools.isEmpty
                 ? null
                 : allowedTools.split(',').map((t) => t.trim()).toList(),
+            maxBudget: maxBudget,
+            tags: tags,
           );
       if (mounted) {
         context.go('/jobs/${resp['id']}');
@@ -213,6 +220,8 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
     _outputPathController.dispose();
     _webhookUrlController.dispose();
     _allowedToolsController.dispose();
+    _maxBudgetController.dispose();
+    _tagsController.dispose();
     super.dispose();
   }
 
@@ -480,6 +489,23 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                               decoration: const InputDecoration(
                                 labelText: 'Allowed Tools (comma-separated)',
                                 hintText: 'Read,Grep,Glob',
+                                border: OutlineInputBorder(),
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _maxBudgetController,
+                              decoration: const InputDecoration(
+                                labelText: 'Max Budget USD (approximate)',
+                                border: OutlineInputBorder(),
+                              ),
+                              keyboardType: TextInputType.number,
+                            ),
+                            const SizedBox(height: 12),
+                            TextField(
+                              controller: _tagsController,
+                              decoration: const InputDecoration(
+                                labelText: 'Tags (comma-separated)',
                                 border: OutlineInputBorder(),
                               ),
                             ),

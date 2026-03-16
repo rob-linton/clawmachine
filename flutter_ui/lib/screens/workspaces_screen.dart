@@ -70,6 +70,9 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
     final descCtrl = TextEditingController();
     final pathCtrl = TextEditingController();
     final claudeMdCtrl = TextEditingController();
+    final selectedSkills = <String>{};
+    List<dynamic> skills = [];
+    try { skills = (await ref.read(apiClientProvider).listSkills()).map((s) => {'id': s.id, 'name': s.name}).toList(); } catch (_) {}
     String? errorText;
 
     final saved = await showDialog<bool>(
@@ -100,6 +103,26 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                       helperText: 'Leave empty to auto-create in ~/.claw/workspaces/',
                     ),
                   ),
+                  if (skills.isNotEmpty) ...[
+                    const SizedBox(height: 12),
+                    const Text('Default Skills', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 6,
+                      children: skills.map((s) {
+                        final selected = selectedSkills.contains(s['id']);
+                        return FilterChip(
+                          label: Text(s['name'] ?? ''),
+                          selected: selected,
+                          onSelected: (v) {
+                            setDialogState(() {
+                              if (v) selectedSkills.add(s['id']); else selectedSkills.remove(s['id']);
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                  ],
                   const SizedBox(height: 12),
                   TextField(
                     controller: claudeMdCtrl,
@@ -136,6 +159,8 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                     'path': pathCtrl.text.trim(),
                   if (claudeMdCtrl.text.trim().isNotEmpty)
                     'claude_md': claudeMdCtrl.text.trim(),
+                  if (selectedSkills.isNotEmpty)
+                    'skill_ids': selectedSkills.toList(),
                 };
                 try {
                   await ref.read(apiClientProvider).createWorkspace(data);

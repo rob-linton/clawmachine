@@ -11,6 +11,8 @@ class CronSchedule {
   final Map<String, dynamic>? outputDest;
   final List<String> tags;
   final int priority;
+  final String? workspaceId;
+  final String? templateId;
   final String? lastRun;
   final String? lastJobId;
   final String createdAt;
@@ -28,6 +30,8 @@ class CronSchedule {
     this.outputDest,
     this.tags = const [],
     this.priority = 5,
+    this.workspaceId,
+    this.templateId,
     this.lastRun,
     this.lastJobId,
     required this.createdAt,
@@ -48,6 +52,8 @@ class CronSchedule {
             : null,
         tags: List<String>.from(json['tags'] ?? []),
         priority: json['priority'] ?? 5,
+        workspaceId: json['workspace_id'],
+        templateId: json['template_id'],
         lastRun: json['last_run'],
         lastJobId: json['last_job_id'],
         createdAt: json['created_at'] ?? '',
