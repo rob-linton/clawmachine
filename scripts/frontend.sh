@@ -26,6 +26,12 @@ if [ -f "$ENV_FILE" ]; then
     echo "Loaded $ENV_FILE (API_URL=$API_URL)"
 fi
 
+# Kill any stale Flutter dev servers
+pkill -f "flutter_tools.*run" 2>/dev/null || true
+pkill -f "dart.*flutter" 2>/dev/null || true
+pkill -f "Google Chrome.*--remote-debugging-port" 2>/dev/null || true
+sleep 1
+
 # Check backend is running
 echo ""
 echo "Checking backend at $API_URL ..."

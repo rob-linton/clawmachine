@@ -18,10 +18,18 @@ yellow() { printf '\033[0;33m%s\033[0m\n' "$1"; }
 
 stop_all() {
     echo "Stopping backend..."
+    # Kill actual binaries
     pkill -f "target/debug/claw-api" 2>/dev/null && echo "  Stopped API" || true
     pkill -f "target/debug/claw-worker" 2>/dev/null && echo "  Stopped Worker" || true
     pkill -f "target/debug/claw-scheduler" 2>/dev/null && echo "  Stopped Scheduler" || true
+    # Kill cargo run parents (which spawn the binaries)
+    pkill -f "cargo run -p claw-api" 2>/dev/null || true
+    pkill -f "cargo run -p claw-worker" 2>/dev/null || true
+    pkill -f "cargo run -p claw-scheduler" 2>/dev/null || true
+    # Clean up PID files
     rm -f "$PIDS_DIR"/*.pid
+    # Kill anything on port 8080
+    lsof -ti:8080 2>/dev/null | xargs kill 2>/dev/null || true
     sleep 1
     green "Backend stopped."
 }
