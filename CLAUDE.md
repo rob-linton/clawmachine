@@ -123,6 +123,19 @@ POST   /api/v1/workspaces/{id}/revert/{hash}  — git revert a specific commit
 
 Workspaces auto-commit before/after each job for rollback safety.
 
+## Job Template Endpoints
+
+```
+POST   /api/v1/job-templates              — create reusable job template
+GET    /api/v1/job-templates              — list all templates
+GET    /api/v1/job-templates/{id}         — get template details
+PUT    /api/v1/job-templates/{id}         — update template
+DELETE /api/v1/job-templates/{id}         — delete (409 if referenced by crons/pipelines)
+POST   /api/v1/job-templates/{id}/run     — run template immediately as a new job
+```
+
+Templates are reusable job definitions (prompt, skills, workspace, model, etc.) that crons and pipeline steps can reference via `template_id`.
+
 ## Upload Endpoints
 
 ZIP file upload for bulk importing files into workspaces and skills:
