@@ -37,6 +37,7 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
 
   Future<void> _delete(String id) async {
     final confirm = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Skill'),
@@ -90,6 +91,7 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
     String? errorText;
 
     final saved = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -171,6 +173,7 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
 
   void _showSkillDetail(Skill skill) {
     showDialog(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(skill.name),

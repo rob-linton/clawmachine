@@ -94,6 +94,7 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
 
     if (!mounted) return;
     final saved = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(

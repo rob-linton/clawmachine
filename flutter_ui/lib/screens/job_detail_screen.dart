@@ -67,6 +67,7 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
 
   Future<void> _delete() async {
     final confirm = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Job'),

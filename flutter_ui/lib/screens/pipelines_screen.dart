@@ -73,6 +73,7 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
     String? errorText;
 
     final saved = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(

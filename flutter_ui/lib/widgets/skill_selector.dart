@@ -82,6 +82,7 @@ class SkillSelector extends StatelessWidget {
     var filtered = List<Skill>.from(availableSkills);
 
     return showDialog<Set<String>>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) {

@@ -59,6 +59,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
 
   Future<void> _deleteCron(CronSchedule cron) async {
     final confirm = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Schedule'),
@@ -107,6 +108,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
     String? errorText;
 
     final saved = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(

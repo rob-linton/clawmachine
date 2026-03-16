@@ -45,6 +45,7 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
 
   Future<void> _deleteWorkspace(Workspace ws) async {
     final confirm = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Delete Workspace'),
@@ -78,6 +79,7 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
     String? errorText;
 
     final saved = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -555,6 +557,7 @@ class _WorkspaceDetailScreenState
 
   Future<void> _revertCommit(String hash) async {
     final confirm = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => AlertDialog(
         title: const Text('Revert Commit'),
@@ -610,6 +613,7 @@ class _WorkspaceDetailScreenState
     // Optional: ask for subdirectory prefix
     final prefixCtrl = TextEditingController();
     final shouldUpload = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text('Upload ${file.name}'),
@@ -667,6 +671,7 @@ class _WorkspaceDetailScreenState
     String? errorText;
 
     final saved = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -734,6 +739,7 @@ class _WorkspaceDetailScreenState
     String? errorText;
 
     final saved = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
@@ -799,6 +805,7 @@ class _WorkspaceDetailScreenState
     if (!mounted) return;
 
     final saved = await showDialog<bool>(
+      barrierDismissible: false,
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
