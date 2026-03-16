@@ -47,7 +47,10 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
     List<dynamic> templates = [];
     List<dynamic> workspaces = [];
     try { templates = await ref.read(apiClientProvider).listJobTemplates(); } catch (_) {}
-    try { workspaces = await ref.read(apiClientProvider).listWorkspaces(); } catch (_) {}
+    try {
+      final ws = await ref.read(apiClientProvider).listWorkspaces();
+      workspaces = ws.map((w) => {'id': w.id, 'name': w.name}).toList();
+    } catch (_) {}
 
     void addStep() {
       steps.add({
