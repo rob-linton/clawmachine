@@ -37,6 +37,8 @@ pub struct Job {
     pub timeout_secs: Option<u64>,
     pub workspace_id: Option<Uuid>,
     pub cron_id: Option<Uuid>,
+    pub pipeline_run_id: Option<Uuid>,
+    pub pipeline_step: Option<usize>,
     pub skill_snapshot: Option<serde_json::Value>,
     pub assembled_prompt: Option<String>,
 }

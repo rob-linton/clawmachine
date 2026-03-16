@@ -190,6 +190,31 @@ class ApiClient {
     return Map<String, dynamic>.from(resp.data);
   }
 
+  // Pipelines
+  Future<List<dynamic>> listPipelines() async {
+    final resp = await _dio.get('/pipelines');
+    return resp.data['items'] as List? ?? [];
+  }
+
+  Future<Map<String, dynamic>> createPipeline(Map<String, dynamic> data) async {
+    final resp = await _dio.post('/pipelines', data: data);
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<void> deletePipeline(String id) async {
+    await _dio.delete('/pipelines/$id');
+  }
+
+  Future<Map<String, dynamic>> runPipeline(String id) async {
+    final resp = await _dio.post('/pipelines/$id/run');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<List<dynamic>> listPipelineRuns() async {
+    final resp = await _dio.get('/pipeline-runs');
+    return resp.data['items'] as List? ?? [];
+  }
+
   Future<Skill> uploadSkillZip(Uint8List zipBytes, {
     required String id, required String name,
     String description = '', List<String> tags = const [],

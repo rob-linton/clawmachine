@@ -1,5 +1,6 @@
 mod environment;
 mod executor;
+mod pipeline_runner;
 mod prompt_builder;
 
 use deadpool_redis::{redis, Pool};
@@ -343,6 +344,9 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                             "status": "completed",
                         });
                         claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
+
+                        // Advance pipeline if this job is part of one
+                        pipeline_runner::check_and_advance(&pool, &job, &r.result_text).await;
                     }
                     Err(e) => {
                         let status = if e == "Job was cancelled" { "cancelled" } else { "failed" };
@@ -382,6 +386,11 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                             "status": status,
                         });
                         claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
+
+                        // Mark pipeline as failed if this job is part of one
+                        if status == "failed" {
+                            pipeline_runner::mark_failed(&pool, &job, &e).await;
+                        }
                     }
                 }
             }

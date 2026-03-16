@@ -3,12 +3,14 @@ pub mod skill;
 pub mod events;
 pub mod cron_schedule;
 pub mod workspace;
+pub mod pipeline;
 
 pub use job::*;
 pub use skill::*;
 pub use events::*;
 pub use cron_schedule::*;
 pub use workspace::*;
+pub use pipeline::*;
 
 #[cfg(test)]
 mod tests {
