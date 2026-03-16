@@ -409,7 +409,23 @@ class _WorkspaceDetailScreenState
             const SizedBox(height: 24),
 
             // File Browser
-            Text('Files', style: Theme.of(context).textTheme.titleMedium),
+            Row(
+              children: [
+                Text('Files', style: Theme.of(context).textTheme.titleMedium),
+                const Spacer(),
+                OutlinedButton.icon(
+                  onPressed: _showNewFileDialog,
+                  icon: const Icon(Icons.note_add, size: 16),
+                  label: const Text('New File'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _showNewFolderDialog,
+                  icon: const Icon(Icons.create_new_folder, size: 16),
+                  label: const Text('New Folder'),
+                ),
+              ],
+            ),
             const SizedBox(height: 8),
             if (_files.isEmpty)
               const Text('No files in workspace directory.')
@@ -422,6 +438,7 @@ class _WorkspaceDetailScreenState
                     itemBuilder: (context, i) {
                       final file = _files[i];
                       final isDir = file['is_dir'] == true;
+                      final filePath = file['path'] ?? '';
                       return ListTile(
                         dense: true,
                         leading: Icon(
@@ -429,7 +446,7 @@ class _WorkspaceDetailScreenState
                           size: 18,
                         ),
                         title: Text(
-                          file['path'] ?? '',
+                          filePath,
                           style: const TextStyle(
                               fontFamily: 'monospace', fontSize: 12),
                         ),
@@ -439,6 +456,7 @@ class _WorkspaceDetailScreenState
                                 _formatSize(file['size'] ?? 0),
                                 style: const TextStyle(fontSize: 11),
                               ),
+                        onTap: isDir ? null : () => _showFileEditor(filePath),
                       );
                     },
                   ),
@@ -448,6 +466,192 @@ class _WorkspaceDetailScreenState
         ),
       ),
     );
+  }
+
+  Future<void> _showNewFileDialog() async {
+    final pathCtrl = TextEditingController();
+    final contentCtrl = TextEditingController();
+    String? errorText;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('New File'),
+          content: SizedBox(
+            width: 500,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: pathCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'File Path',
+                    hintText: 'e.g. .claude/skills/my-skill/SKILL.md',
+                    helperText: 'Relative to workspace root',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: contentCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Content',
+                    alignLabelWithHint: true,
+                    border: OutlineInputBorder(),
+                  ),
+                  maxLines: 10,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                ),
+                if (errorText != null) ...[
+                  const SizedBox(height: 8),
+                  Text(errorText!, style: const TextStyle(color: Colors.red)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                if (pathCtrl.text.trim().isEmpty) {
+                  setDialogState(() => errorText = 'File path is required');
+                  return;
+                }
+                try {
+                  final api = ref.read(apiClientProvider);
+                  await api.putWorkspaceFile(
+                    widget.workspaceId, pathCtrl.text.trim(), contentCtrl.text,
+                  );
+                  if (ctx.mounted) Navigator.pop(ctx, true);
+                } catch (e) {
+                  setDialogState(() => errorText = 'Failed: $e');
+                }
+              },
+              child: const Text('Create'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) _refresh();
+  }
+
+  Future<void> _showNewFolderDialog() async {
+    final pathCtrl = TextEditingController();
+    String? errorText;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('New Folder'),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: pathCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Folder Path',
+                    hintText: 'e.g. .claude/skills/my-skill',
+                    helperText: 'Relative to workspace root',
+                  ),
+                ),
+                if (errorText != null) ...[
+                  const SizedBox(height: 8),
+                  Text(errorText!, style: const TextStyle(color: Colors.red)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                if (pathCtrl.text.trim().isEmpty) {
+                  setDialogState(() => errorText = 'Folder path is required');
+                  return;
+                }
+                try {
+                  // Create a .gitkeep file to establish the folder
+                  final api = ref.read(apiClientProvider);
+                  await api.putWorkspaceFile(
+                    widget.workspaceId, '${pathCtrl.text.trim()}/.gitkeep', '',
+                  );
+                  if (ctx.mounted) Navigator.pop(ctx, true);
+                } catch (e) {
+                  setDialogState(() => errorText = 'Failed: $e');
+                }
+              },
+              child: const Text('Create'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) _refresh();
+  }
+
+  Future<void> _showFileEditor(String filePath) async {
+    String content = '';
+    try {
+      content = await ref.read(apiClientProvider).getWorkspaceFile(
+          widget.workspaceId, filePath);
+    } catch (_) {}
+
+    final contentCtrl = TextEditingController(text: content);
+    String? errorText;
+
+    if (!mounted) return;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text(filePath),
+          content: SizedBox(
+            width: 600,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: contentCtrl,
+                  maxLines: 16,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    alignLabelWithHint: true,
+                  ),
+                ),
+                if (errorText != null) ...[
+                  const SizedBox(height: 8),
+                  Text(errorText!, style: const TextStyle(color: Colors.red)),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                try {
+                  final api = ref.read(apiClientProvider);
+                  await api.putWorkspaceFile(
+                    widget.workspaceId, filePath, contentCtrl.text,
+                  );
+                  if (ctx.mounted) Navigator.pop(ctx, true);
+                } catch (e) {
+                  setDialogState(() => errorText = 'Failed: $e');
+                }
+              },
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) _refresh();
   }
 
   String _formatSize(int bytes) {

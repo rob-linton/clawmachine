@@ -175,4 +175,8 @@ class ApiClient {
     final resp = await _dio.get('/workspaces/$id/files/$path');
     return resp.data['content'] ?? '';
   }
+
+  Future<void> putWorkspaceFile(String id, String path, String content) async {
+    await _dio.put('/workspaces/$id/files/$path', data: {'content': content});
+  }
 }
