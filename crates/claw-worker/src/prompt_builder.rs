@@ -11,6 +11,13 @@ pub fn build_prompt(job: &Job, skills: &[Skill]) -> BuiltPrompt {
     let mut sections: Vec<String> = Vec::new();
 
     // Context metadata
+    if !skills.is_empty() {
+        let skill_ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
+        sections.push(format!(
+            "[Skills deployed to .claude/skills/: {}]",
+            skill_ids.join(", ")
+        ));
+    }
     sections.push(format!(
         "[Job ID: {}] [Source: {}]",
         job.id, job.source

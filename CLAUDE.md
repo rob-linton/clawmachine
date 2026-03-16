@@ -126,4 +126,5 @@ Every phase must be validated end-to-end before proceeding. After writing code, 
 | `CLAW_WORKER_CONCURRENCY` | `1` | Number of parallel worker tasks |
 | `CLAW_LOG_FORMAT` | (text) | Set to `json` for structured JSON logging |
 | `CLAW_FAILURE_WEBHOOK_URL` | (unset) | POST to this URL when a job fails |
+| `CLAW_COMPLETION_WEBHOOK_URL` | (unset) | POST to this URL when any job completes |
 | `CLAW_WORKSPACES_DIR` | `~/.claw/workspaces` | Base directory for auto-created workspaces |

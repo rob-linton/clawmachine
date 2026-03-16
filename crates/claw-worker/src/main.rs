@@ -345,6 +345,24 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                         });
                         claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
 
+                        // Global completion webhook
+                        if let Ok(url) = std::env::var("CLAW_COMPLETION_WEBHOOK_URL") {
+                            let payload = serde_json::json!({
+                                "job_id": job_id.to_string(),
+                                "status": "completed",
+                                "result_preview": r.result_text.chars().take(500).collect::<String>(),
+                                "cost_usd": r.cost_usd,
+                                "duration_ms": r.duration_ms,
+                            });
+                            reqwest::Client::new()
+                                .post(&url)
+                                .json(&payload)
+                                .timeout(std::time::Duration::from_secs(10))
+                                .send()
+                                .await
+                                .ok();
+                        }
+
                         // Advance pipeline if this job is part of one
                         pipeline_runner::check_and_advance(&pool, &job, &r.result_text).await;
                     }
