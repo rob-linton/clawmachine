@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../main.dart';
@@ -388,8 +389,24 @@ class _WorkspaceDetailScreenState
               ],
             ),
             const SizedBox(height: 8),
-            Text('Path: ${ws.path}',
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+            Row(
+              children: [
+                Expanded(
+                  child: SelectableText('Path: ${ws.path}',
+                      style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.copy, size: 16),
+                  tooltip: 'Copy path',
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: ws.path));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Path copied'), duration: Duration(seconds: 1)),
+                    );
+                  },
+                ),
+              ],
+            ),
             const SizedBox(height: 24),
 
             // CLAUDE.md Editor
