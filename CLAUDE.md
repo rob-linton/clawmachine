@@ -102,6 +102,17 @@ Semantics(label: 'Connected', child: Text('Connected to ...', ...))
 
 Without `Semantics`, Playwright tests cannot find or verify text content.
 
+## Upload Endpoints
+
+ZIP file upload for bulk importing files into workspaces and skills:
+
+```
+POST /api/v1/workspaces/{id}/upload   — multipart: file=<zip>, [path=<prefix>]
+POST /api/v1/skills/upload            — multipart: file=<zip>, id, name, skill_type, [description], [tags]
+```
+
+Both endpoints auto-strip common root directory prefixes from zip entries (e.g. `my-skill/SKILL.md` → `SKILL.md`). Limits: 100MB zip, 10MB per file, 5000 max entries, zip bomb protection via cumulative size tracking.
+
 ## Self-Testing Rule
 
 Every phase must be validated end-to-end before proceeding. After writing code, exercise it as a real user: hit the API with curl, submit jobs via CLI, open the UI in a browser. See `10-implementation-roadmap.md` section 10 for the full testing protocol.

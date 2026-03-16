@@ -304,6 +304,10 @@ async fn upload_zip(
             }
             "path" => {
                 if let Ok(text) = field.text().await {
+                    // Validate prefix for path traversal
+                    if text.contains("..") || text.starts_with('/') {
+                        return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "Invalid path prefix"}))).into_response();
+                    }
                     prefix = text;
                 }
             }
