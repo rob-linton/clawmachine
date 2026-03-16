@@ -19,6 +19,8 @@ pub fn router() -> Router<AppState> {
         .route("/workspaces/{id}/files", get(list_files))
         .route("/workspaces/{id}/files/{*path}", get(read_file).put(write_file))
         .route("/workspaces/{id}/upload", post(upload_zip).layer(DefaultBodyLimit::max(104_857_600)))
+        .route("/workspaces/{id}/history", get(get_history))
+        .route("/workspaces/{id}/revert/{hash}", post(revert_commit))
 }
 
 async fn create_workspace(
@@ -38,6 +40,11 @@ async fn create_workspace(
                 let claude_md_path = ws.path.join("CLAUDE.md");
                 tokio::fs::write(&claude_md_path, content).await.ok();
             }
+            // Init git repo for workspace snapshots
+            let ws_path = ws.path.clone();
+            tokio::task::spawn_blocking(move || {
+                init_git_repo(&ws_path);
+            }).await.ok();
             (StatusCode::CREATED, Json(ws)).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
@@ -330,5 +337,126 @@ async fn upload_zip(
             Json(result).into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    }
+}
+
+// --- Git operations ---
+
+fn init_git_repo(path: &std::path::Path) {
+    use std::process::Command;
+
+    // Skip if already a git repo
+    if path.join(".git").exists() {
+        return;
+    }
+
+    // Write .gitignore
+    let gitignore = path.join(".gitignore");
+    std::fs::write(&gitignore, ".claw/\n.DS_Store\nnode_modules/\n__pycache__/\ntarget/\n").ok();
+
+    // git init + initial commit
+    let run = |args: &[&str]| -> bool {
+        Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    if run(&["init"]) {
+        run(&["add", "-A"]);
+        run(&["-c", "user.name=ClaudeCodeClaw", "-c", "user.email=claw@local", "commit", "-m", "claw: workspace initialized", "--allow-empty"]);
+    }
+}
+
+async fn get_history(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let ws = match claw_redis::get_workspace(&state.pool, id).await {
+        Ok(Some(ws)) => ws,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let ws_path = ws.path.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("git")
+            .args(["log", "--oneline", "--format=%H|%s|%aI", "-20"])
+            .current_dir(&ws_path)
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let commits: Vec<serde_json::Value> = stdout
+                    .lines()
+                    .filter(|l| !l.is_empty())
+                    .map(|line| {
+                        let parts: Vec<&str> = line.splitn(3, '|').collect();
+                        serde_json::json!({
+                            "hash": parts.first().unwrap_or(&""),
+                            "message": parts.get(1).unwrap_or(&""),
+                            "date": parts.get(2).unwrap_or(&""),
+                        })
+                    })
+                    .collect();
+                Ok(commits)
+            }
+            Ok(o) => Err(String::from_utf8_lossy(&o.stderr).to_string()),
+            Err(e) => Err(e.to_string()),
+        }
+    }).await.unwrap_or(Err("Task failed".into()));
+
+    match result {
+        Ok(commits) => Json(serde_json::json!({"commits": commits})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
+    }
+}
+
+async fn revert_commit(
+    State(state): State<AppState>,
+    Path((id, hash)): Path<(Uuid, String)>,
+) -> impl IntoResponse {
+    let ws = match claw_redis::get_workspace(&state.pool, id).await {
+        Ok(Some(ws)) => ws,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    // Validate hash (only hex chars, 7-40 chars)
+    if !hash.chars().all(|c| c.is_ascii_hexdigit()) || hash.len() < 7 || hash.len() > 40 {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Invalid commit hash"}))).into_response();
+    }
+
+    let ws_path = ws.path.clone();
+    let hash_clone = hash.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("git")
+            .args(["-c", "user.name=ClaudeCodeClaw", "-c", "user.email=claw@local", "revert", "--no-edit", &hash_clone])
+            .current_dir(&ws_path)
+            .output();
+
+        match output {
+            Ok(o) if o.status.success() => Ok(()),
+            Ok(o) => {
+                // Abort the failed revert
+                std::process::Command::new("git")
+                    .args(["revert", "--abort"])
+                    .current_dir(&ws_path)
+                    .output()
+                    .ok();
+                Err(String::from_utf8_lossy(&o.stderr).to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }).await.unwrap_or(Err("Task failed".into()));
+
+    match result {
+        Ok(()) => Json(serde_json::json!({"reverted": hash})).into_response(),
+        Err(e) => (StatusCode::CONFLICT, Json(serde_json::json!({"error": format!("Revert failed: {e}")}))).into_response(),
     }
 }

@@ -187,6 +187,15 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     .await
                     .unwrap_or_default();
 
+                // 3b. Git snapshot: pre-job commit (before skills deployed)
+                if workspace.is_some() {
+                    let ws_path = workspace.as_ref().unwrap().path.clone();
+                    let jid = job_id.to_string();
+                    tokio::task::spawn_blocking(move || {
+                        git_commit(&ws_path, &format!("claw: pre-job {}", jid));
+                    }).await.ok();
+                }
+
                 // 4. Prepare environment (workspace dir, CLAUDE.md, skill files)
                 let prepared_env = match environment::prepare_environment(&job, workspace.as_ref(), &skills).await {
                     Ok(env) => env,
@@ -263,6 +272,15 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
 
                 // 8. Teardown environment
                 environment::teardown_environment(&prepared_env).await;
+
+                // 8b. Git snapshot: post-job commit (after skills removed, captures what Claude changed)
+                if workspace.is_some() && !prepared_env.is_temp {
+                    let ws_path = workspace.as_ref().unwrap().path.clone();
+                    let jid = job_id.to_string();
+                    tokio::task::spawn_blocking(move || {
+                        git_commit(&ws_path, &format!("claw: post-job {}", jid));
+                    }).await.ok();
+                }
 
                 // 9. Release workspace lock
                 if let Some(ws_id) = job.workspace_id {
@@ -376,4 +394,25 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
             }
         }
     }
+}
+
+/// Git add + commit in a workspace (best effort, skips if nothing to commit)
+fn git_commit(path: &std::path::Path, message: &str) {
+    if !path.join(".git").exists() {
+        return;
+    }
+
+    let run = |args: &[&str]| -> bool {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+
+    run(&["add", "-A"]);
+    run(&["-c", "user.name=ClaudeCodeClaw", "-c", "user.email=claw@local", "commit", "-m", message]);
 }
