@@ -20,6 +20,7 @@ yellow() { printf '\033[0;33m%s\033[0m\n' "$1"; }
 
 stop_all() {
     echo "Stopping services..."
+    # Kill by PID file
     for pidfile in "$PIDS_DIR"/*.pid; do
         [ -f "$pidfile" ] || continue
         pid=$(cat "$pidfile")
@@ -30,6 +31,11 @@ stop_all() {
         fi
         rm -f "$pidfile"
     done
+    # Also kill any stale processes by name (catches orphans)
+    pkill -f "target/debug/claw-api" 2>/dev/null && echo "  Killed stale claw-api" || true
+    pkill -f "target/debug/claw-worker" 2>/dev/null && echo "  Killed stale claw-worker" || true
+    pkill -f "target/debug/claw-scheduler" 2>/dev/null && echo "  Killed stale claw-scheduler" || true
+    sleep 1
     green "Stopped."
 }
 
