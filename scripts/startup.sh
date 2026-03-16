@@ -7,6 +7,7 @@ source "$(dirname "$0")/common.sh"
 # Usage: ./scripts/startup.sh           (start all, open browser)
 #        ./scripts/startup.sh stop      (stop all)
 #        ./scripts/startup.sh --dev     (backend + Flutter hot reload on :3000)
+#        ./scripts/startup.sh logs      (tail all log files)
 
 PIDS_DIR="$PROJECT_DIR/.pids"
 LOG_DIR="$PROJECT_DIR/.logs"
@@ -37,6 +38,12 @@ if [ "${1:-}" = "stop" ]; then
     exit 0
 fi
 
+if [ "${1:-}" = "logs" ]; then
+    echo "Tailing all logs (Ctrl+C to stop)..."
+    tail -f "$LOG_DIR"/*.log
+    exit 0
+fi
+
 # Stop any existing instances first
 stop_all 2>/dev/null || true
 
@@ -62,28 +69,35 @@ green "  Redis: OK (DB $REDIS_DB)"
 echo ""
 echo "Building Rust workspace..."
 cd "$PROJECT_DIR"
-if ! cargo build --workspace 2>&1 | tail -3; then
-    red "  Rust build failed!"
+cargo build --workspace > "$LOG_DIR/build-rust.log" 2>&1
+if [ $? -ne 0 ]; then
+    red "  Rust build failed! See .logs/build-rust.log"
+    tail -20 "$LOG_DIR/build-rust.log"
     exit 1
 fi
-green "  Rust: OK"
+green "  Rust: OK (log: .logs/build-rust.log)"
 
 # --- 3. Build Flutter ---
 echo ""
 echo "Building Flutter web..."
 cd "$FLUTTER_DIR"
-flutter clean > /dev/null 2>&1
-flutter pub get > /dev/null 2>&1
-if ! flutter build web --release --no-tree-shake-icons 2>&1 | tail -3; then
-    red "  Flutter build failed!"
+flutter clean > "$LOG_DIR/build-flutter.log" 2>&1
+flutter pub get >> "$LOG_DIR/build-flutter.log" 2>&1
+flutter build web --release --no-tree-shake-icons >> "$LOG_DIR/build-flutter.log" 2>&1
+if [ $? -ne 0 ]; then
+    red "  Flutter build failed! See .logs/build-flutter.log"
+    tail -20 "$LOG_DIR/build-flutter.log"
     exit 1
 fi
-green "  Flutter: OK"
+green "  Flutter: OK (log: .logs/build-flutter.log)"
 
-# --- 4. Start services ---
+# --- 4. Start services with debug logging ---
 echo ""
 echo "Starting services..."
 cd "$PROJECT_DIR"
+
+# Set verbose logging for development
+export RUST_LOG="${RUST_LOG:-info,claw_api=debug,claw_worker=debug,claw_scheduler=debug,claw_redis=debug}"
 
 nohup cargo run -p claw-api > "$LOG_DIR/api.log" 2>&1 &
 echo $! > "$PIDS_DIR/api.pid"
@@ -111,6 +125,7 @@ echo ""
 
 if ! curl -s http://localhost:8080/api/v1/status > /dev/null 2>&1; then
     red "  API failed to start. Check .logs/api.log"
+    tail -20 "$LOG_DIR/api.log"
     exit 1
 fi
 
@@ -118,7 +133,8 @@ fi
 if curl -s -o /dev/null -w "%{http_code}" http://localhost:8080/ | grep -q "200"; then
     green "  Admin console: http://localhost:8080"
 else
-    red "  UI not being served. Check CLAW_STATIC_DIR in .env"
+    red "  UI not being served. Check .logs/api.log"
+    tail -10 "$LOG_DIR/api.log"
     exit 1
 fi
 
@@ -130,7 +146,7 @@ if [ "${1:-}" = "--dev" ]; then
     echo "  Flutter dev:  http://localhost:3000"
     echo ""
     cd "$FLUTTER_DIR"
-    flutter run -d chrome --web-port=3000
+    flutter run -d chrome --web-port=3000 2>&1 | tee "$LOG_DIR/flutter-dev.log"
 else
     echo ""
     echo "Opening browser..."
@@ -148,7 +164,9 @@ else
     echo ""
     echo "  URL:        http://localhost:8080"
     echo "  Logs:       .logs/{api,worker,scheduler}.log"
+    echo "  Builds:     .logs/{build-rust,build-flutter}.log"
     echo ""
+    echo "  Tail logs:  ./scripts/startup.sh logs"
     echo "  Stop:       ./scripts/startup.sh stop"
     echo "  Hot reload: ./scripts/startup.sh --dev"
     echo "========================================="
