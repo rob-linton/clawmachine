@@ -264,7 +264,7 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
             else
               ..._pipelines.map((p) => Card(
                     child: ListTile(
-                      leading: const Icon(Icons.linear_scale),
+                      leading: const Icon(Icons.view_list),
                       title: Text(p['name'] ?? '',
                           style: const TextStyle(fontWeight: FontWeight.bold)),
                       subtitle: Text(

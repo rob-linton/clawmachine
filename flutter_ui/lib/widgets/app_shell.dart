@@ -46,7 +46,7 @@ class AppShell extends StatelessWidget {
               NavigationRailDestination(
                   icon: Icon(Icons.work), label: Text('Jobs')),
               NavigationRailDestination(
-                  icon: Icon(Icons.linear_scale), label: Text('Pipelines')),
+                  icon: Icon(Icons.view_list), label: Text('Pipelines')),
               NavigationRailDestination(
                   icon: Icon(Icons.schedule), label: Text('Schedules')),
               NavigationRailDestination(
