@@ -5,6 +5,7 @@ pub mod skills;
 pub mod crons;
 pub mod workspaces;
 pub mod pipelines;
+pub mod job_templates;
 
 pub use pool::*;
 pub use jobs::*;
@@ -13,3 +14,4 @@ pub use skills::*;
 pub use crons::*;
 pub use workspaces::*;
 pub use pipelines::*;
+pub use job_templates::*;

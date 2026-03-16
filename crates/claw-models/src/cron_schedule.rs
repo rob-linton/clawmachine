@@ -25,6 +25,7 @@ pub struct CronSchedule {
     #[serde(default = "default_cron_priority")]
     pub priority: u8,
     pub workspace_id: Option<Uuid>,
+    pub template_id: Option<Uuid>,
     pub last_run: Option<DateTime<Utc>>,
     pub last_job_id: Option<Uuid>,
     pub created_at: DateTime<Utc>,
@@ -56,6 +57,7 @@ pub struct CreateCronRequest {
     pub tags: Vec<String>,
     pub priority: Option<u8>,
     pub workspace_id: Option<Uuid>,
+    pub template_id: Option<Uuid>,
 }
 
 fn default_enabled() -> bool {

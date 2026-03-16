@@ -112,6 +112,7 @@ async fn run_pipeline(
         priority: Some(5),
         timeout_secs: step.timeout_secs,
         workspace_id: pipeline.workspace_id,
+        template_id: step.template_id,
     };
 
     match claw_redis::submit_job(&state.pool, &req, JobSource::Api).await {

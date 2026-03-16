@@ -84,6 +84,7 @@ async fn update_cron(
         tags: req.tags,
         priority: req.priority.unwrap_or(5),
         workspace_id: req.workspace_id,
+        template_id: req.template_id,
         last_run: existing.last_run,
         last_job_id: existing.last_job_id,
         created_at: existing.created_at,
@@ -115,19 +116,43 @@ async fn trigger_cron(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     };
 
-    let req = CreateJobRequest {
-        prompt: cron.prompt,
-        skill_ids: cron.skill_ids,
-        skill_tags: vec![],
-        working_dir: Some(cron.working_dir),
-        model: cron.model,
-        max_budget_usd: cron.max_budget_usd,
-        allowed_tools: None,
-        output_dest: cron.output_dest,
-        tags: cron.tags,
-        priority: Some(cron.priority),
-        timeout_secs: None,
-        workspace_id: cron.workspace_id,
+    // If cron has a template_id, load template and use its fields
+    let req = if let Some(tmpl_id) = cron.template_id {
+        match claw_redis::get_job_template(&state.pool, tmpl_id).await {
+            Ok(Some(tmpl)) => CreateJobRequest {
+                prompt: tmpl.prompt,
+                skill_ids: tmpl.skill_ids,
+                skill_tags: vec![],
+                working_dir: None,
+                model: tmpl.model,
+                max_budget_usd: None,
+                allowed_tools: tmpl.allowed_tools,
+                output_dest: tmpl.output_dest,
+                tags: tmpl.tags,
+                priority: Some(tmpl.priority),
+                timeout_secs: tmpl.timeout_secs,
+                workspace_id: tmpl.workspace_id,
+                template_id: Some(tmpl_id),
+            },
+            _ => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "Template not found"}))).into_response(),
+        }
+    } else {
+        // Fallback to inline fields (backward compat)
+        CreateJobRequest {
+            prompt: cron.prompt,
+            skill_ids: cron.skill_ids,
+            skill_tags: vec![],
+            working_dir: Some(cron.working_dir),
+            model: cron.model,
+            max_budget_usd: cron.max_budget_usd,
+            allowed_tools: None,
+            output_dest: cron.output_dest,
+            tags: cron.tags,
+            priority: Some(cron.priority),
+            timeout_secs: None,
+            workspace_id: cron.workspace_id,
+            template_id: None,
+        }
     };
 
     match claw_redis::submit_job(&state.pool, &req, JobSource::Cron).await {

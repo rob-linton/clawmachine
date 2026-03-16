@@ -18,7 +18,9 @@ pub struct Pipeline {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineStep {
     pub name: String,
-    /// Prompt text. Can contain `{{previous_result}}` placeholder.
+    pub template_id: Option<Uuid>,
+    /// Inline prompt (used if no template_id, or as override with {{previous_result}}).
+    #[serde(default)]
     pub prompt: String,
     #[serde(default)]
     pub skill_ids: Vec<String>,

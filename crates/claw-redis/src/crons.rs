@@ -25,6 +25,7 @@ pub async fn create_cron(pool: &Pool, req: &CreateCronRequest) -> Result<CronSch
         tags: req.tags.clone(),
         priority: req.priority.unwrap_or(5),
         workspace_id: req.workspace_id,
+        template_id: req.template_id,
         last_run: None,
         last_job_id: None,
         created_at: now,

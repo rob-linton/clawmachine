@@ -22,6 +22,7 @@ class Job {
   final int retryCount;
   final int? timeoutSecs;
   final String? workspaceId;
+  final String? templateId;
   final String? cronId;
   final dynamic skillSnapshot;
   final String? assembledPrompt;
@@ -50,6 +51,7 @@ class Job {
     this.retryCount = 0,
     this.timeoutSecs,
     this.workspaceId,
+    this.templateId,
     this.cronId,
     this.skillSnapshot,
     this.assembledPrompt,
@@ -83,6 +85,7 @@ class Job {
         retryCount: json['retry_count'] ?? 0,
         timeoutSecs: json['timeout_secs'] as int?,
         workspaceId: json['workspace_id'],
+        templateId: json['template_id'],
         cronId: json['cron_id'],
         skillSnapshot: json['skill_snapshot'],
         assembledPrompt: json['assembled_prompt'],

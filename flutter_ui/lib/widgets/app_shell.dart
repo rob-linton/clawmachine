@@ -46,6 +46,8 @@ class AppShell extends StatelessWidget {
               NavigationRailDestination(
                   icon: Icon(Icons.work), label: Text('Jobs')),
               NavigationRailDestination(
+                  icon: Icon(Icons.description), label: Text('Templates')),
+              NavigationRailDestination(
                   icon: Icon(Icons.view_list), label: Text('Pipelines')),
               NavigationRailDestination(
                   icon: Icon(Icons.schedule), label: Text('Schedules')),
@@ -61,12 +63,14 @@ class AppShell extends StatelessWidget {
                 case 1:
                   context.go('/jobs');
                 case 2:
-                  context.go('/pipelines');
+                  context.go('/templates');
                 case 3:
-                  context.go('/schedules');
+                  context.go('/pipelines');
                 case 4:
-                  context.go('/workspaces');
+                  context.go('/schedules');
                 case 5:
+                  context.go('/workspaces');
+                case 6:
                   context.go('/skills');
               }
             },
@@ -80,10 +84,11 @@ class AppShell extends StatelessWidget {
 
   int _indexForLocation(String location) {
     if (location.startsWith('/jobs')) return 1;
-    if (location.startsWith('/pipelines')) return 2;
-    if (location.startsWith('/schedules')) return 3;
-    if (location.startsWith('/workspaces')) return 4;
-    if (location.startsWith('/skills')) return 5;
+    if (location.startsWith('/templates')) return 2;
+    if (location.startsWith('/pipelines')) return 3;
+    if (location.startsWith('/schedules')) return 4;
+    if (location.startsWith('/workspaces')) return 5;
+    if (location.startsWith('/skills')) return 6;
     if (location.startsWith('/settings')) return -1;
     return 0;
   }

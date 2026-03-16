@@ -190,6 +190,31 @@ class ApiClient {
     return Map<String, dynamic>.from(resp.data);
   }
 
+  // Job Templates
+  Future<List<dynamic>> listJobTemplates() async {
+    final resp = await _dio.get('/job-templates');
+    return resp.data['items'] as List? ?? [];
+  }
+
+  Future<Map<String, dynamic>> createJobTemplate(Map<String, dynamic> data) async {
+    final resp = await _dio.post('/job-templates', data: data);
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<Map<String, dynamic>> updateJobTemplate(String id, Map<String, dynamic> data) async {
+    final resp = await _dio.put('/job-templates/$id', data: data);
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<void> deleteJobTemplate(String id) async {
+    await _dio.delete('/job-templates/$id');
+  }
+
+  Future<Map<String, dynamic>> runJobTemplate(String id) async {
+    final resp = await _dio.post('/job-templates/$id/run');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
   // Workspace git history
   Future<List<dynamic>> getWorkspaceHistory(String id) async {
     final resp = await _dio.get('/workspaces/$id/history');

@@ -141,6 +141,7 @@ async fn main() {
                 priority,
                 timeout_secs: None,
                 workspace_id: None,
+                template_id: None,
             };
 
             match client.submit_job(&req).await {

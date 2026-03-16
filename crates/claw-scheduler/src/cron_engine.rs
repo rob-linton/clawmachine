@@ -78,20 +78,45 @@ async fn check_and_fire(pool: &Pool) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Fire: submit a job
-        let req = CreateJobRequest {
-            prompt: cron.prompt.clone(),
-            skill_ids: cron.skill_ids.clone(),
-            skill_tags: vec![],
-            working_dir: Some(cron.working_dir.clone()),
-            model: cron.model.clone(),
-            max_budget_usd: cron.max_budget_usd,
-            allowed_tools: None,
-            output_dest: cron.output_dest.clone(),
-            tags: cron.tags.clone(),
-            priority: Some(cron.priority),
-            timeout_secs: None,
-            workspace_id: cron.workspace_id,
+        // Fire: submit a job (use template if available, else inline fields)
+        let req = if let Some(tmpl_id) = cron.template_id {
+            match claw_redis::get_job_template(pool, tmpl_id).await {
+                Ok(Some(tmpl)) => CreateJobRequest {
+                    prompt: tmpl.prompt,
+                    skill_ids: tmpl.skill_ids,
+                    skill_tags: vec![],
+                    working_dir: None,
+                    model: tmpl.model,
+                    max_budget_usd: None,
+                    allowed_tools: tmpl.allowed_tools,
+                    output_dest: tmpl.output_dest,
+                    tags: tmpl.tags,
+                    priority: Some(tmpl.priority),
+                    timeout_secs: tmpl.timeout_secs,
+                    workspace_id: tmpl.workspace_id,
+                    template_id: Some(tmpl_id),
+                },
+                _ => {
+                    tracing::error!(cron_id = %cron.id, template_id = %tmpl_id, "Template not found for cron");
+                    continue;
+                }
+            }
+        } else {
+            CreateJobRequest {
+                prompt: cron.prompt.clone(),
+                skill_ids: cron.skill_ids.clone(),
+                skill_tags: vec![],
+                working_dir: Some(cron.working_dir.clone()),
+                model: cron.model.clone(),
+                max_budget_usd: cron.max_budget_usd,
+                allowed_tools: None,
+                output_dest: cron.output_dest.clone(),
+                tags: cron.tags.clone(),
+                priority: Some(cron.priority),
+                timeout_secs: None,
+                workspace_id: cron.workspace_id,
+                template_id: None,
+            }
         };
 
         match claw_redis::submit_job(pool, &req, JobSource::Cron).await {

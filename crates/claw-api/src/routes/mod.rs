@@ -5,6 +5,7 @@ pub mod crons;
 pub mod webhook;
 pub mod workspaces;
 pub mod pipelines;
+pub mod job_templates;
 
 use axum::Router;
 use crate::AppState;
@@ -18,4 +19,5 @@ pub fn router() -> Router<AppState> {
         .merge(webhook::router())
         .merge(workspaces::router())
         .merge(pipelines::router())
+        .merge(job_templates::router())
 }
