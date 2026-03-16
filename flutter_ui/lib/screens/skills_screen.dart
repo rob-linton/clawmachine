@@ -61,13 +61,21 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
 
   Future<void> _importSkillZip() async {
     final result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['zip'],
+      type: FileType.any,
       withData: true,
     );
     if (result == null || result.files.isEmpty) return;
 
-    final bytes = result.files.single.bytes;
+    final file = result.files.single;
+    if (!file.name.endsWith('.zip')) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Please select a .zip file')));
+      }
+      return;
+    }
+
+    final bytes = file.bytes;
     if (bytes == null) {
       if (mounted) {
         ScaffoldMessenger.of(context)

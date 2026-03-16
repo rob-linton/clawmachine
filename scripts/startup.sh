@@ -47,7 +47,7 @@ elif [ "$MODE" = "--build" ]; then
     echo ""
     echo "Building Flutter web..."
     cd "$FLUTTER_DIR"
-    flutter build web --release 2>&1 | tail -3
+    flutter build web --release --no-tree-shake-icons 2>&1 | tail -3
     green "  Build complete: flutter_ui/build/web/"
 
 else
