@@ -161,7 +161,7 @@ async fn list_jobs_returns_all() {
     let req2 = CreateJobRequest { prompt: "job 2".into(), ..req.clone() };
     submit_job(&pool, &req2, JobSource::Api).await.unwrap();
 
-    let jobs = list_jobs(&pool, None, 50).await.unwrap();
+    let jobs = list_jobs(&pool, None, 50, None).await.unwrap();
     assert_eq!(jobs.len(), 2);
 }
 

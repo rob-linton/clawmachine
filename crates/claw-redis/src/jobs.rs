@@ -270,8 +270,8 @@ pub async fn get_result(pool: &Pool, job_id: Uuid) -> Result<JobResultResponse, 
     Ok(serde_json::from_str(&json)?)
 }
 
-/// List jobs from the global index set, filter by status.
-pub async fn list_jobs(pool: &Pool, status_filter: Option<JobStatus>, limit: usize) -> Result<Vec<Job>, RedisError> {
+/// List jobs from the global index set, filter by status and/or workspace.
+pub async fn list_jobs(pool: &Pool, status_filter: Option<JobStatus>, limit: usize, workspace_filter: Option<Uuid>) -> Result<Vec<Job>, RedisError> {
     let mut conn = pool.get().await?;
 
     let job_ids: Vec<String> = redis::cmd("SMEMBERS")
@@ -287,6 +287,11 @@ pub async fn list_jobs(pool: &Pool, status_filter: Option<JobStatus>, limit: usi
             if let Ok(job) = serde_json::from_str::<Job>(&json) {
                 if let Some(ref filter) = status_filter {
                     if &job.status != filter {
+                        continue;
+                    }
+                }
+                if let Some(ws_id) = workspace_filter {
+                    if job.workspace_id != Some(ws_id) {
                         continue;
                     }
                 }

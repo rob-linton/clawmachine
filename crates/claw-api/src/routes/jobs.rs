@@ -44,6 +44,7 @@ async fn create_job(
 struct ListQuery {
     status: Option<String>,
     limit: Option<usize>,
+    workspace_id: Option<Uuid>,
 }
 
 async fn list_jobs(
@@ -53,7 +54,7 @@ async fn list_jobs(
     let status_filter = q.status.and_then(|s| s.parse::<JobStatus>().ok());
     let limit = q.limit.unwrap_or(20).min(100);
 
-    match claw_redis::list_jobs(&state.pool, status_filter, limit).await {
+    match claw_redis::list_jobs(&state.pool, status_filter, limit, q.workspace_id).await {
         Ok(jobs) => Json(serde_json::json!({
             "items": jobs,
             "total": jobs.len(),

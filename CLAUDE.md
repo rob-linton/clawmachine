@@ -12,24 +12,33 @@ ClaudeCodeClaw is a job queue orchestrator for Claude Code. It wraps `claude -p`
 
 ## Current State
 
-The project is in **Phase 0** (MVP prototype). A single Rust binary polls Redis and runs `claude -p`. The full architecture (6 Rust crates, Flutter app, Docker) is documented in `Documents/architecture/` but not yet implemented.
+The project has a working multi-crate Rust backend (6 crates), Flutter web dashboard, Redis queue, parallel workers, scheduler (cron + file watcher), and workspace management. Jobs execute in isolated workspaces with CLAUDE.md and `.claude/skills/` deployed on disk.
 
 ## Build & Run
 
 ```bash
-cargo build                          # Build prototype
-cargo run                            # Start worker (needs Redis + Claude Code OAuth session)
-cargo check                          # Type-check without building
-cargo clippy -- -D warnings          # Lint
-cargo test                           # Run tests (none yet in Phase 0)
+cargo build --workspace                # Build all crates
+cargo check                            # Type-check without building
+cargo clippy -- -D warnings            # Lint
+cargo test --workspace -- --test-threads=1  # Run tests (needs Redis on DB 15)
+
+# Individual binaries:
+cargo run -p claw-api                  # API server (port 8080)
+cargo run -p claw-worker               # Worker (claims + executes jobs)
+cargo run -p claw-scheduler            # Scheduler (cron + file watcher)
+cargo run -p claw-cli                  # CLI tool
 ```
 
 ## Scripts
 
 ```bash
-./scripts/submit.sh "your prompt"              # Submit a job to Redis
-./scripts/result.sh <job_id>                   # Check job status and result
-./scripts/smoke-test-p0.sh                     # End-to-end smoke test (needs running worker)
+./scripts/dev.sh                       # Start backend (Redis + API + Worker + Scheduler)
+./scripts/dev.sh stop                  # Stop backend
+./scripts/startup.sh                   # Build + serve Flutter admin console
+./scripts/startup.sh --dev             # Flutter hot reload on :3000
+./scripts/startup.sh --build           # Build Flutter only
+./scripts/submit.sh "your prompt"      # Submit a job to Redis
+./scripts/result.sh <job_id>           # Check job status and result
 ```
 
 ## Prerequisites
@@ -37,38 +46,47 @@ cargo test                           # Run tests (none yet in Phase 0)
 - Redis running locally (`redis-server` or `docker run -d -p 6379:6379 redis:7-alpine`)
 - Claude Code CLI installed and authenticated via OAuth (`claude --version`)
 - Rust toolchain (`rustc 1.83+`)
+- Flutter SDK (`flutter 3.x+`) for the admin console
 
 ## Architecture
 
-Full architecture docs live in `Documents/architecture/` (11 documents). Key references:
+Full architecture docs live in `Documents/architecture/` (12 documents). Key references:
 
 | Topic | Document |
 |-------|----------|
 | System overview & decisions | `00-overview.md` |
+| System architecture | `01-system-architecture.md` |
 | Redis schema, Lua scripts, job state machine | `02-data-model.md` |
 | REST API + WebSocket spec | `03-api-specification.md` |
 | Worker subprocess management | `04-worker-engine.md` |
 | Skill injection mechanics | `05-skills-system.md` |
+| CLI reference | `06-cli-reference.md` |
+| Flutter UI design | `07-flutter-ui.md` |
+| Docker deployment | `08-deployment.md` |
+| Security & reliability | `09-security-and-reliability.md` |
 | Implementation phases & self-testing | `10-implementation-roadmap.md` |
 
-### Target Architecture (not yet built)
+### Architecture
 
 ```
-CLI → Axum API → Redis ← Workers (claude -p subprocess)
-                   ↑
-              Scheduler (cron + file watcher)
+CLI → Axum API → Redis ← Workers (claude -p in workspace)
+                   ↑              ↓
+              Scheduler     Workspaces (CLAUDE.md + .claude/skills/)
                    ↓
-            Flutter UI (WebSocket)
+            Flutter UI (http://localhost:8080)
 ```
 
-**Crate structure** (Phase 1+): `claw-models` → `claw-redis` → `claw-api`, `claw-worker`, `claw-scheduler`, `claw-cli`
+**Crate structure**: `claw-models` → `claw-redis` → `claw-api`, `claw-worker`, `claw-scheduler`, `claw-cli`
 
 ### Key Design Decisions
 
 - **CLI goes through API** (not direct Redis) — single codepath for validation/events/auth
-- **Redis Streams** for job state events (not Pub/Sub) — prevents stale UI from missed events. Pub/Sub only for log lines.
-- **Atomic Lua scripts** for job claiming and reaper re-queuing — prevents races between parallel workers
+- **Workspaces are first-class entities** — persistent directories with CLAUDE.md and skills. Jobs reference workspaces by ID. Redis is source of truth for CLAUDE.md; disk is written at job time.
+- **Workspace locking** — one job at a time per persistent workspace (SETNX with TTL). Re-queue on contention. Temp workspaces don't need locks.
+- **Atomic Lua scripts** for job claiming and workspace lock release — prevents races between parallel workers
 - **Skill snapshotting** — `skill_snapshot` + `assembled_prompt` stored per-job for reproducibility
+- **Skills deployed to disk** — Script skills written to `.claude/skills/{id}/SKILL.md` + bundled files. ClaudeConfig skills merged into workspace CLAUDE.md. Only Template skills injected into prompt text. Claude Code discovers disk skills natively.
+- **Post-execution harvesting** — new skills created by Claude in `.claude/skills/` are captured back to Redis. Pre-existing skills are snapshotted before execution to avoid false positives.
 - **CLAUDE.md crash recovery** — backup + marker files so worker cleanup survives unclean shutdown
 
 ## Flutter Semantics Rule
@@ -94,3 +112,9 @@ Every phase must be validated end-to-end before proceeding. After writing code, 
 |----------|---------|---------|
 | `CLAW_REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection |
 | `CLAW_API_URL` | `http://127.0.0.1:8080` | API server URL (for CLI) |
+| `CLAW_API_PORT` | `8080` | API server listen port |
+| `CLAW_STATIC_DIR` | `flutter_ui/build/web` | Flutter build directory to serve |
+| `CLAW_WORKER_CONCURRENCY` | `1` | Number of parallel worker tasks |
+| `CLAW_LOG_FORMAT` | (text) | Set to `json` for structured JSON logging |
+| `CLAW_FAILURE_WEBHOOK_URL` | (unset) | POST to this URL when a job fails |
+| `CLAW_WORKSPACES_DIR` | `~/.claw/workspaces` | Base directory for auto-created workspaces |

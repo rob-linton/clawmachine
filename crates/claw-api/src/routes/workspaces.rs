@@ -156,6 +156,9 @@ async fn list_files(
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     };
 
+    if !ws.path.exists() {
+        return Json(serde_json::json!({"files": []})).into_response();
+    }
     match list_dir_entries(&ws.path, 3, 500).await {
         Ok(files) => Json(serde_json::json!({"files": files})).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
