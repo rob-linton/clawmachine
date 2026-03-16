@@ -446,7 +446,7 @@ class _WorkspaceDetailScreenState
                 const SizedBox(width: 8),
                 FilledButton.icon(
                   onPressed: _uploadZip,
-                  icon: const Icon(Icons.upload_file, size: 16),
+                  icon: const Icon(Icons.folder_zip, size: 16),
                   label: const Text('Upload ZIP'),
                 ),
               ],
@@ -494,11 +494,18 @@ class _WorkspaceDetailScreenState
   }
 
   Future<void> _uploadZip() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.any,
-      withData: true,
-    );
-    if (result == null || result.files.isEmpty) return;
+    final FilePickerResult result;
+    try {
+      final r = await FilePicker.platform.pickFiles(withData: true);
+      if (r == null || r.files.isEmpty) return;
+      result = r;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('File picker error: $e')));
+      }
+      return;
+    }
 
     final file = result.files.single;
     if (!file.name.endsWith('.zip')) {

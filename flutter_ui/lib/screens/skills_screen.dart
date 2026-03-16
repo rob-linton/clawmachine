@@ -60,11 +60,18 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
   }
 
   Future<void> _importSkillZip() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.any,
-      withData: true,
-    );
-    if (result == null || result.files.isEmpty) return;
+    final FilePickerResult result;
+    try {
+      final r = await FilePicker.platform.pickFiles(withData: true);
+      if (r == null || r.files.isEmpty) return;
+      result = r;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('File picker error: $e')));
+      }
+      return;
+    }
 
     final file = result.files.single;
     if (!file.name.endsWith('.zip')) {
@@ -330,7 +337,7 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
               const SizedBox(width: 8),
               OutlinedButton.icon(
                 onPressed: _importSkillZip,
-                icon: const Icon(Icons.upload_file),
+                icon: const Icon(Icons.folder_zip),
                 label: const Text('Import ZIP'),
               ),
               const SizedBox(width: 8),
