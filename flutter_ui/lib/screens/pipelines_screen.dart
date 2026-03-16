@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../main.dart';
+import '../models/skill.dart';
+import '../widgets/skill_selector.dart';
 
 class PipelinesScreen extends ConsumerStatefulWidget {
   const PipelinesScreen({super.key});
@@ -46,21 +48,25 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
     String? workspaceId;
     List<dynamic> templates = [];
     List<dynamic> workspaces = [];
+    List<Skill> skills = [];
     try { templates = await ref.read(apiClientProvider).listJobTemplates(); } catch (_) {}
     try {
       final ws = await ref.read(apiClientProvider).listWorkspaces();
       workspaces = ws.map((w) => {'id': w.id, 'name': w.name}).toList();
     } catch (_) {}
+    try { skills = await ref.read(apiClientProvider).listSkills(); } catch (_) {}
+
+    final stepSkillSets = <Set<String>>[];
 
     void addStep() {
       steps.add({
         'name': TextEditingController(),
         'prompt': TextEditingController(),
         'timeout': TextEditingController(),
-        'skills': TextEditingController(),
       });
       stepModels.add(null);
       stepTemplateIds.add(null);
+      stepSkillSets.add(<String>{});
     }
 
     addStep();
@@ -122,7 +128,7 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                                   IconButton(
                                     icon: const Icon(Icons.delete, size: 18),
                                     onPressed: () =>
-                                        setDialogState(() { steps.removeAt(i); stepModels.removeAt(i); stepTemplateIds.removeAt(i); }),
+                                        setDialogState(() { steps.removeAt(i); stepModels.removeAt(i); stepTemplateIds.removeAt(i); stepSkillSets.removeAt(i); }),
                                   ),
                               ],
                             ),
@@ -190,23 +196,20 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                               onChanged: (v) => setDialogState(() => stepModels[i] = v),
                             ),
                             const SizedBox(height: 8),
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: TextField(
-                                    controller: s['timeout'],
-                                    decoration: const InputDecoration(labelText: 'Timeout (sec)', isDense: true),
-                                    keyboardType: TextInputType.number,
-                                  ),
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: TextField(
-                                    controller: s['skills'],
-                                    decoration: const InputDecoration(labelText: 'Skill IDs (comma-sep)', isDense: true),
-                                  ),
-                                ),
-                              ],
+                            const SizedBox(height: 8),
+                            TextField(
+                              controller: s['timeout'],
+                              decoration: const InputDecoration(labelText: 'Timeout (sec)', isDense: true),
+                              keyboardType: TextInputType.number,
+                            ),
+                            const SizedBox(height: 8),
+                            SkillSelector(
+                              availableSkills: skills,
+                              selectedIds: stepSkillSets[i],
+                              label: 'Step Skills',
+                              onChanged: (ids) => setDialogState(() {
+                                stepSkillSets[i] = ids;
+                              }),
                             ),
                           ],
                         ),
@@ -260,8 +263,8 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                                 'template_id': stepTemplateIds[entry.key],
                               if (entry.value['timeout']!.text.trim().isNotEmpty)
                                 'timeout_secs': int.tryParse(entry.value['timeout']!.text.trim()),
-                              if (entry.value['skills']!.text.trim().isNotEmpty)
-                                'skill_ids': entry.value['skills']!.text.split(',').map((s) => s.trim()).where((s) => s.isNotEmpty).toList(),
+                              if (stepSkillSets[entry.key].isNotEmpty)
+                                'skill_ids': stepSkillSets[entry.key].toList(),
                             })
                         .toList(),
                   });
