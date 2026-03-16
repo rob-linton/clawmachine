@@ -100,6 +100,29 @@ Semantics(label: 'Connected', child: Text('Connected to ...', ...))
 
 Without `Semantics`, Playwright tests cannot find or verify text content.
 
+## Pipeline Endpoints
+
+```
+POST   /api/v1/pipelines              — create pipeline template (name, steps with prompts)
+GET    /api/v1/pipelines              — list all pipelines
+GET    /api/v1/pipelines/{id}         — get pipeline details
+DELETE /api/v1/pipelines/{id}         — delete pipeline
+POST   /api/v1/pipelines/{id}/run     — trigger pipeline run (submits first step as job)
+GET    /api/v1/pipeline-runs          — list all pipeline runs
+GET    /api/v1/pipeline-runs/{id}     — get run status + step job IDs
+```
+
+Steps can use `{{previous_result}}` placeholder to inject the previous step's output.
+
+## Workspace History Endpoints
+
+```
+GET    /api/v1/workspaces/{id}/history        — git log (last 20 commits)
+POST   /api/v1/workspaces/{id}/revert/{hash}  — git revert a specific commit
+```
+
+Workspaces auto-commit before/after each job for rollback safety.
+
 ## Upload Endpoints
 
 ZIP file upload for bulk importing files into workspaces and skills:

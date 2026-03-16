@@ -264,6 +264,7 @@ class _WorkspaceDetailScreenState
     extends ConsumerState<WorkspaceDetailScreen> {
   Workspace? _workspace;
   List<dynamic> _files = [];
+  List<dynamic> _commits = [];
   bool _loading = true;
   final _claudeMdCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
@@ -281,12 +282,17 @@ class _WorkspaceDetailScreenState
       final api = ref.read(apiClientProvider);
       final ws = await api.getWorkspace(widget.workspaceId);
       List<dynamic> files = [];
+      List<dynamic> commits = [];
       try {
         files = await api.listWorkspaceFiles(widget.workspaceId);
+      } catch (_) {}
+      try {
+        commits = await api.getWorkspaceHistory(widget.workspaceId);
       } catch (_) {}
       setState(() {
         _workspace = ws;
         _files = files;
+        _commits = commits;
         _nameCtrl.text = ws.name;
         _descCtrl.text = ws.description;
         _claudeMdCtrl.text = ws.claudeMd ?? '';
@@ -487,10 +493,77 @@ class _WorkspaceDetailScreenState
                   ),
                 ),
               ),
+
+            // Git History
+            const SizedBox(height: 24),
+            Text('History', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            if (_commits.isEmpty)
+              const Text('No git history yet. History is created when jobs run.')
+            else
+              Card(
+                child: SizedBox(
+                  height: 250,
+                  child: ListView.builder(
+                    itemCount: _commits.length,
+                    itemBuilder: (context, i) {
+                      final commit = _commits[i];
+                      final hash = (commit['hash'] ?? '').toString();
+                      final message = commit['message'] ?? '';
+                      final date = commit['date'] ?? '';
+                      final shortHash = hash.length >= 7 ? hash.substring(0, 7) : hash;
+                      return ListTile(
+                        dense: true,
+                        leading: const Icon(Icons.commit, size: 18),
+                        title: Text(message,
+                            style: const TextStyle(fontSize: 13)),
+                        subtitle: Text('$shortHash — $date',
+                            style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                        trailing: message.startsWith('claw: post-job')
+                            ? TextButton(
+                                onPressed: () => _revertCommit(hash),
+                                child: const Text('Revert'),
+                              )
+                            : null,
+                      );
+                    },
+                  ),
+                ),
+              ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _revertCommit(String hash) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Revert Commit'),
+        content: Text('Revert commit ${hash.substring(0, 7)}? This will undo the changes from that job.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Revert')),
+        ],
+      ),
+    );
+    if (confirm != true) return;
+    try {
+      await ref.read(apiClientProvider).revertWorkspaceCommit(widget.workspaceId, hash);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Commit reverted')),
+        );
+      }
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Revert failed: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _uploadZip() async {

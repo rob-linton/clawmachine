@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../main.dart';
 
 class PipelinesScreen extends ConsumerStatefulWidget {
@@ -286,19 +287,48 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                     : status == 'failed'
                         ? Colors.red
                         : Colors.orange;
-                return ListTile(
-                  dense: true,
+                final stepJobs = (r['step_jobs'] as List?) ?? [];
+                return ExpansionTile(
                   leading: Icon(icon, color: color, size: 20),
                   title: Text(r['pipeline_name'] ?? ''),
                   subtitle: Text(
-                      'Step ${(r['current_step'] ?? 0) + 1} — $status'),
-                  trailing: Text(
-                    (r['created_at'] ?? '').toString().substring(0, 19.clamp(0, (r['created_at'] ?? '').toString().length)),
-                    style: const TextStyle(fontSize: 11),
-                  ),
-                  onTap: () {
-                    // Could navigate to run detail
-                  },
+                      'Step ${(r['current_step'] ?? 0) + 1}/${stepJobs.length} — $status'
+                      '${r['error'] != null ? ' — ${r['error']}' : ''}'),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          ...stepJobs.asMap().entries.map((entry) {
+                            final idx = entry.key;
+                            final jobId = entry.value;
+                            if (jobId == null) {
+                              return ListTile(
+                                dense: true,
+                                leading: const Icon(Icons.pending, size: 16, color: Colors.grey),
+                                title: Text('Step ${idx + 1}: pending'),
+                              );
+                            }
+                            final shortId = jobId.toString().length >= 8
+                                ? jobId.toString().substring(0, 8)
+                                : jobId.toString();
+                            return ListTile(
+                              dense: true,
+                              leading: Icon(
+                                idx <= (r['current_step'] ?? 0) ? Icons.check : Icons.pending,
+                                size: 16,
+                                color: idx <= (r['current_step'] ?? 0) ? Colors.green : Colors.grey,
+                              ),
+                              title: Text('Step ${idx + 1}: $shortId'),
+                              trailing: const Icon(Icons.open_in_new, size: 14),
+                              onTap: () => context.go('/jobs/$jobId'),
+                            );
+                          }),
+                        ],
+                      ),
+                    ),
+                  ],
                 );
               }),
             ],

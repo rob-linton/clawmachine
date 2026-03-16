@@ -190,6 +190,16 @@ class ApiClient {
     return Map<String, dynamic>.from(resp.data);
   }
 
+  // Workspace git history
+  Future<List<dynamic>> getWorkspaceHistory(String id) async {
+    final resp = await _dio.get('/workspaces/$id/history');
+    return resp.data['commits'] as List? ?? [];
+  }
+
+  Future<void> revertWorkspaceCommit(String id, String hash) async {
+    await _dio.post('/workspaces/$id/revert/$hash');
+  }
+
   // Pipelines
   Future<List<dynamic>> listPipelines() async {
     final resp = await _dio.get('/pipelines');
@@ -213,6 +223,16 @@ class ApiClient {
   Future<List<dynamic>> listPipelineRuns() async {
     final resp = await _dio.get('/pipeline-runs');
     return resp.data['items'] as List? ?? [];
+  }
+
+  Future<Map<String, dynamic>> getPipeline(String id) async {
+    final resp = await _dio.get('/pipelines/$id');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<Map<String, dynamic>> getPipelineRun(String id) async {
+    final resp = await _dio.get('/pipeline-runs/$id');
+    return Map<String, dynamic>.from(resp.data);
   }
 
   Future<Skill> uploadSkillZip(Uint8List zipBytes, {
