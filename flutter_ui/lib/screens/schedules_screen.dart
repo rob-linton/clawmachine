@@ -4,6 +4,7 @@ import '../main.dart';
 import '../models/cron_schedule.dart';
 import '../models/skill.dart';
 import '../models/workspace.dart';
+import '../widgets/skill_selector.dart';
 
 class SchedulesScreen extends ConsumerStatefulWidget {
   const SchedulesScreen({super.key});
@@ -215,26 +216,15 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                   ],
 
                   // Skills
-                  if (skills.isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    const Text('Skills', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                    const SizedBox(height: 4),
-                    Wrap(
-                      spacing: 6,
-                      children: skills.map((s) {
-                        final selected = selectedSkills.contains(s.id);
-                        return FilterChip(
-                          label: Text(s.name),
-                          selected: selected,
-                          onSelected: (v) {
-                            setDialogState(() {
-                              if (v) selectedSkills.add(s.id); else selectedSkills.remove(s.id);
-                            });
-                          },
-                        );
-                      }).toList(),
-                    ),
-                  ],
+                  const SizedBox(height: 12),
+                  SkillSelector(
+                    availableSkills: skills,
+                    selectedIds: selectedSkills,
+                    onChanged: (ids) => setDialogState(() {
+                      selectedSkills.clear();
+                      selectedSkills.addAll(ids);
+                    }),
+                  ),
 
                   // Advanced: budget, output, tags
                   ExpansionTile(

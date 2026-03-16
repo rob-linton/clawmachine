@@ -5,6 +5,7 @@ import '../main.dart';
 import '../models/job.dart';
 import '../models/skill.dart';
 import '../models/workspace.dart';
+import '../widgets/skill_selector.dart';
 
 class SubmitJobScreen extends ConsumerStatefulWidget {
   const SubmitJobScreen({super.key});
@@ -300,33 +301,18 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                   ],
 
                   // Additional Skills (injected at job time)
-                  if (_availableSkills.isNotEmpty) ...[
-                    Text(_workspaceSkillNames.isNotEmpty
-                            ? 'Additional Skills (injected for this job)'
-                            : 'Skills',
-                        style: Theme.of(context).textTheme.titleMedium),
-                    const SizedBox(height: 8),
-                    Wrap(
-                      spacing: 8,
-                      children: _availableSkills.map((s) {
-                        final selected = _selectedSkills.contains(s.id);
-                        return FilterChip(
-                          label: Text(s.name),
-                          selected: selected,
-                          onSelected: (v) {
-                            setState(() {
-                              if (v) {
-                                _selectedSkills.add(s.id);
-                              } else {
-                                _selectedSkills.remove(s.id);
-                              }
-                            });
-                          },
-                        );
-                      }).toList(),
-                    ),
-                    const SizedBox(height: 24),
-                  ],
+                  SkillSelector(
+                    availableSkills: _availableSkills,
+                    selectedIds: _selectedSkills,
+                    label: _workspaceSkillNames.isNotEmpty
+                        ? 'Additional Skills (injected for this job)'
+                        : 'Skills',
+                    onChanged: (ids) => setState(() {
+                      _selectedSkills.clear();
+                      _selectedSkills.addAll(ids);
+                    }),
+                  ),
+                  const SizedBox(height: 24),
                   if (_availableSkills.isEmpty && _workspaceSkillNames.isEmpty)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 16),
