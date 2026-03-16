@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:dio/dio.dart';
 import '../models/job.dart';
 import '../models/skill.dart';
@@ -178,5 +179,27 @@ class ApiClient {
 
   Future<void> putWorkspaceFile(String id, String path, String content) async {
     await _dio.put('/workspaces/$id/files/$path', data: {'content': content});
+  }
+
+  Future<Map<String, dynamic>> uploadWorkspaceZip(String workspaceId, Uint8List zipBytes, {String? prefix}) async {
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(zipBytes, filename: 'upload.zip'),
+      if (prefix != null && prefix.isNotEmpty) 'path': prefix,
+    });
+    final resp = await _dio.post('/workspaces/$workspaceId/upload', data: formData);
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<Skill> uploadSkillZip(Uint8List zipBytes, {
+    required String id, required String name, required String skillType,
+    String description = '', List<String> tags = const [],
+  }) async {
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(zipBytes, filename: 'skill.zip'),
+      'id': id, 'name': name, 'skill_type': skillType,
+      'description': description, 'tags': tags.join(','),
+    });
+    final resp = await _dio.post('/skills/upload', data: formData);
+    return Skill.fromJson(resp.data);
   }
 }

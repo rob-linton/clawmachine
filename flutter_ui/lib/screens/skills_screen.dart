@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../main.dart';
@@ -55,6 +57,124 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
             .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
       }
     }
+  }
+
+  Future<void> _importSkillZip() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final bytes = result.files.single.bytes;
+    if (bytes == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Failed to read file')));
+      }
+      return;
+    }
+
+    final idCtrl = TextEditingController();
+    final nameCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
+    final tagsCtrl = TextEditingController();
+    String skillType = 'script';
+    String? errorText;
+
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('Import ${result.files.single.name}'),
+          content: SizedBox(
+            width: 500,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('${(bytes.length / 1024).toStringAsFixed(1)} KB',
+                      style: const TextStyle(color: Colors.grey)),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: idCtrl,
+                    decoration: const InputDecoration(labelText: 'Skill ID'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: nameCtrl,
+                    decoration: const InputDecoration(labelText: 'Name'),
+                  ),
+                  const SizedBox(height: 12),
+                  DropdownButtonFormField<String>(
+                    initialValue: skillType,
+                    decoration: const InputDecoration(labelText: 'Type'),
+                    items: const [
+                      DropdownMenuItem(value: 'script', child: Text('Script')),
+                      DropdownMenuItem(value: 'template', child: Text('Template')),
+                      DropdownMenuItem(value: 'claude_config', child: Text('Claude Config')),
+                    ],
+                    onChanged: (v) {
+                      if (v != null) setDialogState(() => skillType = v);
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: descCtrl,
+                    decoration: const InputDecoration(labelText: 'Description'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: tagsCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Tags (comma-separated)',
+                    ),
+                  ),
+                  if (errorText != null) ...[
+                    const SizedBox(height: 8),
+                    Text(errorText!, style: const TextStyle(color: Colors.red)),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                if (idCtrl.text.trim().isEmpty || nameCtrl.text.trim().isEmpty) {
+                  setDialogState(() => errorText = 'ID and Name are required');
+                  return;
+                }
+                try {
+                  final tags = tagsCtrl.text
+                      .split(',')
+                      .map((t) => t.trim())
+                      .where((t) => t.isNotEmpty)
+                      .toList();
+                  await ref.read(apiClientProvider).uploadSkillZip(
+                    Uint8List.fromList(bytes),
+                    id: idCtrl.text.trim(),
+                    name: nameCtrl.text.trim(),
+                    skillType: skillType,
+                    description: descCtrl.text.trim(),
+                    tags: tags,
+                  );
+                  if (ctx.mounted) Navigator.pop(ctx, true);
+                } catch (e) {
+                  setDialogState(() => errorText = 'Failed: $e');
+                }
+              },
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) _refresh();
   }
 
   Future<void> _showCreateEditDialog({Skill? existing}) async {
@@ -198,6 +318,12 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                 onPressed: () => _showCreateEditDialog(),
                 icon: const Icon(Icons.add),
                 label: const Text('New Skill'),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _importSkillZip,
+                icon: const Icon(Icons.upload_file),
+                label: const Text('Import ZIP'),
               ),
               const SizedBox(width: 8),
               IconButton(

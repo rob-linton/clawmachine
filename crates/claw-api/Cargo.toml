@@ -7,7 +7,7 @@ edition = "2021"
 claw-models = { path = "../claw-models" }
 claw-redis = { path = "../claw-redis" }
 tokio = { workspace = true }
-axum = { workspace = true }
+axum = { workspace = true, features = ["multipart"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
@@ -18,3 +18,4 @@ deadpool-redis = { workspace = true }
 uuid = { workspace = true }
 cron = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
+zip = { version = "8.2.0", features = ["deflate"] }

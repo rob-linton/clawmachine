@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -10,10 +10,12 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use crate::AppState;
+use crate::upload_utils::{self, ExtractLimits};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/skills", post(create_skill).get(list_skills))
+        .route("/skills/upload", post(upload_skill_zip).layer(DefaultBodyLimit::max(104_857_600)))
         .route("/skills/{id}", get(get_skill).put(update_skill).delete(delete_skill))
 }
 
@@ -85,6 +87,93 @@ async fn delete_skill(
 ) -> impl IntoResponse {
     match claw_redis::delete_skill(&state.pool, &id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+// --- ZIP Upload ---
+
+async fn upload_skill_zip(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let mut zip_data: Option<Vec<u8>> = None;
+    let mut id = String::new();
+    let mut name = String::new();
+    let mut skill_type_str = String::from("script");
+    let mut description = String::new();
+    let mut tags_str = String::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let field_name = field.name().unwrap_or("").to_string();
+        match field_name.as_str() {
+            "file" => {
+                match field.bytes().await {
+                    Ok(bytes) => zip_data = Some(bytes.to_vec()),
+                    Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("Failed to read file: {e}")}))).into_response(),
+                }
+            }
+            "id" => { id = field.text().await.unwrap_or_default(); }
+            "name" => { name = field.text().await.unwrap_or_default(); }
+            "skill_type" => { skill_type_str = field.text().await.unwrap_or_default(); }
+            "description" => { description = field.text().await.unwrap_or_default(); }
+            "tags" => { tags_str = field.text().await.unwrap_or_default(); }
+            _ => {}
+        }
+    }
+
+    if id.is_empty() || name.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "id and name are required"}))).into_response();
+    }
+
+    let Some(data) = zip_data else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "No file field in upload"}))).into_response();
+    };
+
+    let skill_type: SkillType = serde_json::from_str(&format!("\"{}\"", skill_type_str))
+        .unwrap_or(SkillType::Script);
+
+    let limits = ExtractLimits {
+        max_total_size: 50 * 1024 * 1024, // 50MB for skills
+        ..Default::default()
+    };
+
+    let mut files = match upload_utils::extract_zip_to_map(&data, &limits) {
+        Ok(f) => f,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+
+    // Extract SKILL.md as the main content
+    let content = files.remove("SKILL.md").unwrap_or_default();
+
+    let tags: Vec<String> = if tags_str.is_empty() {
+        vec![]
+    } else {
+        tags_str.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect()
+    };
+
+    let skill = claw_redis::new_skill(&id, &name, skill_type, &content, &description, tags, files);
+
+    // Check if exists → update or create
+    let result = match claw_redis::get_skill(&state.pool, &id).await {
+        Ok(Some(existing)) => {
+            let mut updated = skill;
+            updated.created_at = existing.created_at;
+            match claw_redis::update_skill(&state.pool, &updated).await {
+                Ok(()) => Ok(updated),
+                Err(e) => Err(e),
+            }
+        }
+        _ => {
+            match claw_redis::create_skill(&state.pool, &skill).await {
+                Ok(()) => Ok(skill),
+                Err(e) => Err(e),
+            }
+        }
+    };
+
+    match result {
+        Ok(s) => (StatusCode::CREATED, Json(s)).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }

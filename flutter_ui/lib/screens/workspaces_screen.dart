@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -441,6 +443,12 @@ class _WorkspaceDetailScreenState
                   icon: const Icon(Icons.create_new_folder, size: 16),
                   label: const Text('New Folder'),
                 ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: _uploadZip,
+                  icon: const Icon(Icons.upload_file, size: 16),
+                  label: const Text('Upload ZIP'),
+                ),
               ],
             ),
             const SizedBox(height: 8),
@@ -483,6 +491,77 @@ class _WorkspaceDetailScreenState
         ),
       ),
     );
+  }
+
+  Future<void> _uploadZip() async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['zip'],
+      withData: true,
+    );
+    if (result == null || result.files.isEmpty) return;
+
+    final bytes = result.files.single.bytes;
+    if (bytes == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Failed to read file')));
+      }
+      return;
+    }
+
+    // Optional: ask for subdirectory prefix
+    final prefixCtrl = TextEditingController();
+    final shouldUpload = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Upload ${result.files.single.name}'),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('${(bytes.length / 1024).toStringAsFixed(1)} KB'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: prefixCtrl,
+                decoration: const InputDecoration(
+                  labelText: 'Subdirectory prefix (optional)',
+                  hintText: 'e.g. .claude/skills/my-skill',
+                  helperText: 'Leave empty to extract to workspace root',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Upload')),
+        ],
+      ),
+    );
+
+    if (shouldUpload != true) return;
+
+    try {
+      final api = ref.read(apiClientProvider);
+      final uploadResult = await api.uploadWorkspaceZip(
+        widget.workspaceId,
+        Uint8List.fromList(bytes),
+        prefix: prefixCtrl.text.trim().isEmpty ? null : prefixCtrl.text.trim(),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text('Uploaded ${uploadResult['uploaded']} files'),
+        ));
+      }
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Upload failed: $e')));
+      }
+    }
   }
 
   Future<void> _showNewFileDialog() async {

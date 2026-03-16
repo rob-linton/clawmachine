@@ -1,4 +1,5 @@
 mod routes;
+pub mod upload_utils;
 
 use axum::Router;
 use deadpool_redis::Pool;

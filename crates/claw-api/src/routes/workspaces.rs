@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, Query, State},
+    extract::{DefaultBodyLimit, Multipart, Path, Query, State},
     http::StatusCode,
     response::IntoResponse,
     routing::{get, post},
@@ -10,6 +10,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::upload_utils::{self, ExtractLimits};
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -17,6 +18,7 @@ pub fn router() -> Router<AppState> {
         .route("/workspaces/{id}", get(get_workspace).put(update_workspace).delete(delete_workspace))
         .route("/workspaces/{id}/files", get(list_files))
         .route("/workspaces/{id}/files/{*path}", get(read_file).put(write_file))
+        .route("/workspaces/{id}/upload", post(upload_zip).layer(DefaultBodyLimit::max(104_857_600)))
 }
 
 async fn create_workspace(
@@ -265,5 +267,64 @@ async fn write_file(
     match tokio::fs::write(&resolved, &req.content).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+// --- ZIP Upload ---
+
+async fn upload_zip(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let ws = match claw_redis::get_workspace(&state.pool, id).await {
+        Ok(Some(ws)) => ws,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    // Ensure workspace directory exists
+    if !ws.path.exists() {
+        if let Err(e) = tokio::fs::create_dir_all(&ws.path).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Failed to create workspace dir: {e}")}))).into_response();
+        }
+    }
+
+    let mut zip_data: Option<Vec<u8>> = None;
+    let mut prefix = String::new();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "file" => {
+                match field.bytes().await {
+                    Ok(bytes) => zip_data = Some(bytes.to_vec()),
+                    Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("Failed to read file: {e}")}))).into_response(),
+                }
+            }
+            "path" => {
+                if let Ok(text) = field.text().await {
+                    prefix = text;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let Some(data) = zip_data else {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "No file field in upload"}))).into_response();
+    };
+
+    let limits = ExtractLimits {
+        max_total_size: 500 * 1024 * 1024,
+        ..Default::default()
+    };
+
+    match upload_utils::extract_zip_to_dir(&data, &ws.path, &prefix, &limits).await {
+        Ok(result) => {
+            tracing::info!(workspace_id = %id, uploaded = result.uploaded, skipped = result.skipped, "ZIP uploaded to workspace");
+            Json(result).into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
     }
 }
