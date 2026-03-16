@@ -25,6 +25,7 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
   final _selectedSkills = <String>{};
   List<Skill> _availableSkills = [];
   List<Workspace> _availableWorkspaces = [];
+  List<dynamic> _availableTemplates = [];
   List<Job> _recentJobs = [];
   List<String> _workspaceSkillNames = [];
   final _selectedPreviousJobs = <String>{};
@@ -69,6 +70,29 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
       final jobs = await api.listJobs(status: 'completed', limit: 10);
       setState(() => _recentJobs = jobs);
     } catch (_) {}
+    try {
+      final templates = await api.listJobTemplates();
+      setState(() => _availableTemplates = templates);
+    } catch (_) {}
+  }
+
+  void _applyTemplate(dynamic template) {
+    if (template == null) return;
+    setState(() {
+      _promptController.text = template['prompt'] ?? '';
+      _model = template['model'];
+      _priority = (template['priority'] ?? 5).toDouble();
+      _selectedWorkspaceId = template['workspace_id'];
+      final skillIds = List<String>.from(template['skill_ids'] ?? []);
+      _selectedSkills.clear();
+      _selectedSkills.addAll(skillIds);
+      if (template['timeout_secs'] != null) {
+        _timeoutController.text = template['timeout_secs'].toString();
+      }
+      if (_selectedWorkspaceId != null) {
+        _loadWorkspaceSkills(_selectedWorkspaceId);
+      }
+    });
   }
 
   Map<String, dynamic>? _buildOutputDest() {
@@ -207,6 +231,32 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Template selector
+                  if (_availableTemplates.isNotEmpty) ...[
+                    DropdownButtonFormField<String?>(
+                      value: null,
+                      decoration: const InputDecoration(
+                        labelText: 'Use Template (optional)',
+                        border: OutlineInputBorder(),
+                        helperText: 'Select a template to pre-fill the form',
+                      ),
+                      items: [
+                        const DropdownMenuItem(value: null, child: Text('None (ad-hoc)')),
+                        ..._availableTemplates.map((t) => DropdownMenuItem(
+                              value: t['id'] as String?,
+                              child: Text(t['name'] ?? ''),
+                            )),
+                      ],
+                      onChanged: (id) {
+                        if (id != null) {
+                          final tmpl = _availableTemplates.firstWhere((t) => t['id'] == id, orElse: () => null);
+                          _applyTemplate(tmpl);
+                        }
+                      },
+                    ),
+                    const SizedBox(height: 24),
+                  ],
+
                   // Prompt
                   Text('Prompt',
                       style: Theme.of(context).textTheme.titleMedium),

@@ -41,7 +41,12 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
     final nameCtrl = TextEditingController();
     final descCtrl = TextEditingController();
     final steps = <Map<String, TextEditingController>>[];
-    final stepModels = <String?>[]; // model per step
+    final stepModels = <String?>[];
+    final stepTemplateIds = <String?>[];
+    List<dynamic> templates = [];
+    try {
+      templates = await ref.read(apiClientProvider).listJobTemplates();
+    } catch (_) {}
 
     void addStep() {
       steps.add({
@@ -49,6 +54,7 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
         'prompt': TextEditingController(),
       });
       stepModels.add(null);
+      stepTemplateIds.add(null);
     }
 
     addStep(); // Start with one step
@@ -95,7 +101,7 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                                   IconButton(
                                     icon: const Icon(Icons.delete, size: 18),
                                     onPressed: () =>
-                                        setDialogState(() { steps.removeAt(i); stepModels.removeAt(i); }),
+                                        setDialogState(() { steps.removeAt(i); stepModels.removeAt(i); stepTemplateIds.removeAt(i); }),
                                   ),
                               ],
                             ),
@@ -105,6 +111,37 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                                   labelText: 'Step Name', isDense: true),
                             ),
                             const SizedBox(height: 8),
+                            if (templates.isNotEmpty)
+                              DropdownButtonFormField<String?>(
+                                value: stepTemplateIds[i],
+                                decoration: const InputDecoration(
+                                  labelText: 'Template (optional)',
+                                  isDense: true,
+                                ),
+                                items: [
+                                  const DropdownMenuItem(value: null, child: Text('None (inline prompt)')),
+                                  ...templates.map((t) => DropdownMenuItem(
+                                        value: t['id'] as String?,
+                                        child: Text(t['name'] ?? ''),
+                                      )),
+                                ],
+                                onChanged: (id) {
+                                  setDialogState(() {
+                                    stepTemplateIds[i] = id;
+                                    if (id != null) {
+                                      final tmpl = templates.firstWhere((t) => t['id'] == id, orElse: () => null);
+                                      if (tmpl != null) {
+                                        s['prompt']!.text = tmpl['prompt'] ?? '';
+                                        if (s['name']!.text.isEmpty) {
+                                          s['name']!.text = tmpl['name'] ?? '';
+                                        }
+                                        stepModels[i] = tmpl['model'];
+                                      }
+                                    }
+                                  });
+                                },
+                              ),
+                            if (templates.isNotEmpty) const SizedBox(height: 8),
                             TextField(
                               controller: s['prompt'],
                               decoration: InputDecoration(
@@ -178,6 +215,8 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                               'prompt': entry.value['prompt']!.text.trim(),
                               if (stepModels[entry.key] != null)
                                 'model': stepModels[entry.key],
+                              if (stepTemplateIds[entry.key] != null)
+                                'template_id': stepTemplateIds[entry.key],
                             })
                         .toList(),
                   });
