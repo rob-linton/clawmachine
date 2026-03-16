@@ -53,22 +53,13 @@ elif [ "$MODE" = "--build" ]; then
 else
     # Default: build + open in browser
     echo ""
-    FLUTTER_BUILD="$FLUTTER_DIR/build/web/index.html"
-    FLUTTER_SRC="$FLUTTER_DIR/lib/main.dart"
+    echo "Building Flutter web..."
+    cd "$FLUTTER_DIR"
+    flutter build web --release --no-tree-shake-icons 2>&1 | tail -1
+    green "  Build: OK"
 
-    NEEDS_REBUILD=false
-    if [ ! -f "$FLUTTER_BUILD" ] || [ "$FLUTTER_SRC" -nt "$FLUTTER_BUILD" ]; then
-        NEEDS_REBUILD=true
-        echo "Building Flutter web..."
-        cd "$FLUTTER_DIR"
-        flutter build web --release 2>&1 | tail -1
-        green "  Build: OK"
-    else
-        green "  Flutter: Up to date"
-    fi
-
-    # Restart API if we rebuilt (so it serves the new files)
-    if [ "$NEEDS_REBUILD" = true ] && [ -f "$PROJECT_DIR/.pids/api.pid" ]; then
+    # Restart API to serve the new build
+    if [ -f "$PROJECT_DIR/.pids/api.pid" ]; then
         echo ""
         yellow "  Restarting API to serve new build..."
         API_PID=$(cat "$PROJECT_DIR/.pids/api.pid")
