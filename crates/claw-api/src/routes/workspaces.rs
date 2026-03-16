@@ -16,7 +16,7 @@ pub fn router() -> Router<AppState> {
         .route("/workspaces", post(create_workspace).get(list_workspaces))
         .route("/workspaces/{id}", get(get_workspace).put(update_workspace).delete(delete_workspace))
         .route("/workspaces/{id}/files", get(list_files))
-        .route("/workspaces/{id}/files/*path", get(read_file).put(write_file))
+        .route("/workspaces/{id}/files/{*path}", get(read_file).put(write_file))
 }
 
 async fn create_workspace(
