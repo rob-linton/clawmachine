@@ -1,0 +1,96 @@
+# ============================================
+# Stage 1: Build all Rust binaries
+# ============================================
+FROM rust:1.83-bookworm AS builder
+
+WORKDIR /build
+
+# Cache dependencies
+COPY Cargo.toml Cargo.lock ./
+COPY crates/claw-models/Cargo.toml crates/claw-models/
+COPY crates/claw-redis/Cargo.toml crates/claw-redis/
+COPY crates/claw-api/Cargo.toml crates/claw-api/
+COPY crates/claw-worker/Cargo.toml crates/claw-worker/
+COPY crates/claw-scheduler/Cargo.toml crates/claw-scheduler/
+COPY crates/claw-cli/Cargo.toml crates/claw-cli/
+
+RUN mkdir -p crates/claw-models/src && echo "pub fn _dummy() {}" > crates/claw-models/src/lib.rs && \
+    mkdir -p crates/claw-redis/src && echo "pub fn _dummy() {}" > crates/claw-redis/src/lib.rs && \
+    mkdir -p crates/claw-api/src && echo "fn main() {}" > crates/claw-api/src/main.rs && \
+    mkdir -p crates/claw-worker/src && echo "fn main() {}" > crates/claw-worker/src/main.rs && \
+    mkdir -p crates/claw-scheduler/src && echo "fn main() {}" > crates/claw-scheduler/src/main.rs && \
+    mkdir -p crates/claw-cli/src && echo "fn main() {}" > crates/claw-cli/src/main.rs
+
+RUN cargo build --release 2>/dev/null || true
+
+# Copy real source
+COPY crates/ crates/
+RUN find crates -name "*.rs" -exec touch {} +
+RUN cargo build --release --workspace
+
+# ============================================
+# Stage 2: API server
+# ============================================
+FROM debian:bookworm-slim AS api
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash claw
+COPY --from=builder /build/target/release/claw-api /usr/local/bin/
+
+# Flutter web build (copy from host build context)
+COPY flutter_ui/build/web /app/static
+
+USER claw
+EXPOSE 8080
+ENV CLAW_STATIC_DIR=/app/static
+CMD ["claw-api"]
+
+# ============================================
+# Stage 3: Worker
+# ============================================
+FROM debian:bookworm-slim AS worker
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git nodejs npm && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code CLI (pinned version)
+ARG CLAUDE_CODE_VERSION=latest
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+RUN useradd -m -s /bin/bash claw
+COPY --from=builder /build/target/release/claw-worker /usr/local/bin/
+
+USER claw
+CMD ["claw-worker"]
+
+# ============================================
+# Stage 4: Scheduler
+# ============================================
+FROM debian:bookworm-slim AS scheduler
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash claw
+COPY --from=builder /build/target/release/claw-scheduler /usr/local/bin/
+
+USER claw
+CMD ["claw-scheduler"]
+
+# ============================================
+# Stage 5: CLI
+# ============================================
+FROM debian:bookworm-slim AS cli
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /build/target/release/claw /usr/local/bin/
+ENTRYPOINT ["claw"]

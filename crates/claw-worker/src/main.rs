@@ -176,6 +176,28 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                         ).await {
                             tracing::error!(job_id = %job_id, error = %e, "Failed to store completion");
                         }
+
+                        // Webhook output if configured
+                        if let claw_models::OutputDest::Webhook { url } = &job.output_dest {
+                            let payload = serde_json::json!({
+                                "job_id": job_id.to_string(),
+                                "status": "completed",
+                                "result": r.result_text,
+                                "cost_usd": r.cost_usd,
+                                "duration_ms": r.duration_ms,
+                            });
+                            match reqwest::Client::new()
+                                .post(url)
+                                .json(&payload)
+                                .timeout(std::time::Duration::from_secs(30))
+                                .send()
+                                .await
+                            {
+                                Ok(resp) => tracing::info!(job_id = %job_id, status = %resp.status(), "Webhook delivered"),
+                                Err(e) => tracing::error!(job_id = %job_id, error = %e, "Webhook delivery failed"),
+                            }
+                        }
+
                         let event = serde_json::json!({
                             "type": "job_update",
                             "job_id": job_id.to_string(),

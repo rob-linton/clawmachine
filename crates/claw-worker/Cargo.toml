@@ -15,4 +15,5 @@ dotenvy = { workspace = true }
 deadpool-redis = { workspace = true }
 uuid = { workspace = true }
 hostname = "0.4"
+reqwest = { workspace = true }
 tokio-util = { workspace = true }

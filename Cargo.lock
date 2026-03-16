@@ -348,6 +348,7 @@ dependencies = [
  "deadpool-redis",
  "dotenvy",
  "hostname",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
