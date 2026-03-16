@@ -7,12 +7,13 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,claw_scheduler=debug".into()),
-        )
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "info,claw_scheduler=debug".into());
+    if std::env::var("CLAW_LOG_FORMAT").as_deref() == Ok("json") {
+        tracing_subscriber::fmt().json().with_env_filter(filter).init();
+    } else {
+        tracing_subscriber::fmt().with_env_filter(filter).init();
+    }
 
     let redis_url = std::env::var("CLAW_REDIS_URL")
         .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());

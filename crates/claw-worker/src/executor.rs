@@ -13,11 +13,14 @@ pub struct ExecutionResult {
 
 /// Execute a job, streaming log lines to the provided channel.
 /// Cancellation is cooperative via the CancellationToken.
+/// Times out after job.timeout_secs (default 1800s / 30min).
 pub async fn execute_job(
     job: &Job,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
+    let timeout_secs = job.timeout_secs.unwrap_or(1800);
+    let timeout = std::time::Duration::from_secs(timeout_secs);
     // Use the assembled prompt (with skill injections) if available, otherwise raw prompt
     let prompt = job.assembled_prompt.as_deref().unwrap_or(&job.prompt);
 
@@ -83,6 +86,11 @@ pub async fn execute_job(
         _ = cancel.cancelled() => {
             child.kill().await.ok();
             return Err("Job was cancelled".to_string());
+        }
+
+        _ = tokio::time::sleep(timeout) => {
+            child.kill().await.ok();
+            return Err(format!("Job timed out after {}s", timeout_secs));
         }
     };
 
