@@ -2,9 +2,9 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
-# ClaudeCodeClaw dev startup — starts Redis, API, Worker, Scheduler
-# Usage: ./scripts/dev.sh        (start all)
-#        ./scripts/dev.sh stop   (stop all)
+# ClaudeCodeClaw backend — starts Redis, API, Worker, Scheduler
+# Usage: ./scripts/dev.sh        (start backend)
+#        ./scripts/dev.sh stop   (stop backend)
 
 PIDS_DIR="$PROJECT_DIR/.pids"
 LOG_DIR="$PROJECT_DIR/.logs"
@@ -15,7 +15,7 @@ green()  { printf '\033[0;32m%s\033[0m\n' "$1"; }
 yellow() { printf '\033[0;33m%s\033[0m\n' "$1"; }
 
 stop_all() {
-    echo "Stopping services..."
+    echo "Stopping backend services..."
     for pidfile in "$PIDS_DIR"/*.pid; do
         [ -f "$pidfile" ] || continue
         pid=$(cat "$pidfile")
@@ -26,7 +26,7 @@ stop_all() {
         fi
         rm -f "$pidfile"
     done
-    green "All services stopped."
+    green "Backend stopped."
 }
 
 if [ "${1:-}" = "stop" ]; then
@@ -38,7 +38,7 @@ fi
 stop_all 2>/dev/null || true
 
 echo "========================================="
-echo "  ClaudeCodeClaw Dev Environment"
+echo "  ClaudeCodeClaw Backend"
 echo "========================================="
 echo ""
 
@@ -55,37 +55,25 @@ if ! rcli ping > /dev/null 2>&1; then
 fi
 green "  Redis: OK (DB $REDIS_DB)"
 
-# 2. Build
+# 2. Build Rust
 echo ""
 echo "Building workspace..."
 cargo build --workspace 2>&1 | tail -1
 green "  Build: OK"
 
-# 3. Build Flutter web (if source is newer than build)
-FLUTTER_BUILD="$PROJECT_DIR/flutter_ui/build/web/index.html"
-FLUTTER_SRC="$PROJECT_DIR/flutter_ui/lib/main.dart"
-if [ ! -f "$FLUTTER_BUILD" ] || [ "$FLUTTER_SRC" -nt "$FLUTTER_BUILD" ]; then
-    echo ""
-    echo "Building Flutter web..."
-    (cd "$PROJECT_DIR/flutter_ui" && flutter build web --release 2>&1 | tail -1)
-    green "  Flutter: OK"
-else
-    green "  Flutter: Up to date"
-fi
-
-# 4. Start API
+# 3. Start API
 echo ""
 echo "Starting services..."
 cargo run -p claw-api > "$LOG_DIR/api.log" 2>&1 &
 echo $! > "$PIDS_DIR/api.pid"
 echo "  API server:  pid $! (log: .logs/api.log)"
 
-# 5. Start Worker
+# 4. Start Worker
 cargo run -p claw-worker > "$LOG_DIR/worker.log" 2>&1 &
 echo $! > "$PIDS_DIR/worker.pid"
 echo "  Worker:      pid $! (log: .logs/worker.log)"
 
-# 6. Start Scheduler
+# 5. Start Scheduler
 cargo run -p claw-scheduler > "$LOG_DIR/scheduler.log" 2>&1 &
 echo $! > "$PIDS_DIR/scheduler.pid"
 echo "  Scheduler:   pid $! (log: .logs/scheduler.log)"
@@ -111,12 +99,13 @@ fi
 
 echo ""
 echo "========================================="
-green "  All services running!"
+green "  Backend running!"
 echo ""
-echo "  UI:        http://localhost:8080"
 echo "  API:       http://localhost:8080/api/v1/status"
 echo "  Logs:      .logs/{api,worker,scheduler}.log"
 echo ""
 echo "  Submit:    claw submit \"your prompt\""
 echo "  Stop:      ./scripts/dev.sh stop"
+echo ""
+echo "  Start UI:  ./scripts/startup.sh"
 echo "========================================="
