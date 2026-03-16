@@ -329,7 +329,7 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
               const SizedBox(width: 8),
               OutlinedButton.icon(
                 onPressed: _importSkillZip,
-                icon: const Icon(Icons.folder_zip),
+                icon: const Icon(Icons.archive),
                 label: const Text('Import ZIP'),
               ),
               const SizedBox(width: 8),

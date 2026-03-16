@@ -434,19 +434,19 @@ class _WorkspaceDetailScreenState
                 const Spacer(),
                 OutlinedButton.icon(
                   onPressed: _showNewFileDialog,
-                  icon: const Icon(Icons.note_add, size: 16),
+                  icon: const Icon(Icons.add_circle_outline, size: 16),
                   label: const Text('New File'),
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
                   onPressed: _showNewFolderDialog,
-                  icon: const Icon(Icons.create_new_folder, size: 16),
+                  icon: const Icon(Icons.folder, size: 16),
                   label: const Text('New Folder'),
                 ),
                 const SizedBox(width: 8),
                 FilledButton.icon(
                   onPressed: _uploadZip,
-                  icon: const Icon(Icons.folder_zip, size: 16),
+                  icon: const Icon(Icons.archive, size: 16),
                   label: const Text('Upload ZIP'),
                 ),
               ],
