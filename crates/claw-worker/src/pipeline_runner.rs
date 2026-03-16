@@ -1,6 +1,5 @@
 use claw_models::*;
 use deadpool_redis::{redis, Pool};
-use uuid::Uuid;
 
 /// Check if a completed job is part of a pipeline, and if so, advance to the next step.
 pub async fn check_and_advance(pool: &Pool, job: &Job, result_text: &str) {
