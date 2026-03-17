@@ -37,11 +37,18 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl && \
     rm -rf /var/lib/apt/lists/*
 
+# Install Docker CLI for Docker management endpoints (/api/v1/docker/*)
+RUN curl -fsSL https://download.docker.com/linux/static/stable/$(uname -m)/docker-27.5.1.tgz \
+    | tar xz --strip-components=1 -C /usr/local/bin docker/docker
+
 RUN useradd -m -s /bin/bash claw
 COPY --from=builder /build/target/release/claw-api /usr/local/bin/
 
 # Flutter web build (copy from host build context)
 COPY flutter_ui/build/web /app/static
+
+# Bundle Dockerfile.sandbox for the build endpoint
+COPY docker/Dockerfile.sandbox /app/docker/Dockerfile.sandbox
 
 USER claw
 EXPOSE 8080

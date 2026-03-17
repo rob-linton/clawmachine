@@ -5,16 +5,52 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::docker::{self, DockerConfig};
+
 pub struct ExecutionResult {
     pub result_text: String,
     pub cost_usd: f64,
     pub duration_ms: u64,
 }
 
-/// Execute a job in the given working directory.
+/// Execution backend: local (direct subprocess) or Docker (containerized).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ExecutionBackend {
+    Local,
+    Docker,
+}
+
+impl ExecutionBackend {
+    pub fn from_config_str(s: &str) -> Self {
+        match s {
+            "docker" => Self::Docker,
+            _ => Self::Local,
+        }
+    }
+}
+
+/// Dispatch job execution to the appropriate backend.
+pub async fn dispatch_execute(
+    backend: &ExecutionBackend,
+    job: &Job,
+    working_dir: &std::path::Path,
+    docker_config: Option<&DockerConfig>,
+    log_tx: mpsc::Sender<String>,
+    cancel: CancellationToken,
+) -> Result<ExecutionResult, String> {
+    match backend {
+        ExecutionBackend::Local => local_execute_job(job, working_dir, log_tx, cancel).await,
+        ExecutionBackend::Docker => {
+            let config = docker_config.ok_or("Docker config not available")?;
+            docker::docker_execute_job(job, working_dir, config, log_tx, cancel).await
+        }
+    }
+}
+
+/// Execute a job locally (direct subprocess).
 /// Cancellation is cooperative via the CancellationToken.
 /// Times out after job.timeout_secs (default 1800s / 30min).
-pub async fn execute_job(
+pub async fn local_execute_job(
     job: &Job,
     working_dir: &std::path::Path,
     log_tx: mpsc::Sender<String>,

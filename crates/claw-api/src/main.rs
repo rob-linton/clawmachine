@@ -1,3 +1,4 @@
+mod auth;
 mod routes;
 pub mod upload_utils;
 
@@ -9,6 +10,7 @@ use tower_http::services::{ServeDir, ServeFile};
 #[derive(Clone)]
 pub struct AppState {
     pub pool: Pool,
+    pub redis_url: String,
 }
 
 #[tokio::main]
@@ -27,7 +29,18 @@ async fn main() {
     let port = std::env::var("CLAW_API_PORT").unwrap_or_else(|_| "8080".into());
 
     let pool = claw_redis::create_pool(&redis_url);
-    let state = AppState { pool };
+    let state = AppState { pool, redis_url };
+
+    // Ensure workspace directories exist
+    let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+    for subdir in &["repos", "checkouts"] {
+        let dir = home.join(".claw").join(subdir);
+        if let Err(e) = tokio::fs::create_dir_all(&dir).await {
+            tracing::warn!(dir = %dir.display(), error = %e, "Failed to create directory");
+        } else {
+            tracing::info!(dir = %dir.display(), "Ensured directory exists");
+        }
+    }
 
     let static_dir = std::env::var("CLAW_STATIC_DIR")
         .unwrap_or_else(|_| "flutter_ui/build/web".into());
@@ -36,7 +49,8 @@ async fn main() {
     // Build API routes with state first
     let api = Router::new()
         .nest("/api/v1", routes::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(axum::middleware::from_fn(auth::auth_middleware));
 
     // Combine API routes with static file fallback
     let app = api

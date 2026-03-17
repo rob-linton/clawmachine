@@ -32,9 +32,24 @@ async fn create_pipeline(
     }
 }
 
-async fn list_pipelines(State(state): State<AppState>) -> impl IntoResponse {
+#[derive(serde::Deserialize)]
+struct ListQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn list_pipelines(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<ListQuery>,
+) -> impl IntoResponse {
     match claw_redis::list_pipelines(&state.pool).await {
-        Ok(ps) => Json(serde_json::json!({"items": ps, "total": ps.len()})).into_response(),
+        Ok(ps) => {
+            let total = ps.len();
+            let offset = q.offset.unwrap_or(0);
+            let limit = q.limit.unwrap_or(50).min(100);
+            let page: Vec<_> = ps.into_iter().skip(offset).take(limit).collect();
+            Json(serde_json::json!({"items": page, "total": total, "offset": offset, "limit": limit})).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }
@@ -142,9 +157,24 @@ async fn run_pipeline(
     }
 }
 
-async fn list_runs(State(state): State<AppState>) -> impl IntoResponse {
+#[derive(serde::Deserialize)]
+struct ListRunsQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn list_runs(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<ListRunsQuery>,
+) -> impl IntoResponse {
     match claw_redis::list_pipeline_runs(&state.pool, None).await {
-        Ok(runs) => Json(serde_json::json!({"items": runs, "total": runs.len()})).into_response(),
+        Ok(runs) => {
+            let total = runs.len();
+            let offset = q.offset.unwrap_or(0);
+            let limit = q.limit.unwrap_or(50).min(100);
+            let page: Vec<_> = runs.into_iter().skip(offset).take(limit).collect();
+            Json(serde_json::json!({"items": page, "total": total, "offset": offset, "limit": limit})).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }

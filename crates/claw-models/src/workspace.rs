@@ -3,18 +3,55 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspacePersistence {
+    Ephemeral,
+    Persistent,
+    Snapshot,
+}
+
+impl Default for WorkspacePersistence {
+    fn default() -> Self {
+        Self::Persistent
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
     pub id: Uuid,
     pub name: String,
     #[serde(default)]
     pub description: String,
-    pub path: PathBuf,
+    /// Legacy field — only set for old-style workspaces with direct disk paths.
+    /// New workspaces use bare repos at ~/.claw/repos/{id}.git (path derived, not stored).
+    #[serde(default)]
+    pub path: Option<PathBuf>,
     #[serde(default)]
     pub skill_ids: Vec<String>,
     pub claude_md: Option<String>,
+    #[serde(default)]
+    pub persistence: WorkspacePersistence,
+    #[serde(default)]
+    pub remote_url: Option<String>,
+    #[serde(default)]
+    pub base_image: Option<String>,
+    /// Per-workspace resource limit overrides (Docker mode only).
+    #[serde(default)]
+    pub memory_limit: Option<String>,
+    #[serde(default)]
+    pub cpu_limit: Option<f64>,
+    #[serde(default)]
+    pub network_mode: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Workspace {
+    /// Returns true if this is a legacy workspace with a direct disk path.
+    pub fn is_legacy(&self) -> bool {
+        self.path.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,8 +59,15 @@ pub struct CreateWorkspaceRequest {
     pub name: String,
     #[serde(default)]
     pub description: Option<String>,
+    /// If set, creates a legacy workspace at this path. Otherwise uses bare repo.
     pub path: Option<PathBuf>,
     #[serde(default)]
     pub skill_ids: Vec<String>,
     pub claude_md: Option<String>,
+    #[serde(default)]
+    pub persistence: Option<WorkspacePersistence>,
+    #[serde(default)]
+    pub remote_url: Option<String>,
+    #[serde(default)]
+    pub base_image: Option<String>,
 }

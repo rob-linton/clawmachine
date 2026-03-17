@@ -115,6 +115,8 @@ pub async fn claim_job(pool: &Pool, worker_id: &str) -> Result<Option<Job>, Redi
 }
 
 /// Mark a job as completed with result data.
+/// Uses a Lua script for atomicity: updates job, stores result, removes from running,
+/// and increments stats counters in a single Redis operation.
 pub async fn complete_job(
     pool: &Pool,
     job_id: Uuid,
@@ -143,12 +145,28 @@ pub async fn complete_job(
 
     let updated_json = serde_json::to_string(&job)?;
     let result_json = serde_json::to_string(&result_resp)?;
+    let result_key = format!("claw:job:{}:result", job_id);
 
-    redis::pipe()
-        .set(&job_key, &updated_json)
-        .set(format!("claw:job:{}:result", job_id), &result_json)
-        .srem("claw:queue:running", job_id.to_string())
-        .exec_async(&mut *conn)
+    // Atomic Lua script: update job + store result + remove from running + update stats
+    let script = redis::Script::new(
+        r#"
+        redis.call('SET', KEYS[1], ARGV[1])
+        redis.call('SET', KEYS[2], ARGV[2])
+        redis.call('SREM', 'claw:queue:running', ARGV[3])
+        redis.call('INCR', 'claw:stats:total_completed')
+        redis.call('INCRBYFLOAT', 'claw:stats:total_cost_usd', ARGV[4])
+        return 1
+        "#,
+    );
+
+    let _: i32 = script
+        .key(&job_key)
+        .key(&result_key)
+        .arg(&updated_json)
+        .arg(&result_json)
+        .arg(job_id.to_string())
+        .arg(cost_usd)
+        .invoke_async(&mut *conn)
         .await?;
 
     tracing::info!(job_id = %job_id, cost_usd, duration_ms, "Job completed");
@@ -156,27 +174,67 @@ pub async fn complete_job(
 }
 
 /// Mark a job as failed with an error message.
-pub async fn fail_job(pool: &Pool, job_id: Uuid, error: &str) -> Result<(), RedisError> {
+/// If the job has retries remaining (max 3), it is re-queued instead.
+/// Returns true if the job was re-queued for retry, false if terminally failed.
+pub async fn fail_job(pool: &Pool, job_id: Uuid, error: &str) -> Result<bool, RedisError> {
     let mut conn = pool.get().await?;
     let job_key = format!("claw:job:{}", job_id);
 
     let job_json: String = conn.get(&job_key).await?;
     let mut job: Job = serde_json::from_str(&job_json)?;
 
-    job.status = JobStatus::Failed;
-    job.error = Some(error.to_string());
-    job.completed_at = Some(Utc::now());
+    let max_retries: u32 = 3;
+    // Only auto-retry execution failures, not cancellations or pipeline jobs
+    let should_retry = job.retry_count < max_retries
+        && job.pipeline_run_id.is_none()
+        && !error.contains("cancelled");
 
-    let updated_json = serde_json::to_string(&job)?;
+    if should_retry {
+        job.status = JobStatus::Pending;
+        job.worker_id = None;
+        job.started_at = None;
+        job.retry_count += 1;
+        job.error = Some(format!("Retry {}/{}: {}", job.retry_count, max_retries, error));
 
-    redis::pipe()
-        .set(&job_key, &updated_json)
-        .srem("claw:queue:running", job_id.to_string())
-        .exec_async(&mut *conn)
-        .await?;
+        let updated_json = serde_json::to_string(&job)?;
+        let queue_key = format!("claw:queue:pending:{}", job.priority.min(9));
 
-    tracing::warn!(job_id = %job_id, error, "Job failed");
-    Ok(())
+        redis::pipe()
+            .set(&job_key, &updated_json)
+            .srem("claw:queue:running", job_id.to_string())
+            .rpush(&queue_key, job_id.to_string())
+            .exec_async(&mut *conn)
+            .await?;
+
+        tracing::warn!(job_id = %job_id, retry_count = job.retry_count, error, "Job failed, re-queued for retry");
+        Ok(true)
+    } else {
+        job.status = JobStatus::Failed;
+        job.error = Some(error.to_string());
+        job.completed_at = Some(Utc::now());
+
+        let updated_json = serde_json::to_string(&job)?;
+
+        // Atomic Lua script: update job + remove from running + increment failed counter
+        let script = redis::Script::new(
+            r#"
+            redis.call('SET', KEYS[1], ARGV[1])
+            redis.call('SREM', 'claw:queue:running', ARGV[2])
+            redis.call('INCR', 'claw:stats:total_failed')
+            return 1
+            "#,
+        );
+
+        let _: i32 = script
+            .key(&job_key)
+            .arg(&updated_json)
+            .arg(job_id.to_string())
+            .invoke_async(&mut *conn)
+            .await?;
+
+        tracing::warn!(job_id = %job_id, error, "Job failed (terminal)");
+        Ok(false)
+    }
 }
 
 /// Mark a job as cancelled.
@@ -330,10 +388,22 @@ pub async fn get_queue_status(pool: &Pool) -> Result<QueueStatus, RedisError> {
         .await
         .unwrap_or(0);
 
+    let completed: u64 = conn
+        .get::<_, Option<u64>>("claw:stats:total_completed")
+        .await
+        .unwrap_or(None)
+        .unwrap_or(0);
+
+    let failed: u64 = conn
+        .get::<_, Option<u64>>("claw:stats:total_failed")
+        .await
+        .unwrap_or(None)
+        .unwrap_or(0);
+
     Ok(QueueStatus {
         pending,
         running,
-        completed: 0, // TODO: track via sorted set in Phase 2
-        failed: 0,
+        completed,
+        failed,
     })
 }

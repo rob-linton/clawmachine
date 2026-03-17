@@ -103,7 +103,7 @@ async fn complete_and_get_result() {
 }
 
 #[tokio::test]
-async fn fail_job_stores_error() {
+async fn fail_job_retries_then_fails() {
     dotenvy::dotenv().ok();
     let pool = test_pool();
     flush_test_db(&pool).await;
@@ -117,8 +117,20 @@ async fn fail_job_stores_error() {
     let job = submit_job(&pool, &req, JobSource::Api).await.unwrap();
     claim_job(&pool, "w1").await.unwrap();
 
-    fail_job(&pool, job.id, "something went wrong").await.unwrap();
+    // First 3 failures should retry (re-queue)
+    for i in 0..3 {
+        let retried = fail_job(&pool, job.id, "something went wrong").await.unwrap();
+        assert!(retried, "failure {} should retry", i + 1);
+        let updated = get_job(&pool, job.id).await.unwrap();
+        assert_eq!(updated.status, JobStatus::Pending);
+        assert_eq!(updated.retry_count, (i + 1) as u32);
+        // Re-claim for next iteration
+        claim_job(&pool, "w1").await.unwrap();
+    }
 
+    // 4th failure should be terminal
+    let retried = fail_job(&pool, job.id, "something went wrong").await.unwrap();
+    assert!(!retried, "4th failure should be terminal");
     let updated = get_job(&pool, job.id).await.unwrap();
     assert_eq!(updated.status, JobStatus::Failed);
     assert_eq!(updated.error.as_deref(), Some("something went wrong"));
@@ -251,6 +263,8 @@ async fn cron_crud() {
         output_dest: OutputDest::Redis,
         tags: vec![],
         priority: None,
+        workspace_id: None,
+        template_id: None,
     };
 
     let cron = create_cron(&pool, &req).await.unwrap();

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -16,11 +17,26 @@ class _JobsScreenState extends ConsumerState<JobsScreen> {
   List<Job> _jobs = [];
   bool _loading = true;
   String? _statusFilter;
+  StreamSubscription? _eventSub;
 
   @override
   void initState() {
     super.initState();
     _refresh();
+    // Debounce: at most one refresh per second from SSE events
+    Timer? debounce;
+    _eventSub = ref.read(eventServiceProvider).jobUpdates.listen((_) {
+      debounce?.cancel();
+      debounce = Timer(const Duration(seconds: 1), () {
+        if (mounted) _refresh();
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _eventSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _refresh() async {

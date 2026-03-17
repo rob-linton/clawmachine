@@ -11,13 +11,18 @@ pub async fn create_workspace(pool: &Pool, req: &CreateWorkspaceRequest) -> Resu
     let id = Uuid::new_v4();
     let now = Utc::now();
 
-    let path = req.path.clone().unwrap_or_else(|| {
-        let base = dirs::home_dir()
-            .unwrap_or_else(|| "/tmp".into())
-            .join(".claw")
-            .join("workspaces");
-        base.join(id.to_string())
-    });
+    // Only set path for legacy workspaces (when path is explicitly provided)
+    let path = if req.path.is_some() {
+        Some(req.path.clone().unwrap_or_else(|| {
+            let base = dirs::home_dir()
+                .unwrap_or_else(|| "/tmp".into())
+                .join(".claw")
+                .join("workspaces");
+            base.join(id.to_string())
+        }))
+    } else {
+        None // New-style workspace — bare repo path derived from ID
+    };
 
     let workspace = Workspace {
         id,
@@ -26,6 +31,12 @@ pub async fn create_workspace(pool: &Pool, req: &CreateWorkspaceRequest) -> Resu
         path,
         skill_ids: req.skill_ids.clone(),
         claude_md: req.claude_md.clone(),
+        persistence: req.persistence.clone().unwrap_or_default(),
+        remote_url: req.remote_url.clone(),
+        base_image: req.base_image.clone(),
+        memory_limit: None,
+        cpu_limit: None,
+        network_mode: None,
         created_at: now,
         updated_at: now,
     };
@@ -101,6 +112,42 @@ pub async fn delete_workspace(pool: &Pool, id: Uuid) -> Result<(), RedisError> {
         }
     }
 
+    // Check if any job templates reference this workspace
+    let templates = crate::list_job_templates(pool).await?;
+    for tmpl in &templates {
+        if tmpl.workspace_id == Some(id) {
+            return Err(RedisError::Redis(redis::RedisError::from((
+                redis::ErrorKind::ExtensionError,
+                "Workspace is referenced by job template",
+                tmpl.id.to_string(),
+            ))));
+        }
+    }
+
+    // Check if any pipelines reference this workspace
+    let pipelines = crate::list_pipelines(pool).await?;
+    for pipeline in &pipelines {
+        if pipeline.workspace_id == Some(id) {
+            return Err(RedisError::Redis(redis::RedisError::from((
+                redis::ErrorKind::ExtensionError,
+                "Workspace is referenced by pipeline",
+                pipeline.id.to_string(),
+            ))));
+        }
+    }
+
+    // Check if any running/pending jobs are using this workspace
+    let jobs = crate::list_jobs(pool, None, 100, Some(id)).await?;
+    for job in &jobs {
+        if job.status == claw_models::JobStatus::Running || job.status == claw_models::JobStatus::Pending {
+            return Err(RedisError::Redis(redis::RedisError::from((
+                redis::ErrorKind::ExtensionError,
+                "Workspace has active jobs (pending or running)",
+                job.id.to_string(),
+            ))));
+        }
+    }
+
     redis::pipe()
         .del(format!("claw:workspace:{}", id))
         .srem("claw:workspaces:index", id.to_string())
@@ -159,6 +206,7 @@ pub async fn release_workspace_lock(pool: &Pool, workspace_id: Uuid, job_id: Uui
 }
 
 /// Re-queue a job back to pending (used when workspace is locked).
+/// Does NOT increment retry_count — that's reserved for execution failure retries.
 pub async fn requeue_job(pool: &Pool, job_id: Uuid, priority: u8) -> Result<(), RedisError> {
     let mut conn = pool.get().await?;
     let job_key = format!("claw:job:{}", job_id);

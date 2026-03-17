@@ -1,12 +1,19 @@
 use claw_models::{Job, Skill, Workspace};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
+
+/// Shared state for pipeline checkout reuse.
+/// Maps pipeline_run_id → temp checkout path.
+pub type PipelineCheckouts = Arc<Mutex<HashMap<Uuid, PathBuf>>>;
 
 /// Tracks everything the environment setup did, so teardown can undo it.
 pub struct PreparedEnvironment {
     pub working_dir: PathBuf,
     pub is_temp: bool,
+    pub is_pipeline_reuse: bool,
     pub claude_md_backup: Option<PathBuf>,
     pub original_claude_md: Option<String>,
     pub marker_file: Option<PathBuf>,
@@ -25,8 +32,9 @@ pub async fn prepare_environment(
     job: &Job,
     workspace: Option<&Workspace>,
     skills: &[Skill],
+    pipeline_checkouts: &PipelineCheckouts,
 ) -> Result<PreparedEnvironment, String> {
-    let (working_dir, is_temp) = resolve_working_dir(job, workspace).await?;
+    let (working_dir, is_temp, is_pipeline_reuse) = resolve_working_dir(job, workspace, pipeline_checkouts).await?;
     let pre_existing_skill_dirs = snapshot_existing_skills(&working_dir).await;
     let (claude_md_backup, original_claude_md, marker_file) =
         inject_claude_md(job.id, &working_dir, workspace).await?;
@@ -35,6 +43,7 @@ pub async fn prepare_environment(
     Ok(PreparedEnvironment {
         working_dir,
         is_temp,
+        is_pipeline_reuse,
         claude_md_backup,
         original_claude_md,
         marker_file,
@@ -102,7 +111,14 @@ pub async fn harvest_skills(env: &PreparedEnvironment) -> HarvestedSkills {
 /// Clean up the environment after job execution.
 /// For persistent workspaces: CLAUDE.md is NOT restored — let it evolve.
 /// For temp workspaces: restore CLAUDE.md (it gets deleted with the dir anyway).
+/// For pipeline-reused checkouts: skip cleanup (next step needs the state).
 pub async fn teardown_environment(env: &PreparedEnvironment) {
+    if env.is_pipeline_reuse {
+        // Pipeline step reusing an existing checkout — don't clean up.
+        // Skills and CLAUDE.md stay in place for the next step.
+        return;
+    }
+
     if env.is_temp {
         // Only restore CLAUDE.md for temp workspaces
         if let Some(backup_path) = &env.claude_md_backup {
@@ -163,27 +179,110 @@ pub async fn crash_recovery() {
 
 // --- Internal helpers ---
 
-async fn resolve_working_dir(job: &Job, workspace: Option<&Workspace>) -> Result<(PathBuf, bool), String> {
-    if let Some(ws) = workspace {
-        if ws.path.exists() && ws.path.is_dir() {
-            return Ok((ws.path.clone(), false));
+async fn resolve_working_dir(job: &Job, workspace: Option<&Workspace>, pipeline_checkouts: &PipelineCheckouts) -> Result<(PathBuf, bool, bool), String> {
+    // Pipeline checkout reuse: if this job is part of a pipeline, check for existing checkout
+    if let Some(run_id) = job.pipeline_run_id {
+        let checkouts = pipeline_checkouts.lock().await;
+        if let Some(existing) = checkouts.get(&run_id) {
+            tracing::info!(pipeline_run_id = %run_id, path = %existing.display(), "Reusing pipeline checkout");
+            return Ok((existing.clone(), false, true)); // not temp (pipeline manages cleanup), is_pipeline_reuse
         }
-        tokio::fs::create_dir_all(&ws.path)
+    }
+
+    if let Some(ws) = workspace {
+        if ws.is_legacy() {
+            // Legacy workspace — use path directly
+            let path = ws.path.as_ref().unwrap();
+            if path.exists() && path.is_dir() {
+                return Ok((path.clone(), false, false));
+            }
+            tokio::fs::create_dir_all(path)
+                .await
+                .map_err(|e| format!("Failed to create workspace dir: {e}"))?;
+            return Ok((path.clone(), false, false));
+        }
+
+        // New-style workspace — clone from bare repo into temp dir
+        let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+        let repo_path = home
+            .join(".claw")
+            .join("repos")
+            .join(format!("{}.git", ws.id));
+
+        let tmp = PathBuf::from(format!("/tmp/claw-job-{}", job.id));
+        tokio::fs::create_dir_all(tmp.parent().unwrap_or(&PathBuf::from("/tmp")))
             .await
-            .map_err(|e| format!("Failed to create workspace dir: {e}"))?;
-        return Ok((ws.path.clone(), false));
+            .map_err(|e| format!("Failed to create temp dir: {e}"))?;
+
+        // Clone from bare repo — for snapshot mode, clone at the claw/base tag
+        let tmp_clone = tmp.clone();
+        let repo_clone = repo_path.clone();
+        let is_snapshot = ws.persistence == claw_models::WorkspacePersistence::Snapshot;
+        let job_id_str = job.id.to_string();
+
+        let clone_result = tokio::task::spawn_blocking(move || {
+            let repo_str = repo_clone.to_string_lossy().to_string();
+            let tmp_str = tmp_clone.to_string_lossy().to_string();
+            let mut args = vec!["clone".to_string()];
+            if is_snapshot {
+                args.extend(["--branch".to_string(), "claw/base".to_string()]);
+            }
+            args.push(repo_str);
+            args.push(tmp_str.clone());
+
+            let status = std::process::Command::new("git")
+                .args(&args)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .status()?;
+
+            // For snapshot mode: create a working branch from the detached HEAD
+            if is_snapshot && status.success() {
+                std::process::Command::new("git")
+                    .args(["checkout", "-b", &format!("claw/job-{}", job_id_str)])
+                    .current_dir(&tmp_str)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .ok();
+            }
+
+            Ok::<_, std::io::Error>(status)
+        })
+        .await
+        .map_err(|e| format!("Clone task failed: {e}"))?;
+
+        match clone_result {
+            Ok(status) if status.success() => {
+                tracing::info!(workspace_id = %ws.id, job_id = %job.id, snapshot = is_snapshot, "Cloned workspace from bare repo");
+                // For pipeline jobs, register the checkout for reuse by subsequent steps
+                if let Some(run_id) = job.pipeline_run_id {
+                    let mut checkouts = pipeline_checkouts.lock().await;
+                    checkouts.insert(run_id, tmp.clone());
+                    tracing::info!(pipeline_run_id = %run_id, "Registered pipeline checkout for reuse");
+                }
+                return Ok((tmp, true, false)); // is_temp=true, not pipeline_reuse (first step)
+            }
+            Ok(status) => {
+                return Err(format!(
+                    "git clone failed with exit code {}",
+                    status.code().unwrap_or(-1)
+                ));
+            }
+            Err(e) => return Err(format!("git clone failed: {e}")),
+        }
     }
 
     let wd = &job.working_dir;
     if wd != &PathBuf::from(".") && wd.exists() && wd.is_dir() {
-        return Ok((wd.clone(), false));
+        return Ok((wd.clone(), false, false));
     }
 
     let tmp = PathBuf::from("/tmp/claw-jobs").join(job.id.to_string());
     tokio::fs::create_dir_all(&tmp)
         .await
         .map_err(|e| format!("Failed to create temp workspace: {e}"))?;
-    Ok((tmp, true))
+    Ok((tmp, true, false))
 }
 
 async fn snapshot_existing_skills(working_dir: &Path) -> Vec<String> {

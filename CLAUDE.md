@@ -132,14 +132,71 @@ GET    /api/v1/pipeline-runs/{id}     — get run status + step job IDs
 
 Steps can use `{{previous_result}}` placeholder to inject the previous step's output.
 
+## Real-Time Events Endpoint
+
+```
+GET    /api/v1/events/jobs             — SSE stream of job status updates (via Redis Pub/Sub)
+```
+
+Clients receive `job_update` events with `{type, job_id, status}` payloads. The connection auto-sends keepalive pings.
+
+## Workspace File Endpoints
+
+```
+GET    /api/v1/workspaces/{id}/files              — list all files (up to depth 10, max 2000 entries, .git excluded)
+GET    /api/v1/workspaces/{id}/files/{*path}      — read file content as text
+PUT    /api/v1/workspaces/{id}/files/{*path}      — write file (body: {content: string})
+DELETE /api/v1/workspaces/{id}/files/{*path}      — delete file or folder (recursive for dirs)
+```
+
+All file paths are validated server-side to prevent path traversal. Deleting a folder removes it and all contents recursively.
+
 ## Workspace History Endpoints
 
 ```
 GET    /api/v1/workspaces/{id}/history        — git log (last 20 commits)
 POST   /api/v1/workspaces/{id}/revert/{hash}  — git revert a specific commit
+POST   /api/v1/workspaces/{id}/promote        — move claw/base tag (snapshot mode, query: ref=...)
+POST   /api/v1/workspaces/{id}/sync           — pull latest from remote URL into bare repo
 ```
 
 Workspaces auto-commit before/after each job for rollback safety.
+
+## Workspace Persistence Modes
+
+Workspaces support three persistence modes (set at creation, immutable after):
+
+- **ephemeral** — Fresh clone each job. Claude's changes are discarded. Base state is maintained in the bare repo and editable via the file browser.
+- **persistent** — Changes accumulate across jobs. Full git history. Post-job commits are pushed back to the bare repo.
+- **snapshot** — Fresh clone from a `claw/base` tag each job. Results pushed to snapshot branches for inspection. Use the promote endpoint to update the base tag.
+
+New workspaces use git bare repos at `~/.claw/repos/{id}.git` with working checkouts at `~/.claw/checkouts/{id}/` for the file browser. Legacy workspaces with explicit `path` field continue to work unchanged.
+
+## System Config Endpoints
+
+```
+GET    /api/v1/config                — get all system config as JSON
+PUT    /api/v1/config                — update config (partial merge)
+GET    /api/v1/config/{key}          — get single config value
+PUT    /api/v1/config/{key}          — set single config value
+```
+
+Config stored in Redis (`claw:config:*` keys) with sane defaults. Editable from the Settings screen.
+
+## Docker Management Endpoints
+
+```
+GET    /api/v1/docker/status         — Docker daemon availability + info
+GET    /api/v1/docker/images         — list sandbox images
+POST   /api/v1/docker/images/pull    — pull sandbox image
+POST   /api/v1/docker/images/build   — build sandbox from bundled Dockerfile
+```
+
+## Execution Backend
+
+Jobs can execute locally (direct `claude -p` subprocess) or inside Docker containers. Controlled via `execution_backend` config key (`local` or `docker`). The worker re-reads this config before each job claim — changes from Settings take effect without worker restart.
+
+Docker execution uses a sandbox image (`claw-sandbox:latest` by default) with Claude Code + gh CLI pre-installed. Containers run with `--user` matching the host UID/GID. Resource limits (memory, CPU, PIDs) configurable globally and per-workspace.
 
 ## Job Template Endpoints
 
@@ -179,6 +236,10 @@ Every phase must be validated end-to-end before proceeding. After writing code, 
 | `CLAW_STATIC_DIR` | `flutter_ui/build/web` | Flutter build directory to serve |
 | `CLAW_WORKER_CONCURRENCY` | `1` | Number of parallel worker tasks |
 | `CLAW_LOG_FORMAT` | (text) | Set to `json` for structured JSON logging |
+| `CLAW_API_TOKEN` | (unset) | API auth token. If set, all API requests require `Authorization: Bearer <token>` header |
 | `CLAW_FAILURE_WEBHOOK_URL` | (unset) | POST to this URL when a job fails |
 | `CLAW_COMPLETION_WEBHOOK_URL` | (unset) | POST to this URL when any job completes |
-| `CLAW_WORKSPACES_DIR` | `~/.claw/workspaces` | Base directory for auto-created workspaces |
+| `CLAW_WORKSPACES_DIR` | `~/.claw/workspaces` | Base directory for legacy workspaces |
+| `CLAW_EXECUTION_BACKEND` | `local` | Fallback if Redis config not set: `local` or `docker` |
+
+Most new configuration is stored in Redis (`claw:config:*`) and managed from the Settings screen. Env vars are only used as bootstrap fallbacks.

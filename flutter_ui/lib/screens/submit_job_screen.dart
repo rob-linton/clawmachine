@@ -103,11 +103,11 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
       case 'file':
         final path = _outputPathController.text.trim();
         if (path.isEmpty) return null;
-        return {'File': {'path': path}};
+        return {'type': 'file', 'path': path};
       case 'webhook':
         final url = _webhookUrlController.text.trim();
         if (url.isEmpty) return null;
-        return {'Webhook': {'url': url}};
+        return {'type': 'webhook', 'url': url};
       default:
         return null; // Redis is default
     }

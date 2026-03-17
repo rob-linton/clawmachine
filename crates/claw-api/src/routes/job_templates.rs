@@ -27,9 +27,24 @@ async fn create_template(
     }
 }
 
-async fn list_templates(State(state): State<AppState>) -> impl IntoResponse {
+#[derive(serde::Deserialize)]
+struct ListQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn list_templates(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<ListQuery>,
+) -> impl IntoResponse {
     match claw_redis::list_job_templates(&state.pool).await {
-        Ok(ts) => Json(serde_json::json!({"items": ts, "total": ts.len()})).into_response(),
+        Ok(ts) => {
+            let total = ts.len();
+            let offset = q.offset.unwrap_or(0);
+            let limit = q.limit.unwrap_or(50).min(100);
+            let page: Vec<_> = ts.into_iter().skip(offset).take(limit).collect();
+            Json(serde_json::json!({"items": page, "total": total, "offset": offset, "limit": limit})).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }

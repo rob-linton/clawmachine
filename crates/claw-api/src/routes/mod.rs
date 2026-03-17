@@ -6,6 +6,9 @@ pub mod webhook;
 pub mod workspaces;
 pub mod pipelines;
 pub mod job_templates;
+pub mod events;
+pub mod config;
+pub mod docker;
 
 use axum::Router;
 use crate::AppState;
@@ -20,4 +23,7 @@ pub fn router() -> Router<AppState> {
         .merge(workspaces::router())
         .merge(pipelines::router())
         .merge(job_templates::router())
+        .merge(events::router())
+        .merge(config::router())
+        .merge(docker::router())
 }

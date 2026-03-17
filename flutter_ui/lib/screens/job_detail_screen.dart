@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,11 +21,24 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
   JobResult? _result;
   List<String> _logs = [];
   bool _loading = true;
+  StreamSubscription? _eventSub;
 
   @override
   void initState() {
     super.initState();
     _refresh();
+    _eventSub = ref.read(eventServiceProvider).jobUpdates.listen((event) {
+      // Auto-refresh when this specific job's status changes
+      if (event['job_id'] == widget.jobId) {
+        _refresh();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _eventSub?.cancel();
+    super.dispose();
   }
 
   Future<void> _refresh() async {
@@ -108,6 +122,9 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
             workingDir: job.workingDir != '.' ? job.workingDir : null,
             outputDest: job.outputDest,
             allowedTools: job.allowedTools,
+            maxBudget: job.maxBudgetUsd,
+            timeoutSecs: job.timeoutSecs,
+            workspaceId: job.workspaceId,
           );
       if (mounted) {
         context.go('/jobs/${resp['id']}');

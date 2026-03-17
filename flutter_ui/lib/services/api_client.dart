@@ -181,6 +181,10 @@ class ApiClient {
     await _dio.put('/workspaces/$id/files/$path', data: {'content': content});
   }
 
+  Future<void> deleteWorkspaceFile(String id, String path) async {
+    await _dio.delete('/workspaces/$id/files/$path');
+  }
+
   Future<Map<String, dynamic>> uploadWorkspaceZip(String workspaceId, Uint8List zipBytes, {String? prefix}) async {
     final formData = FormData.fromMap({
       'file': MultipartFile.fromBytes(zipBytes, filename: 'upload.zip'),
@@ -271,5 +275,59 @@ class ApiClient {
     });
     final resp = await _dio.post('/skills/upload', data: formData);
     return Skill.fromJson(resp.data);
+  }
+
+  // System Config
+  Future<Map<String, dynamic>> getConfig() async {
+    final resp = await _dio.get('/config');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<void> updateConfig(Map<String, String> values) async {
+    await _dio.put('/config', data: values);
+  }
+
+  Future<void> setConfigValue(String key, String value) async {
+    await _dio.put('/config/$key', data: {'value': value});
+  }
+
+  // Docker Management
+  Future<Map<String, dynamic>> getDockerStatus() async {
+    final resp = await _dio.get('/docker/status');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<List<dynamic>> getDockerImages() async {
+    final resp = await _dio.get('/docker/images');
+    return resp.data['images'] as List? ?? [];
+  }
+
+  Future<Map<String, dynamic>> pullDockerImage({String? image}) async {
+    final resp = await _dio.post('/docker/images/pull', data: {
+      if (image != null) 'image': image,
+    });
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<Map<String, dynamic>> buildDockerImage({String? tag}) async {
+    final resp = await _dio.post('/docker/images/build', data: {
+      if (tag != null) 'tag': tag,
+    });
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  // Workspace sync & promote
+  Future<void> syncWorkspace(String id) async {
+    await _dio.post('/workspaces/$id/sync');
+  }
+
+  Future<void> promoteSnapshot(String id, String ref) async {
+    await _dio.post('/workspaces/$id/promote', queryParameters: {'ref': ref});
+  }
+
+  // Extended status
+  Future<Map<String, dynamic>> getFullStatus() async {
+    final resp = await _dio.get('/status');
+    return Map<String, dynamic>.from(resp.data);
   }
 }

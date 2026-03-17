@@ -15,7 +15,12 @@ tracing-subscriber = { workspace = true }
 tower-http = { workspace = true }
 dotenvy = { workspace = true }
 deadpool-redis = { workspace = true }
+redis = { workspace = true }
 uuid = { workspace = true }
 cron = { workspace = true }
 chrono = { workspace = true, features = ["serde"] }
 zip = { version = "8.2.0", features = ["deflate"] }
+tokio-stream = "0.1"
+futures = "0.3"
+async-stream = "0.3"
+dirs = "6"

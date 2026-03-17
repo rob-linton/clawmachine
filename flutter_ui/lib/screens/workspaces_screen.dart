@@ -4,9 +4,11 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../main.dart';
+import '../models/file_tree_node.dart';
 import '../models/skill.dart';
 import '../models/workspace.dart';
 import '../services/file_upload.dart';
+import '../widgets/file_tree.dart';
 import '../widgets/skill_selector.dart';
 
 class WorkspacesScreen extends ConsumerStatefulWidget {
@@ -72,8 +74,12 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
     final nameCtrl = TextEditingController();
     final descCtrl = TextEditingController();
     final pathCtrl = TextEditingController();
+    final remoteUrlCtrl = TextEditingController();
+    final baseImageCtrl = TextEditingController();
     final claudeMdCtrl = TextEditingController();
     final selectedSkills = <String>{};
+    String persistence = 'persistent';
+    bool showLegacyPath = false;
     List<Skill> skills = [];
     try { skills = await ref.read(apiClientProvider).listSkills(); } catch (_) {}
     String? errorText;
@@ -99,12 +105,48 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                     controller: descCtrl,
                     decoration: const InputDecoration(labelText: 'Description'),
                   ),
+                  const SizedBox(height: 16),
+                  // Persistence mode selector
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Persistence Mode', style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+                  ),
+                  const SizedBox(height: 4),
+                  Semantics(
+                    label: 'Persistence mode selector',
+                    child: SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(value: 'ephemeral', label: Text('Ephemeral'), icon: Icon(Icons.refresh, size: 16)),
+                        ButtonSegment(value: 'persistent', label: Text('Persistent'), icon: Icon(Icons.save, size: 16)),
+                        ButtonSegment(value: 'snapshot', label: Text('Snapshot'), icon: Icon(Icons.photo_camera, size: 16)),
+                      ],
+                      selected: {persistence},
+                      onSelectionChanged: (sel) => setDialogState(() => persistence = sel.first),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    persistence == 'ephemeral'
+                        ? 'Fresh clone each job. Claude\'s changes are discarded.'
+                        : persistence == 'persistent'
+                            ? 'Changes accumulate across jobs. Full git history.'
+                            : 'Fresh clone from a base tag. Optionally promote results.',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                  ),
                   const SizedBox(height: 12),
                   TextField(
-                    controller: pathCtrl,
+                    controller: remoteUrlCtrl,
                     decoration: const InputDecoration(
-                      labelText: 'Path (optional)',
-                      helperText: 'Leave empty to auto-create in ~/.claw/workspaces/',
+                      labelText: 'Remote URL (optional)',
+                      helperText: 'Git repo to clone as workspace base (e.g. https://github.com/org/repo.git)',
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: baseImageCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Base Image (optional)',
+                      helperText: 'Docker image override. Leave blank for default sandbox.',
                     ),
                   ),
                   const SizedBox(height: 12),
@@ -127,6 +169,28 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                     maxLines: 6,
                     style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
                   ),
+                  const SizedBox(height: 8),
+                  // Legacy path toggle
+                  InkWell(
+                    onTap: () => setDialogState(() => showLegacyPath = !showLegacyPath),
+                    child: Row(
+                      children: [
+                        Icon(showLegacyPath ? Icons.expand_less : Icons.expand_more, size: 16),
+                        const SizedBox(width: 4),
+                        Text('Legacy mode (explicit path)', style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+                      ],
+                    ),
+                  ),
+                  if (showLegacyPath) ...[
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: pathCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Path',
+                        helperText: 'Sets a fixed disk path instead of using git repos.',
+                      ),
+                    ),
+                  ],
                   if (errorText != null) ...[
                     const SizedBox(height: 8),
                     Text(errorText!, style: const TextStyle(color: Colors.red)),
@@ -151,6 +215,11 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                     'description': descCtrl.text.trim(),
                   if (pathCtrl.text.trim().isNotEmpty)
                     'path': pathCtrl.text.trim(),
+                  'persistence': persistence,
+                  if (remoteUrlCtrl.text.trim().isNotEmpty)
+                    'remote_url': remoteUrlCtrl.text.trim(),
+                  if (baseImageCtrl.text.trim().isNotEmpty)
+                    'base_image': baseImageCtrl.text.trim(),
                   if (claudeMdCtrl.text.trim().isNotEmpty)
                     'claude_md': claudeMdCtrl.text.trim(),
                   if (selectedSkills.isNotEmpty)
@@ -219,21 +288,55 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
     );
   }
 
+  Color _persistenceColor(String mode) {
+    switch (mode) {
+      case 'ephemeral': return Colors.blue;
+      case 'snapshot': return Colors.orange;
+      default: return Colors.green;
+    }
+  }
+
+  IconData _persistenceIcon(String mode) {
+    switch (mode) {
+      case 'ephemeral': return Icons.refresh;
+      case 'snapshot': return Icons.photo_camera;
+      default: return Icons.save;
+    }
+  }
+
   Widget _buildWorkspaceTile(Workspace ws) {
     return Card(
       child: ListTile(
         leading: const Icon(Icons.folder_open, size: 32),
         title: Semantics(
           label: 'Workspace ${ws.name}',
-          child: Text(ws.name,
-              style: const TextStyle(fontWeight: FontWeight.bold)),
+          child: Row(
+            children: [
+              Text(ws.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+              const SizedBox(width: 8),
+              Semantics(
+                label: 'Mode ${ws.persistence}',
+                child: Chip(
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                  avatar: Icon(_persistenceIcon(ws.persistence), size: 14, color: _persistenceColor(ws.persistence)),
+                  label: Text(ws.persistence, style: const TextStyle(fontSize: 11)),
+                  padding: EdgeInsets.zero,
+                ),
+              ),
+              if (ws.remoteUrl != null && ws.remoteUrl!.isNotEmpty) ...[
+                const SizedBox(width: 4),
+                Tooltip(message: ws.remoteUrl!, child: const Icon(Icons.cloud, size: 16, color: Colors.grey)),
+              ],
+            ],
+          ),
         ),
         subtitle: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (ws.description.isNotEmpty) Text(ws.description),
-            Text(ws.path,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+            if (ws.isLegacy)
+              Text(ws.path!, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
             Row(
               children: [
                 if (ws.skillIds.isNotEmpty)
@@ -282,9 +385,10 @@ class WorkspaceDetailScreen extends ConsumerStatefulWidget {
 class _WorkspaceDetailScreenState
     extends ConsumerState<WorkspaceDetailScreen> {
   Workspace? _workspace;
-  List<dynamic> _files = [];
+  List<FileTreeNode> _treeRoots = [];
   List<dynamic> _commits = [];
   bool _loading = true;
+  String? _selectedFolderPath;
   final _claudeMdCtrl = TextEditingController();
   final _nameCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
@@ -308,9 +412,15 @@ class _WorkspaceDetailScreenState
       try {
         commits = await api.getWorkspaceHistory(widget.workspaceId);
       } catch (_) {}
+      final expanded = FileTreeNode.collectExpanded(_treeRoots);
+      final newRoots = FileTreeNode.buildTree(files);
+      FileTreeNode.restoreExpanded(newRoots, expanded);
+      if (_selectedFolderPath != null && !_folderExistsInTree(newRoots, _selectedFolderPath!)) {
+        _selectedFolderPath = null;
+      }
       setState(() {
         _workspace = ws;
-        _files = files;
+        _treeRoots = newRoots;
         _commits = commits;
         _nameCtrl.text = ws.name;
         _descCtrl.text = ws.description;
@@ -320,6 +430,18 @@ class _WorkspaceDetailScreenState
     } catch (e) {
       setState(() => _loading = false);
     }
+  }
+
+  bool _folderExistsInTree(List<FileTreeNode> roots, String path) {
+    for (final node in roots) {
+      if (node.isDir && node.fullPath == path) return true;
+      if (node.isDir && _folderExistsInTree(node.children, path)) return true;
+    }
+    return false;
+  }
+
+  void _onFolderSelected(String? folderPath) {
+    setState(() => _selectedFolderPath = folderPath);
   }
 
   Future<void> _save() async {
@@ -376,8 +498,25 @@ class _WorkspaceDetailScreenState
                 ),
                 const SizedBox(width: 8),
                 Expanded(
-                  child: Text(ws.name,
-                      style: Theme.of(context).textTheme.headlineMedium),
+                  child: Row(
+                    children: [
+                      Text(ws.name,
+                          style: Theme.of(context).textTheme.headlineMedium),
+                      const SizedBox(width: 12),
+                      Semantics(
+                        label: 'Persistence mode ${ws.persistence}',
+                        child: Chip(
+                          avatar: Icon(
+                            ws.persistence == 'ephemeral' ? Icons.refresh
+                                : ws.persistence == 'snapshot' ? Icons.photo_camera
+                                : Icons.save,
+                            size: 16,
+                          ),
+                          label: Text(ws.persistence),
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
                 FilledButton.icon(
                   onPressed: _save,
@@ -418,20 +557,49 @@ class _WorkspaceDetailScreenState
             const SizedBox(height: 8),
             Row(
               children: [
-                Expanded(
-                  child: SelectableText('Path: ${ws.path}',
-                      style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
-                ),
-                IconButton(
-                  icon: const Icon(Icons.copy, size: 16),
-                  tooltip: 'Copy path',
-                  onPressed: () {
-                    Clipboard.setData(ClipboardData(text: ws.path));
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Path copied'), duration: Duration(seconds: 1)),
-                    );
-                  },
-                ),
+                if (ws.isLegacy) ...[
+                  Expanded(
+                    child: SelectableText('Path: ${ws.path}',
+                        style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.copy, size: 16),
+                    tooltip: 'Copy path',
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: ws.path ?? ''));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(content: Text('Path copied'), duration: Duration(seconds: 1)),
+                      );
+                    },
+                  ),
+                ] else ...[
+                  if (ws.remoteUrl != null && ws.remoteUrl!.isNotEmpty) ...[
+                    const Icon(Icons.cloud, size: 16, color: Colors.grey),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: SelectableText(ws.remoteUrl!,
+                          style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton.icon(
+                      onPressed: _syncWorkspace,
+                      icon: const Icon(Icons.sync, size: 16),
+                      label: const Text('Sync'),
+                    ),
+                  ] else
+                    const Expanded(
+                      child: Text('Git-backed workspace (local bare repo)',
+                          style: TextStyle(fontFamily: 'monospace', fontSize: 12)),
+                    ),
+                  if (ws.baseImage != null && ws.baseImage!.isNotEmpty) ...[
+                    const SizedBox(width: 16),
+                    Chip(
+                      avatar: const Icon(Icons.inventory_2, size: 14),
+                      label: Text(ws.baseImage!, style: const TextStyle(fontSize: 11)),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ],
+                ],
               ],
             ),
             const SizedBox(height: 24),
@@ -458,101 +626,137 @@ class _WorkspaceDetailScreenState
                 Text('Files', style: Theme.of(context).textTheme.titleMedium),
                 const Spacer(),
                 OutlinedButton.icon(
-                  onPressed: _showNewFileDialog,
+                  onPressed: () => _showNewFileDialog(initialPath: _selectedFolderPath),
                   icon: const Icon(Icons.add_circle_outline, size: 16),
                   label: const Text('New File'),
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
-                  onPressed: _showNewFolderDialog,
+                  onPressed: () => _showNewFolderDialog(parentPath: _selectedFolderPath),
                   icon: const Icon(Icons.folder, size: 16),
                   label: const Text('New Folder'),
                 ),
                 const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: () => _uploadFileToFolder(_selectedFolderPath),
+                  icon: const Icon(Icons.upload_file, size: 16),
+                  label: const Text('Upload File'),
+                ),
+                const SizedBox(width: 8),
                 FilledButton.icon(
-                  onPressed: _uploadZip,
+                  onPressed: () => _uploadZip(folderPath: _selectedFolderPath),
                   icon: const Icon(Icons.archive, size: 16),
                   label: const Text('Upload ZIP'),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            if (_files.isEmpty)
-              const Text('No files in workspace directory.')
+            if (_selectedFolderPath != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, bottom: 4),
+                child: Row(
+                  children: [
+                    Icon(Icons.subdirectory_arrow_right, size: 14, color: Colors.grey[600]),
+                    const SizedBox(width: 4),
+                    Semantics(
+                      label: 'Selected folder $_selectedFolderPath',
+                      child: Text(
+                        'Target: $_selectedFolderPath/',
+                        style: TextStyle(fontSize: 12, color: Colors.grey[600], fontFamily: 'monospace'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    InkWell(
+                      onTap: () => _onFolderSelected(null),
+                      child: Semantics(
+                        label: 'Clear folder selection',
+                        child: Icon(Icons.close, size: 14, color: Colors.grey[600]),
+                      ),
+                    ),
+                  ],
+                ),
+              )
             else
-              Card(
-                child: SizedBox(
-                  height: 300,
-                  child: ListView.builder(
-                    itemCount: _files.length,
-                    itemBuilder: (context, i) {
-                      final file = _files[i];
-                      final isDir = file['is_dir'] == true;
-                      final filePath = file['path'] ?? '';
-                      return ListTile(
-                        dense: true,
-                        leading: Icon(
-                          isDir ? Icons.folder : Icons.insert_drive_file,
-                          size: 18,
-                        ),
-                        title: Text(
-                          filePath,
-                          style: const TextStyle(
-                              fontFamily: 'monospace', fontSize: 12),
-                        ),
-                        trailing: isDir
-                            ? null
-                            : Text(
-                                _formatSize(file['size'] ?? 0),
-                                style: const TextStyle(fontSize: 11),
-                              ),
-                        onTap: isDir ? null : () => _showFileEditor(filePath),
-                      );
-                    },
+              const SizedBox(height: 8),
+            Card(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxHeight: 500),
+                child: SingleChildScrollView(
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: FileTree(
+                      roots: _treeRoots,
+                      selectedFolderPath: _selectedFolderPath,
+                      onFolderSelected: _onFolderSelected,
+                      onFileTap: _showFileEditor,
+                      onDelete: _confirmDelete,
+                      onUploadToFolder: (folder) => _uploadFileToFolder(folder),
+                      onNewFileInFolder: (folder) => _showNewFileDialog(initialPath: folder),
+                    ),
                   ),
                 ),
               ),
+            ),
 
-            // Git History
-            const SizedBox(height: 24),
-            Text('History', style: Theme.of(context).textTheme.titleMedium),
-            const SizedBox(height: 8),
-            if (_commits.isEmpty)
-              const Text('No git history yet. History is created when jobs run.')
-            else
-              Card(
-                child: SizedBox(
-                  height: 250,
-                  child: ListView.builder(
-                    itemCount: _commits.length,
-                    itemBuilder: (context, i) {
-                      final commit = _commits[i];
-                      final hash = (commit['hash'] ?? '').toString();
-                      final message = commit['message'] ?? '';
-                      final date = commit['date'] ?? '';
-                      final shortHash = hash.length >= 7 ? hash.substring(0, 7) : hash;
-                      return ListTile(
-                        dense: true,
-                        leading: const Icon(Icons.commit, size: 18),
-                        title: Text(message,
-                            style: const TextStyle(fontSize: 13)),
-                        subtitle: Text('$shortHash — $date',
-                            style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
-                        trailing: message.startsWith('claw: post-job')
-                            ? TextButton(
-                                onPressed: () => _revertCommit(hash),
-                                child: const Text('Revert'),
-                              )
-                            : null,
-                      );
-                    },
+            // Git History (hidden for ephemeral workspaces)
+            if (ws.persistence != 'ephemeral') ...[
+              const SizedBox(height: 24),
+              Text('History', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              if (_commits.isEmpty)
+                const Text('No git history yet. History is created when jobs run.')
+              else
+                Card(
+                  child: SizedBox(
+                    height: 250,
+                    child: ListView.builder(
+                      itemCount: _commits.length,
+                      itemBuilder: (context, i) {
+                        final commit = _commits[i];
+                        final hash = (commit['hash'] ?? '').toString();
+                        final message = commit['message'] ?? '';
+                        final date = commit['date'] ?? '';
+                        final shortHash = hash.length >= 7 ? hash.substring(0, 7) : hash;
+                        return ListTile(
+                          dense: true,
+                          leading: const Icon(Icons.commit, size: 18),
+                          title: Text(message,
+                              style: const TextStyle(fontSize: 13)),
+                          subtitle: Text('$shortHash — $date',
+                              style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                          trailing: message.startsWith('claw: post-job')
+                              ? TextButton(
+                                  onPressed: () => _revertCommit(hash),
+                                  child: const Text('Revert'),
+                                )
+                              : null,
+                        );
+                      },
+                    ),
                   ),
                 ),
-              ),
+            ],
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _syncWorkspace() async {
+    try {
+      await ref.read(apiClientProvider).syncWorkspace(widget.workspaceId);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Workspace synced from remote')),
+        );
+      }
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Sync failed: $e')),
+        );
+      }
+    }
   }
 
   Future<void> _revertCommit(String hash) async {
@@ -586,7 +790,74 @@ class _WorkspaceDetailScreenState
     }
   }
 
-  Future<void> _uploadZip() async {
+  Future<void> _uploadFileToFolder(String? folderPath) async {
+    final picked = await pickFile(accept: 'text/*');
+    if (picked == null) return;
+
+    String content;
+    try {
+      content = String.fromCharCodes(picked.bytes);
+    } catch (_) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Only text files can be uploaded this way. Use Upload ZIP for binary files.')),
+        );
+      }
+      return;
+    }
+
+    final targetPath = folderPath != null ? '$folderPath/${picked.name}' : picked.name;
+    try {
+      await ref.read(apiClientProvider).putWorkspaceFile(widget.workspaceId, targetPath, content);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Uploaded ${picked.name}')),
+        );
+      }
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Upload failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _confirmDelete(String path, bool isDir) async {
+    final confirmed = await showDialog<bool>(
+      barrierDismissible: false,
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(isDir ? 'Delete Folder' : 'Delete File'),
+        content: Text(
+          isDir
+              ? 'Delete folder "$path" and all its contents? This cannot be undone.'
+              : 'Delete file "$path"? This cannot be undone.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    try {
+      await ref.read(apiClientProvider).deleteWorkspaceFile(widget.workspaceId, path);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Deleted $path')));
+      }
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Delete failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _uploadZip({String? folderPath}) async {
     final PickedFile file;
     try {
       final picked = await pickFile(accept: '.zip');
@@ -610,8 +881,8 @@ class _WorkspaceDetailScreenState
 
     final bytes = file.bytes;
 
-    // Optional: ask for subdirectory prefix
-    final prefixCtrl = TextEditingController();
+    // Optional: ask for subdirectory prefix (pre-filled from selected folder)
+    final prefixCtrl = TextEditingController(text: folderPath ?? '');
     final shouldUpload = await showDialog<bool>(
       barrierDismissible: false,
       context: context,
@@ -665,8 +936,10 @@ class _WorkspaceDetailScreenState
     }
   }
 
-  Future<void> _showNewFileDialog() async {
-    final pathCtrl = TextEditingController();
+  Future<void> _showNewFileDialog({String? initialPath}) async {
+    final pathCtrl = TextEditingController(
+      text: initialPath != null ? '$initialPath/' : '',
+    );
     final contentCtrl = TextEditingController();
     String? errorText;
 
@@ -734,8 +1007,8 @@ class _WorkspaceDetailScreenState
     if (saved == true) _refresh();
   }
 
-  Future<void> _showNewFolderDialog() async {
-    final pathCtrl = TextEditingController();
+  Future<void> _showNewFolderDialog({String? parentPath}) async {
+    final pathCtrl = TextEditingController(text: parentPath != null ? '$parentPath/' : '');
     String? errorText;
 
     final saved = await showDialog<bool>(
@@ -854,9 +1127,4 @@ class _WorkspaceDetailScreenState
     if (saved == true) _refresh();
   }
 
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
-  }
 }

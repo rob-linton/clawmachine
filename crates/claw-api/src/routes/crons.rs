@@ -34,9 +34,24 @@ async fn create_cron(
     }
 }
 
-async fn list_crons(State(state): State<AppState>) -> impl IntoResponse {
+#[derive(serde::Deserialize)]
+struct ListQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn list_crons(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<ListQuery>,
+) -> impl IntoResponse {
     match claw_redis::list_crons(&state.pool).await {
-        Ok(crons) => Json(serde_json::json!({"items": crons, "total": crons.len()})).into_response(),
+        Ok(crons) => {
+            let total = crons.len();
+            let offset = q.offset.unwrap_or(0);
+            let limit = q.limit.unwrap_or(50).min(100);
+            let page: Vec<_> = crons.into_iter().skip(offset).take(limit).collect();
+            Json(serde_json::json!({"items": page, "total": total, "offset": offset, "limit": limit})).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }

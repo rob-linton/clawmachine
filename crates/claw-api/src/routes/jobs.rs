@@ -57,6 +57,7 @@ async fn create_job(
 struct ListQuery {
     status: Option<String>,
     limit: Option<usize>,
+    offset: Option<usize>,
     workspace_id: Option<Uuid>,
 }
 
@@ -65,13 +66,22 @@ async fn list_jobs(
     Query(q): Query<ListQuery>,
 ) -> impl IntoResponse {
     let status_filter = q.status.and_then(|s| s.parse::<JobStatus>().ok());
-    let limit = q.limit.unwrap_or(20).min(100);
+    // Fetch more than we need so offset works correctly
+    let fetch_limit = q.offset.unwrap_or(0) + q.limit.unwrap_or(20).min(100);
 
-    match claw_redis::list_jobs(&state.pool, status_filter, limit, q.workspace_id).await {
-        Ok(jobs) => Json(serde_json::json!({
-            "items": jobs,
-            "total": jobs.len(),
-        })).into_response(),
+    match claw_redis::list_jobs(&state.pool, status_filter, fetch_limit, q.workspace_id).await {
+        Ok(jobs) => {
+            let total = jobs.len();
+            let offset = q.offset.unwrap_or(0);
+            let limit = q.limit.unwrap_or(20).min(100);
+            let page: Vec<_> = jobs.into_iter().skip(offset).take(limit).collect();
+            Json(serde_json::json!({
+                "items": page,
+                "total": total,
+                "offset": offset,
+                "limit": limit,
+            })).into_response()
+        }
         Err(e) => {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
