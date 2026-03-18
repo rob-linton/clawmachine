@@ -149,8 +149,15 @@ pub async fn reap_dead_workers(pool: &Pool) -> Result<u32, RedisError> {
 
         let Some(ref worker_id) = job.worker_id else { continue };
 
-        // Check if worker's heartbeat is still alive
-        let hb_key = format!("claw:worker:{}:heartbeat", worker_id);
+        // Check if worker's heartbeat is still alive.
+        // The job stores the task_id (e.g. "host-1-task-0") but the heartbeat
+        // is keyed by worker_id (e.g. "host-1"). Strip the "-task-N" suffix.
+        let heartbeat_id = if let Some(idx) = worker_id.rfind("-task-") {
+            &worker_id[..idx]
+        } else {
+            worker_id.as_str()
+        };
+        let hb_key = format!("claw:worker:{}:heartbeat", heartbeat_id);
         let exists: bool = conn.exists(&hb_key).await?;
         if exists {
             continue; // Worker is alive
