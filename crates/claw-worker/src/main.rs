@@ -304,8 +304,9 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     }
                 };
 
-                // 5. Build prompt (templates only now — config/scripts are on disk)
+                // 5. Build prompt (user prompt passes through unmodified)
                 let built = prompt_builder::build_prompt(&job, &skills);
+                let system_prompt = built.system_prompt;
                 let mut job = job;
                 job.assembled_prompt = Some(built.prompt.clone());
                 job.skill_snapshot = Some(built.skill_snapshot);
@@ -350,6 +351,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     &job,
                     &prepared_env.working_dir,
                     docker_config.as_ref(),
+                    Some(&system_prompt),
                     log_tx,
                     cancel,
                 ).await;

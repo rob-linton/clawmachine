@@ -127,6 +127,7 @@ pub async fn docker_execute_job(
     job: &Job,
     working_dir: &Path,
     config: &DockerConfig,
+    system_prompt: Option<&str>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
@@ -181,7 +182,7 @@ pub async fn docker_execute_job(
     args.push(prompt.to_string());
     args.push("--output-format".into());
     args.push("stream-json".into());
-    args.push("--verbose".into());
+    args.push("--verbose".into()); // required by --output-format stream-json
     args.push("--dangerously-skip-permissions".into());
 
     if let Some(model) = &job.model {
@@ -194,15 +195,18 @@ pub async fn docker_execute_job(
         args.push(budget.to_string());
     }
 
-    match &job.allowed_tools {
-        Some(tools) if !tools.is_empty() => {
+    // Only restrict tools when the job explicitly specifies a tool list
+    if let Some(tools) = &job.allowed_tools {
+        if !tools.is_empty() {
             args.push("--allowedTools".into());
             args.push(tools.join(","));
         }
-        _ => {
-            args.push("--allowedTools".into());
-            args.push("Read,Write,Edit,Glob,Grep,Bash".into());
-        }
+    }
+
+    // Append system prompt with metadata + completion instruction
+    if let Some(sp) = system_prompt {
+        args.push("--append-system-prompt".into());
+        args.push(sp.to_string());
     }
 
     let start = std::time::Instant::now();

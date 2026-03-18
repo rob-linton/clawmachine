@@ -1,60 +1,65 @@
 use claw_models::{Job, Skill};
 
 pub struct BuiltPrompt {
+    /// The user's prompt — passed through unmodified.
     pub prompt: String,
+    /// System prompt appendix — metadata + completion instruction.
+    /// Passed via --append-system-prompt to keep it out of the user's prompt.
+    pub system_prompt: String,
+    /// Skill snapshot for reproducibility.
     pub skill_snapshot: serde_json::Value,
 }
 
-/// Build the prompt. Skills are deployed to disk by environment.rs,
-/// so the prompt only contains context metadata + the user's prompt.
+/// Build the prompt. The user's prompt is passed through unmodified.
+/// Metadata and instructions go into a separate system prompt appendix.
 pub fn build_prompt(job: &Job, skills: &[Skill]) -> BuiltPrompt {
-    let mut sections: Vec<String> = Vec::new();
+    // User prompt passes through exactly as written
+    let prompt = job.prompt.clone();
 
-    // Context metadata
+    // System prompt appendix — orchestration context
+    let mut system_parts: Vec<String> = Vec::new();
+
     if !skills.is_empty() {
         let skill_ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();
-        sections.push(format!(
-            "[Skills deployed to .claude/skills/: {}]",
+        system_parts.push(format!(
+            "Skills deployed to .claude/skills/: {}.",
             skill_ids.join(", ")
         ));
     }
-    sections.push(format!(
-        "[Job ID: {}] [Source: {}]",
-        job.id, job.source
-    ));
 
-    // The actual user prompt
-    sections.push(job.prompt.clone());
+    system_parts.push(format!("Job ID: {}. Source: {}.", job.id, job.source));
 
-    // Completion instruction — ensures Claude produces a structured summary
-    sections.push(
-        "When you have completed the task, end with a final summary of: \
-         (1) what you did, (2) what you found or concluded, and \
-         (3) any files you created or modified."
+    system_parts.push(
+        "When you have completed the task, end with a final summary of what you did, \
+         what you found or concluded, and any files you created or modified."
             .to_string(),
     );
 
-    let prompt = sections.join("\n\n");
+    let system_prompt = system_parts.join(" ");
 
     if prompt.len() > 100_000 {
         tracing::warn!(
             job_id = %job.id,
             prompt_len = prompt.len(),
-            "Assembled prompt exceeds 100K characters"
+            "Prompt exceeds 100K characters"
         );
     }
 
     // Skill snapshot for reproducibility
-    let snapshot: Vec<serde_json::Value> = skills.iter().map(|s| {
-        serde_json::json!({
-            "id": s.id,
-            "content_len": s.content.len(),
-            "files_count": s.files.len(),
+    let snapshot: Vec<serde_json::Value> = skills
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "id": s.id,
+                "content_len": s.content.len(),
+                "files_count": s.files.len(),
+            })
         })
-    }).collect();
+        .collect();
 
     BuiltPrompt {
         prompt,
+        system_prompt,
         skill_snapshot: serde_json::json!(snapshot),
     }
 }

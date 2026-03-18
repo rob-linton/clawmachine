@@ -63,7 +63,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ${CLAUDE_HOME:-~/.claude}:/home/claw/.claude:ro
+      - ${CLAUDE_HOME:-~/.claude}:/home/claw/.claude
       - ${CLAUDE_JSON:-~/.claude.json}:/home/claw/.claude.json:ro
       - claw_data:/home/claw/.claw
     deploy:

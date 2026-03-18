@@ -35,14 +35,18 @@ pub async fn dispatch_execute(
     job: &Job,
     working_dir: &std::path::Path,
     docker_config: Option<&DockerConfig>,
+    system_prompt: Option<&str>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
     match backend {
-        ExecutionBackend::Local => local_execute_job(job, working_dir, log_tx, cancel).await,
+        ExecutionBackend::Local => {
+            local_execute_job(job, working_dir, system_prompt, log_tx, cancel).await
+        }
         ExecutionBackend::Docker => {
             let config = docker_config.ok_or("Docker config not available")?;
-            docker::docker_execute_job(job, working_dir, config, log_tx, cancel).await
+            docker::docker_execute_job(job, working_dir, config, system_prompt, log_tx, cancel)
+                .await
         }
     }
 }
@@ -95,10 +99,8 @@ impl StreamState {
                                 }
                             }
                             Some("tool_use") => {
-                                let name = item
-                                    .get("name")
-                                    .and_then(|n| n.as_str())
-                                    .unwrap_or("");
+                                let name =
+                                    item.get("name").and_then(|n| n.as_str()).unwrap_or("");
                                 if name == "Write" || name == "Edit" {
                                     if let Some(path) = item
                                         .get("input")
@@ -120,8 +122,6 @@ impl StreamState {
 
     /// Build the final result text and extract cost.
     pub fn finalize(mut self) -> (String, f64) {
-        // If Claude produced a result, use it
-        // Otherwise build a fallback from assistant texts + file list
         if self.result_text.is_empty() && !self.assistant_texts.is_empty() {
             let mut parts: Vec<String> = Vec::new();
             parts.push(self.assistant_texts.join("\n\n"));
@@ -171,17 +171,19 @@ impl StreamState {
 pub async fn local_execute_job(
     job: &Job,
     working_dir: &std::path::Path,
+    system_prompt: Option<&str>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
     let timeout_secs = job.timeout_secs.unwrap_or(3600);
     let timeout = std::time::Duration::from_secs(timeout_secs);
+    // Use the user's prompt directly — no wrapping
     let prompt = job.assembled_prompt.as_deref().unwrap_or(&job.prompt);
 
     let mut cmd = Command::new("claude");
     cmd.arg("-p").arg(prompt);
     cmd.arg("--output-format").arg("stream-json");
-    cmd.arg("--verbose");
+    cmd.arg("--verbose"); // required by --output-format stream-json
     cmd.arg("--dangerously-skip-permissions");
 
     if let Some(model) = &job.model {
@@ -192,14 +194,17 @@ pub async fn local_execute_job(
         cmd.arg("--max-budget-usd").arg(budget.to_string());
     }
 
-    match &job.allowed_tools {
-        Some(tools) if !tools.is_empty() => {
+    // Only restrict tools when the job explicitly specifies a tool list.
+    // When not specified, let Claude use all tools.
+    if let Some(tools) = &job.allowed_tools {
+        if !tools.is_empty() {
             cmd.arg("--allowedTools").arg(tools.join(","));
         }
-        _ => {
-            cmd.arg("--allowedTools")
-                .arg("Read,Write,Edit,Glob,Grep,Bash");
-        }
+    }
+
+    // Append system prompt with metadata + completion instruction
+    if let Some(sp) = system_prompt {
+        cmd.arg("--append-system-prompt").arg(sp);
     }
 
     cmd.current_dir(working_dir);
