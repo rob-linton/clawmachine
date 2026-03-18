@@ -151,9 +151,10 @@ pub async fn local_execute_job(
         ));
     }
 
-    // Try multiple fields for cost extraction (varies by Claude session type)
+    // Try multiple fields for cost extraction (varies by Claude Code version)
     let cost_usd = final_result.as_ref().and_then(|r| {
-        r.get("cost_usd").and_then(|c| c.as_f64())
+        r.get("total_cost_usd").and_then(|c| c.as_f64())
+            .or_else(|| r.get("cost_usd").and_then(|c| c.as_f64()))
             .or_else(|| r.get("total_cost").and_then(|c| c.as_f64()))
             .or_else(|| r.get("usage").and_then(|u| u.get("cost_usd")).and_then(|c| c.as_f64()))
     }).unwrap_or(0.0);
