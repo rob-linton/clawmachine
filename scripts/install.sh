@@ -125,6 +125,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    volumes:
+      - claw_data:/home/claw/.claw
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/status"]
       interval: 10s
@@ -146,6 +148,7 @@ services:
     volumes:
       - \${CLAUDE_HOME}:/home/claw/.claude:ro
       - \${CLAUDE_JSON}:/home/claw/.claude.json:ro
+      - claw_data:/home/claw/.claw
     deploy:
       replicas: \${CLAW_WORKER_REPLICAS:-1}
 
@@ -178,6 +181,7 @@ services:
 
 volumes:
   redis_data:
+  claw_data:
   caddy_data:
   caddy_config:
 COMPOSEEOF
