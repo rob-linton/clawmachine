@@ -15,15 +15,30 @@ echo "==========================================="
 echo ""
 
 # --- Preflight ---
-for cmd in docker npm; do
-  if ! command -v $cmd &>/dev/null; then
-    red "Missing: $cmd — install it and re-run."
-    exit 1
-  fi
-done
+if ! command -v docker &>/dev/null; then
+  red "Missing: docker — install it and re-run."
+  exit 1
+fi
 if ! docker compose version &>/dev/null; then
   red "Missing: docker compose v2"
   exit 1
+fi
+
+# Install Node.js 20+ and npm if missing or too old
+NODE_VERSION=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)
+if [ -z "$NODE_VERSION" ] || [ "$NODE_VERSION" -lt 18 ] 2>/dev/null; then
+  yellow "  Installing Node.js 20 (needed for Claude Code CLI)..."
+  if command -v apt-get &>/dev/null; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+  elif command -v yum &>/dev/null; then
+    curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
+    sudo yum install -y nodejs
+  else
+    red "Cannot auto-install Node.js. Install Node.js 18+ manually and re-run."
+    exit 1
+  fi
+  green "  Node.js $(node --version) installed"
 fi
 
 # --- Create install directory ---
