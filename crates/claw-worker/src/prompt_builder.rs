@@ -1,4 +1,4 @@
-use claw_models::{Job, Skill};
+use claw_models::{Job, Skill, Workspace};
 
 pub struct BuiltPrompt {
     /// The user's prompt — passed through unmodified.
@@ -12,12 +12,29 @@ pub struct BuiltPrompt {
 
 /// Build the prompt. The user's prompt is passed through unmodified.
 /// Metadata and instructions go into a separate system prompt appendix.
-pub fn build_prompt(job: &Job, skills: &[Skill]) -> BuiltPrompt {
+pub fn build_prompt(job: &Job, skills: &[Skill], workspace: Option<&Workspace>) -> BuiltPrompt {
     // User prompt passes through exactly as written
     let prompt = job.prompt.clone();
 
     // System prompt appendix — orchestration context
     let mut system_parts: Vec<String> = Vec::new();
+
+    // Workspace context — helps Claude understand what the working directory is for
+    // and prevents it from wasting turns exploring an empty workspace.
+    if let Some(ws) = workspace {
+        let ws_desc = if ws.description.is_empty() {
+            format!("Workspace: {}.", ws.name)
+        } else {
+            format!("Workspace: {} — {}.", ws.name, ws.description)
+        };
+        system_parts.push(ws_desc);
+        system_parts.push(
+            "The working directory is a git-managed workspace. \
+             If the task does not require analyzing existing files, \
+             proceed directly to the task without exploring the workspace first."
+                .to_string(),
+        );
+    }
 
     if !skills.is_empty() {
         let skill_ids: Vec<&str> = skills.iter().map(|s| s.id.as_str()).collect();

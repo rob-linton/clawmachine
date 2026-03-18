@@ -305,7 +305,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                 };
 
                 // 5. Build prompt (user prompt passes through unmodified)
-                let built = prompt_builder::build_prompt(&job, &skills);
+                let built = prompt_builder::build_prompt(&job, &skills, workspace.as_ref());
                 let system_prompt = built.system_prompt;
                 let mut job = job;
                 job.assembled_prompt = Some(built.prompt.clone());
