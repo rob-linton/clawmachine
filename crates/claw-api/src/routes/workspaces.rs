@@ -136,6 +136,47 @@ async fn create_workspace(
                 tokio::task::spawn_blocking(move || {
                     init_git_repo(&ws_path);
                 }).await.ok();
+            } else if let Some(parent_id) = ws.parent_workspace_id {
+                // Forked workspace — clone from parent's bare repo
+                let parent = claw_redis::get_workspace(&state.pool, parent_id).await.ok().flatten();
+                let is_snapshot = ws.persistence == WorkspacePersistence::Snapshot;
+
+                // Resolve the parent ref to a commit hash
+                let git_ref = ws.parent_ref.as_deref().unwrap_or("HEAD").to_string();
+                let parent_repo = bare_repo_path(&parent.as_ref().unwrap_or(&ws));
+                let resolved = tokio::task::spawn_blocking({
+                    let git_ref = git_ref.clone();
+                    let parent_repo = parent_repo.clone();
+                    move || {
+                        let output = std::process::Command::new("git")
+                            .args(["rev-parse", &git_ref])
+                            .current_dir(&parent_repo)
+                            .stdout(std::process::Stdio::piped())
+                            .stderr(std::process::Stdio::piped())
+                            .output();
+                        match output {
+                            Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+                            _ => Ok(git_ref),
+                        }
+                    }
+                }).await.unwrap_or(Ok("HEAD".into())).unwrap_or_else(|_: String| "HEAD".into());
+
+                match fork_bare_repo(parent_id, ws.id, &resolved, is_snapshot).await {
+                    Ok(()) => {
+                        claw_redis::add_child_workspace(&state.pool, parent_id, ws.id).await.ok();
+                        if let Some(ref p) = parent {
+                            emit_event(&state.pool, parent_id, WorkspaceEventType::ChildForked, Some(&ws.id.to_string()),
+                                &format!("Forked to workspace '{}'", ws.name)).await;
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to fork bare repo, falling back to init");
+                        // Fall back to creating a fresh bare repo
+                        if let Err(e2) = init_bare_repo(ws.id, ws.claude_md.as_deref(), is_snapshot).await {
+                            tracing::warn!(error = %e2, "Fallback init_bare_repo also failed");
+                        }
+                    }
+                }
             } else {
                 // New-style: create bare repo + checkout
                 let ws_id = ws.id;
@@ -143,7 +184,6 @@ async fn create_workspace(
                 let is_snapshot = ws.persistence == WorkspacePersistence::Snapshot;
                 if let Err(e) = init_bare_repo(ws_id, claude_md.as_deref(), is_snapshot).await {
                     tracing::warn!(error = %e, "Failed to init bare repo");
-                    // Still return success — workspace metadata is in Redis
                 }
             }
             // Emit initialization event
