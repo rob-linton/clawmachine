@@ -43,6 +43,12 @@ pub struct Workspace {
     pub cpu_limit: Option<f64>,
     #[serde(default)]
     pub network_mode: Option<String>,
+    /// Lineage: which workspace this was forked from.
+    #[serde(default)]
+    pub parent_workspace_id: Option<Uuid>,
+    /// Git ref (commit hash, tag, or branch) in the parent at fork time.
+    #[serde(default)]
+    pub parent_ref: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -70,4 +76,42 @@ pub struct CreateWorkspaceRequest {
     pub remote_url: Option<String>,
     #[serde(default)]
     pub base_image: Option<String>,
+    #[serde(default)]
+    pub memory_limit: Option<String>,
+    #[serde(default)]
+    pub cpu_limit: Option<f64>,
+    #[serde(default)]
+    pub network_mode: Option<String>,
+    /// Fork from an existing workspace.
+    #[serde(default)]
+    pub parent_workspace_id: Option<Uuid>,
+    /// Git ref in the parent to fork from (defaults to HEAD).
+    #[serde(default)]
+    pub parent_ref: Option<String>,
+}
+
+/// Application-level event for workspace history timeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceEvent {
+    pub timestamp: DateTime<Utc>,
+    pub event_type: WorkspaceEventType,
+    /// Related entity ID (job_id, workspace_id, commit hash).
+    pub related_id: Option<String>,
+    /// Human-readable description.
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceEventType {
+    Initialized,
+    Forked,
+    JobStarted,
+    JobCompleted,
+    JobFailed,
+    SnapshotPromoted,
+    FileModified,
+    Synced,
+    Reverted,
+    ChildForked,
 }

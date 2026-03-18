@@ -34,9 +34,11 @@ pub async fn create_workspace(pool: &Pool, req: &CreateWorkspaceRequest) -> Resu
         persistence: req.persistence.clone().unwrap_or_default(),
         remote_url: req.remote_url.clone(),
         base_image: req.base_image.clone(),
-        memory_limit: None,
-        cpu_limit: None,
-        network_mode: None,
+        memory_limit: req.memory_limit.clone(),
+        cpu_limit: req.cpu_limit,
+        network_mode: req.network_mode.clone(),
+        parent_workspace_id: req.parent_workspace_id,
+        parent_ref: req.parent_ref.clone(),
         created_at: now,
         updated_at: now,
     };
@@ -148,8 +150,38 @@ pub async fn delete_workspace(pool: &Pool, id: Uuid) -> Result<(), RedisError> {
         }
     }
 
+    // Get workspace to check parent (for removing from parent's children set)
+    let ws = get_workspace(pool, id).await?.unwrap_or_else(|| {
+        Workspace {
+            id,
+            name: String::new(),
+            description: String::new(),
+            path: None,
+            skill_ids: vec![],
+            claude_md: None,
+            persistence: WorkspacePersistence::default(),
+            remote_url: None,
+            base_image: None,
+            memory_limit: None,
+            cpu_limit: None,
+            network_mode: None,
+            parent_workspace_id: None,
+            parent_ref: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        }
+    });
+
+    // Remove from parent's children set if this workspace was forked
+    if let Some(parent_id) = ws.parent_workspace_id {
+        let children_key = format!("claw:workspace:{}:children", parent_id);
+        let _: () = conn.srem(&children_key, id.to_string()).await.unwrap_or(());
+    }
+
     redis::pipe()
         .del(format!("claw:workspace:{}", id))
+        .del(format!("claw:workspace:{}:events", id))
+        .del(format!("claw:workspace:{}:children", id))
         .srem("claw:workspaces:index", id.to_string())
         .exec_async(&mut *conn)
         .await?;

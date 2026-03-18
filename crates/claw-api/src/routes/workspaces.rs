@@ -187,15 +187,17 @@ async fn update_workspace(
         id,
         name: req.name,
         description: req.description.unwrap_or_default(),
-        path: existing.path, // Path cannot be changed after creation
+        path: existing.path, // IMMUTABLE
         skill_ids: req.skill_ids,
         claude_md: req.claude_md,
-        persistence: existing.persistence, // Cannot change persistence mode
+        persistence: existing.persistence, // IMMUTABLE
         remote_url: req.remote_url.or(existing.remote_url),
         base_image: req.base_image.or(existing.base_image),
-        memory_limit: existing.memory_limit,
-        cpu_limit: existing.cpu_limit,
-        network_mode: existing.network_mode,
+        memory_limit: req.memory_limit.or(existing.memory_limit),
+        cpu_limit: req.cpu_limit.or(existing.cpu_limit),
+        network_mode: req.network_mode.or(existing.network_mode),
+        parent_workspace_id: existing.parent_workspace_id, // IMMUTABLE
+        parent_ref: existing.parent_ref, // IMMUTABLE
         created_at: existing.created_at,
         updated_at: chrono::Utc::now(),
     };
