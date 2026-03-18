@@ -237,6 +237,79 @@ pub async fn release_workspace_lock(pool: &Pool, workspace_id: Uuid, job_id: Uui
     Ok(())
 }
 
+// --- Workspace event log ---
+
+/// Append an event to a workspace's event timeline. Capped at 1000 events.
+pub async fn append_workspace_event(pool: &Pool, workspace_id: Uuid, event: &WorkspaceEvent) -> Result<(), RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("claw:workspace:{}:events", workspace_id);
+    let json = serde_json::to_string(event)?;
+
+    redis::pipe()
+        .lpush(&key, &json)
+        .ltrim(&key, 0, 999) // Keep newest 1000
+        .exec_async(&mut *conn)
+        .await?;
+    Ok(())
+}
+
+/// List workspace events (newest first) with pagination.
+pub async fn list_workspace_events(pool: &Pool, workspace_id: Uuid, limit: usize, offset: usize) -> Result<(Vec<WorkspaceEvent>, usize), RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("claw:workspace:{}:events", workspace_id);
+
+    let total: usize = redis::cmd("LLEN").arg(&key).query_async(&mut *conn).await.unwrap_or(0);
+    let end = offset + limit;
+    let jsons: Vec<String> = redis::cmd("LRANGE")
+        .arg(&key)
+        .arg(offset)
+        .arg(end.saturating_sub(1))
+        .query_async(&mut *conn)
+        .await
+        .unwrap_or_default();
+
+    let events: Vec<WorkspaceEvent> = jsons
+        .iter()
+        .filter_map(|j| serde_json::from_str(j).ok())
+        .collect();
+
+    Ok((events, total))
+}
+
+// --- Workspace children index ---
+
+/// Add a child workspace to a parent's children set.
+pub async fn add_child_workspace(pool: &Pool, parent_id: Uuid, child_id: Uuid) -> Result<(), RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("claw:workspace:{}:children", parent_id);
+    let _: () = conn.sadd(&key, child_id.to_string()).await?;
+    Ok(())
+}
+
+/// Remove a child workspace from a parent's children set.
+pub async fn remove_child_workspace(pool: &Pool, parent_id: Uuid, child_id: Uuid) -> Result<(), RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("claw:workspace:{}:children", parent_id);
+    let _: () = conn.srem(&key, child_id.to_string()).await?;
+    Ok(())
+}
+
+/// Count direct children of a workspace.
+pub async fn count_children(pool: &Pool, workspace_id: Uuid) -> Result<u32, RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("claw:workspace:{}:children", workspace_id);
+    let count: u32 = redis::cmd("SCARD").arg(&key).query_async(&mut *conn).await.unwrap_or(0);
+    Ok(count)
+}
+
+/// List child workspace IDs.
+pub async fn list_child_workspaces(pool: &Pool, workspace_id: Uuid) -> Result<Vec<String>, RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("claw:workspace:{}:children", workspace_id);
+    let ids: Vec<String> = redis::cmd("SMEMBERS").arg(&key).query_async(&mut *conn).await.unwrap_or_default();
+    Ok(ids)
+}
+
 /// Re-queue a job back to pending (used when workspace is locked).
 /// Does NOT increment retry_count — that's reserved for execution failure retries.
 pub async fn requeue_job(pool: &Pool, job_id: Uuid, priority: u8) -> Result<(), RedisError> {
