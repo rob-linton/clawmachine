@@ -243,9 +243,7 @@ pub async fn docker_execute_job(
     let stdout = log_child.stdout.take().ok_or("No log stdout")?;
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
-    let mut result_text = String::new();
-    let mut final_result: Option<serde_json::Value> = None;
-    let mut assistant_texts: Vec<String> = Vec::new();
+    let mut state = crate::executor::StreamState::new();
 
     let container_for_cancel = container_id.clone();
     let container_for_timeout = container_id.clone();
@@ -254,33 +252,7 @@ pub async fn docker_execute_job(
         r = async {
             while let Ok(Some(line)) = lines.next_line().await {
                 let _ = log_tx.try_send(line.clone());
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                    match val.get("type").and_then(|t| t.as_str()) {
-                        Some("result") => {
-                            final_result = Some(val.clone());
-                            if let Some(text) = val.get("result").and_then(|r| r.as_str()) {
-                                result_text = text.to_string();
-                            }
-                        }
-                        Some("assistant") => {
-                            if let Some(content) = val.get("message")
-                                .and_then(|m| m.get("content"))
-                                .and_then(|c| c.as_array())
-                            {
-                                for item in content {
-                                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                                            if !text.is_empty() {
-                                                assistant_texts.push(text.to_string());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                state.process_line(&line);
             }
             // Wait for container to actually exit
             Command::new("docker")
@@ -324,29 +296,7 @@ pub async fn docker_execute_job(
         return Err(format!("claude exited with code {exit_code} inside container"));
     }
 
-    // Fallback: if result is empty, use accumulated assistant text
-    if result_text.is_empty() && !assistant_texts.is_empty() {
-        result_text = assistant_texts.join("\n\n");
-        if result_text.len() > 50_000 {
-            result_text.truncate(50_000);
-            result_text.push_str("\n\n[truncated]");
-        }
-    }
-
-    let cost_usd = final_result
-        .as_ref()
-        .and_then(|r| {
-            r.get("total_cost_usd")
-                .and_then(|c| c.as_f64())
-                .or_else(|| r.get("cost_usd").and_then(|c| c.as_f64()))
-                .or_else(|| r.get("total_cost").and_then(|c| c.as_f64()))
-                .or_else(|| {
-                    r.get("usage")
-                        .and_then(|u| u.get("cost_usd"))
-                        .and_then(|c| c.as_f64())
-                })
-        })
-        .unwrap_or(0.0);
+    let (result_text, cost_usd) = state.finalize();
 
     Ok(ExecutionResult {
         result_text,

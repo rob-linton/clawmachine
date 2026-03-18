@@ -26,6 +26,14 @@ pub fn build_prompt(job: &Job, skills: &[Skill]) -> BuiltPrompt {
     // The actual user prompt
     sections.push(job.prompt.clone());
 
+    // Completion instruction — ensures Claude produces a structured summary
+    sections.push(
+        "When you have completed the task, end with a final summary of: \
+         (1) what you did, (2) what you found or concluded, and \
+         (3) any files you created or modified."
+            .to_string(),
+    );
+
     let prompt = sections.join("\n\n");
 
     if prompt.len() > 100_000 {

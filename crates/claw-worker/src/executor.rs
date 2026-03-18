@@ -47,8 +47,126 @@ pub async fn dispatch_execute(
     }
 }
 
+/// State collected while parsing Claude's stream-json output.
+/// Shared between local and Docker execution paths.
+pub struct StreamState {
+    pub result_text: String,
+    pub final_result: Option<serde_json::Value>,
+    pub assistant_texts: Vec<String>,
+    pub files_written: Vec<String>,
+}
+
+impl StreamState {
+    pub fn new() -> Self {
+        Self {
+            result_text: String::new(),
+            final_result: None,
+            assistant_texts: Vec::new(),
+            files_written: Vec::new(),
+        }
+    }
+
+    /// Process a single stream-json line.
+    pub fn process_line(&mut self, line: &str) {
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(line) else {
+            return;
+        };
+
+        match val.get("type").and_then(|t| t.as_str()) {
+            Some("result") => {
+                self.final_result = Some(val.clone());
+                if let Some(text) = val.get("result").and_then(|r| r.as_str()) {
+                    self.result_text = text.to_string();
+                }
+            }
+            Some("assistant") => {
+                if let Some(content) = val
+                    .get("message")
+                    .and_then(|m| m.get("content"))
+                    .and_then(|c| c.as_array())
+                {
+                    for item in content {
+                        match item.get("type").and_then(|t| t.as_str()) {
+                            Some("text") => {
+                                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                                    if !text.is_empty() {
+                                        self.assistant_texts.push(text.to_string());
+                                    }
+                                }
+                            }
+                            Some("tool_use") => {
+                                let name = item
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or("");
+                                if name == "Write" || name == "Edit" {
+                                    if let Some(path) = item
+                                        .get("input")
+                                        .and_then(|i| i.get("file_path"))
+                                        .and_then(|p| p.as_str())
+                                    {
+                                        self.files_written.push(path.to_string());
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Build the final result text and extract cost.
+    pub fn finalize(mut self) -> (String, f64) {
+        // If Claude produced a result, use it
+        // Otherwise build a fallback from assistant texts + file list
+        if self.result_text.is_empty() && !self.assistant_texts.is_empty() {
+            let mut parts: Vec<String> = Vec::new();
+            parts.push(self.assistant_texts.join("\n\n"));
+
+            if !self.files_written.is_empty() {
+                self.files_written.sort();
+                self.files_written.dedup();
+                parts.push(format!(
+                    "\n\nFiles created/modified:\n{}",
+                    self.files_written
+                        .iter()
+                        .map(|f| format!("- {}", f))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+
+            self.result_text = parts.join("");
+            if self.result_text.len() > 50_000 {
+                self.result_text.truncate(50_000);
+                self.result_text.push_str("\n\n[truncated]");
+            }
+        }
+
+        let cost_usd = self
+            .final_result
+            .as_ref()
+            .and_then(|r| {
+                r.get("total_cost_usd")
+                    .and_then(|c| c.as_f64())
+                    .or_else(|| r.get("cost_usd").and_then(|c| c.as_f64()))
+                    .or_else(|| r.get("total_cost").and_then(|c| c.as_f64()))
+                    .or_else(|| {
+                        r.get("usage")
+                            .and_then(|u| u.get("cost_usd"))
+                            .and_then(|c| c.as_f64())
+                    })
+            })
+            .unwrap_or(0.0);
+
+        (self.result_text, cost_usd)
+    }
+}
+
 /// Execute a job locally (direct subprocess).
-/// Cancellation is cooperative via the CancellationToken.
 /// Times out after job.timeout_secs (default 3600s / 1h).
 pub async fn local_execute_job(
     job: &Job,
@@ -58,7 +176,6 @@ pub async fn local_execute_job(
 ) -> Result<ExecutionResult, String> {
     let timeout_secs = job.timeout_secs.unwrap_or(3600);
     let timeout = std::time::Duration::from_secs(timeout_secs);
-    // Use the assembled prompt (with skill injections) if available, otherwise raw prompt
     let prompt = job.assembled_prompt.as_deref().unwrap_or(&job.prompt);
 
     let mut cmd = Command::new("claude");
@@ -75,25 +192,25 @@ pub async fn local_execute_job(
         cmd.arg("--max-budget-usd").arg(budget.to_string());
     }
 
-    // Apply allowed tools: explicit list from job, or safe default
     match &job.allowed_tools {
         Some(tools) if !tools.is_empty() => {
             cmd.arg("--allowedTools").arg(tools.join(","));
         }
         _ => {
-            // Default safe set — allows code work but not network/agent tools
-            cmd.arg("--allowedTools").arg("Read,Write,Edit,Glob,Grep,Bash");
+            cmd.arg("--allowedTools")
+                .arg("Read,Write,Edit,Glob,Grep,Bash");
         }
     }
 
     cmd.current_dir(working_dir);
-
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.kill_on_drop(true);
 
     let start = std::time::Instant::now();
-    let mut child = cmd.spawn().map_err(|e| format!("Failed to spawn claude: {e}"))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to spawn claude: {e}"))?;
 
     let stdout = child.stdout.take().ok_or("No stdout")?;
     let stderr = child.stderr.take().ok_or("No stderr")?;
@@ -111,44 +228,13 @@ pub async fn local_execute_job(
 
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
-    let mut result_text = String::new();
-    let mut final_result: Option<serde_json::Value> = None;
-    let mut assistant_texts: Vec<String> = Vec::new();
+    let mut state = StreamState::new();
 
     let output = tokio::select! {
         r = async {
             while let Ok(Some(line)) = lines.next_line().await {
-                // Forward to log channel (best effort)
                 let _ = log_tx.try_send(line.clone());
-
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                    match val.get("type").and_then(|t| t.as_str()) {
-                        Some("result") => {
-                            final_result = Some(val.clone());
-                            if let Some(text) = val.get("result").and_then(|r| r.as_str()) {
-                                result_text = text.to_string();
-                            }
-                        }
-                        Some("assistant") => {
-                            // Capture assistant text for fallback result
-                            if let Some(content) = val.get("message")
-                                .and_then(|m| m.get("content"))
-                                .and_then(|c| c.as_array())
-                            {
-                                for item in content {
-                                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                                            if !text.is_empty() {
-                                                assistant_texts.push(text.to_string());
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
+                state.process_line(&line);
             }
             child.wait().await
         } => r,
@@ -176,22 +262,7 @@ pub async fn local_execute_job(
         ));
     }
 
-    // Fallback: if result is empty, use accumulated assistant text
-    if result_text.is_empty() && !assistant_texts.is_empty() {
-        result_text = assistant_texts.join("\n\n");
-        if result_text.len() > 50_000 {
-            result_text.truncate(50_000);
-            result_text.push_str("\n\n[truncated]");
-        }
-    }
-
-    // Try multiple fields for cost extraction (varies by Claude Code version)
-    let cost_usd = final_result.as_ref().and_then(|r| {
-        r.get("total_cost_usd").and_then(|c| c.as_f64())
-            .or_else(|| r.get("cost_usd").and_then(|c| c.as_f64()))
-            .or_else(|| r.get("total_cost").and_then(|c| c.as_f64()))
-            .or_else(|| r.get("usage").and_then(|u| u.get("cost_usd")).and_then(|c| c.as_f64()))
-    }).unwrap_or(0.0);
+    let (result_text, cost_usd) = state.finalize();
 
     Ok(ExecutionResult {
         result_text,

@@ -9,7 +9,6 @@ jobs/
 output/
 workspaces/
 flutter_ui/.dart_tool/
-flutter_ui/build/
 flutter_ui/macos/
 flutter_ui/test/
 flutter_ui/.metadata
