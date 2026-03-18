@@ -3,8 +3,9 @@ mod routes;
 pub mod upload_utils;
 
 use axum::Router;
+use axum::http::{header, Method};
 use deadpool_redis::Pool;
-use tower_http::cors::CorsLayer;
+use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::services::{ServeDir, ServeFile};
 
 #[derive(Clone)]
@@ -31,6 +32,9 @@ async fn main() {
     let pool = claw_redis::create_pool(&redis_url);
     let state = AppState { pool, redis_url };
 
+    // Bootstrap admin user if none exist
+    auth::bootstrap_admin(&state.pool).await;
+
     // Ensure workspace directories exist
     let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
     for subdir in &["repos", "checkouts"] {
@@ -46,11 +50,14 @@ async fn main() {
         .unwrap_or_else(|_| "flutter_ui/build/web".into());
     tracing::info!(static_dir, "Serving static files");
 
+    // Build CORS layer
+    let cors = build_cors_layer();
+
     // Build API routes with state first
     let api = Router::new()
         .nest("/api/v1", routes::router())
-        .with_state(state)
-        .layer(axum::middleware::from_fn(auth::auth_middleware));
+        .with_state(state.clone())
+        .layer(axum::middleware::from_fn_with_state(state, auth::auth_middleware));
 
     // Combine API routes with static file fallback
     let app = api
@@ -58,11 +65,39 @@ async fn main() {
             ServeDir::new(&static_dir)
                 .fallback(ServeFile::new(format!("{static_dir}/index.html"))),
         )
-        .layer(CorsLayer::permissive());
+        .layer(cors);
 
     let addr = format!("0.0.0.0:{port}");
     tracing::info!("claw-api listening on {addr}");
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+/// Build CORS layer. If CLAW_CORS_ORIGIN is set, restrict to that origin.
+/// Otherwise fall back to permissive (development mode).
+fn build_cors_layer() -> CorsLayer {
+    if let Ok(origin) = std::env::var("CLAW_CORS_ORIGIN") {
+        if !origin.is_empty() {
+            tracing::info!(origin, "CORS restricted to configured origin");
+            return CorsLayer::new()
+                .allow_origin(AllowOrigin::exact(origin.parse().unwrap()))
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PUT,
+                    Method::DELETE,
+                    Method::OPTIONS,
+                ])
+                .allow_headers([
+                    header::CONTENT_TYPE,
+                    header::AUTHORIZATION,
+                    header::ACCEPT,
+                    header::COOKIE,
+                ])
+                .allow_credentials(true);
+        }
+    }
+    tracing::warn!("CLAW_CORS_ORIGIN not set — using permissive CORS (development mode)");
+    CorsLayer::permissive()
 }

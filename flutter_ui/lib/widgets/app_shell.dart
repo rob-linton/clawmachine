@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import '../main.dart';
 
-class AppShell extends StatelessWidget {
+class AppShell extends ConsumerWidget {
   final Widget child;
   const AppShell({super.key, required this.child});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final location = GoRouterState.of(context).uri.toString();
     final idx = _indexForLocation(location);
 
@@ -25,11 +27,10 @@ class AppShell extends StatelessWidget {
                       ?.copyWith(fontWeight: FontWeight.bold)),
             ),
             trailing: Expanded(
-              child: Align(
-                alignment: Alignment.bottomCenter,
-                child: Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: IconButton(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  IconButton(
                     icon: Icon(Icons.settings,
                         color: location.startsWith('/settings')
                             ? Theme.of(context).colorScheme.primary
@@ -37,7 +38,20 @@ class AppShell extends StatelessWidget {
                     tooltip: 'Settings',
                     onPressed: () => context.go('/settings'),
                   ),
-                ),
+                  const SizedBox(height: 8),
+                  IconButton(
+                    icon: const Icon(Icons.logout),
+                    tooltip: 'Sign out',
+                    onPressed: () async {
+                      try {
+                        final api = ref.read(apiClientProvider);
+                        await api.logout();
+                      } catch (_) {}
+                      if (context.mounted) context.go('/login');
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                ],
               ),
             ),
             destinations: const [

@@ -3,7 +3,7 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
-      - "${CLAW_REDIS_PORT:-6379}:6379"
+      - "${CLAW_REDIS_PORT:-6399}:6379"
     volumes:
       - redis_data:/data
     command: >
@@ -12,8 +12,9 @@ services:
       --appendfsync everysec
       --maxmemory 512mb
       --maxmemory-policy noeviction
+      --requirepass ${CLAW_REDIS_PASSWORD:-changeme}
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "redis-cli", "-a", "${CLAW_REDIS_PASSWORD:-changeme}", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -25,12 +26,15 @@ services:
       dockerfile: docker/Dockerfile.backend
       target: api
     restart: unless-stopped
-    ports:
-      - "${CLAW_API_PORT:-8080}:8080"
+    # No ports exposed — Caddy fronts this service
     environment:
-      CLAW_REDIS_URL: "redis://redis:6379/${CLAW_REDIS_DB:-0}"
+      CLAW_REDIS_URL: "redis://:${CLAW_REDIS_PASSWORD:-changeme}@redis:6379/${CLAW_REDIS_DB:-0}"
       CLAW_API_PORT: "8080"
       CLAW_STATIC_DIR: /app/static
+      CLAW_API_TOKEN: "${CLAW_API_TOKEN:-}"
+      CLAW_ADMIN_USER: "${CLAW_ADMIN_USER:-admin}"
+      CLAW_ADMIN_PASSWORD: "${CLAW_ADMIN_PASSWORD}"
+      CLAW_CORS_ORIGIN: "https://${CLAW_HOST_IP:-localhost}"
       RUST_LOG: "${RUST_LOG:-info,claw_api=debug}"
     depends_on:
       redis:
@@ -47,11 +51,10 @@ services:
   worker:
     build:
       context: ..
-      dockerfile: docker/Dockerfile.backend
-      target: worker
+      dockerfile: docker/Dockerfile.worker
     restart: unless-stopped
     environment:
-      CLAW_REDIS_URL: "redis://redis:6379/${CLAW_REDIS_DB:-0}"
+      CLAW_REDIS_URL: "redis://:${CLAW_REDIS_PASSWORD:-changeme}@redis:6379/${CLAW_REDIS_DB:-0}"
       CLAW_WORKER_CONCURRENCY: "${CLAW_WORKER_CONCURRENCY:-2}"
       RUST_LOG: "${RUST_LOG:-info,claw_worker=debug}"
       HOME: /home/claw
@@ -59,10 +62,8 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - ../output:/app/output
-      - ../skills:/app/skills
-      - ../workspaces:/app/workspaces
-      - ${HOME}/.claude:/home/claw/.claude:ro
+      - ${CLAW_CLAUDE_HOME:-~/.claude}:/home/claw/.claude:ro
+      - ${CLAW_CLAUDE_JSON:-~/.claude.json}:/home/claw/.claude.json:ro
     deploy:
       replicas: ${CLAW_WORKER_REPLICAS:-1}
 
@@ -73,7 +74,7 @@ services:
       target: scheduler
     restart: unless-stopped
     environment:
-      CLAW_REDIS_URL: "redis://redis:6379/${CLAW_REDIS_DB:-0}"
+      CLAW_REDIS_URL: "redis://:${CLAW_REDIS_PASSWORD:-changeme}@redis:6379/${CLAW_REDIS_DB:-0}"
       CLAW_JOBS_WATCH_DIR: /app/jobs
       CLAW_CRON_CHECK_INTERVAL_SECS: "${CLAW_CRON_INTERVAL:-30}"
       RUST_LOG: "${RUST_LOG:-info,claw_scheduler=debug}"
@@ -83,6 +84,26 @@ services:
     volumes:
       - ../jobs:/app/jobs
 
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CLAW_HOST_IP: "${CLAW_HOST_IP:-localhost}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      api:
+        condition: service_healthy
+
 volumes:
   redis_data:
+    driver: local
+  caddy_data:
+    driver: local
+  caddy_config:
     driver: local

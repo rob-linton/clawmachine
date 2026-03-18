@@ -13,7 +13,26 @@ class ApiClient {
           baseUrl: '$baseUrl/api/v1',
           connectTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 30),
+          extra: {'withCredentials': true},
         ));
+
+  // Auth
+  Future<Map<String, dynamic>> login(String username, String password) async {
+    final resp = await _dio.post('/auth/login', data: {
+      'username': username,
+      'password': password,
+    });
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<void> logout() async {
+    await _dio.post('/auth/logout');
+  }
+
+  Future<Map<String, dynamic>> checkAuth() async {
+    final resp = await _dio.get('/auth/me');
+    return Map<String, dynamic>.from(resp.data);
+  }
 
   // Jobs
   Future<Map<String, dynamic>> submitJob({

@@ -1,0 +1,41 @@
+# Worker image — claw-worker binary + Claude Code CLI.
+# Auth is NOT baked in — it's mounted as a volume at runtime.
+FROM rust:1.88-bookworm AS builder
+
+WORKDIR /build
+COPY Cargo.toml Cargo.lock ./
+COPY crates/claw-models/Cargo.toml crates/claw-models/
+COPY crates/claw-redis/Cargo.toml crates/claw-redis/
+COPY crates/claw-api/Cargo.toml crates/claw-api/
+COPY crates/claw-worker/Cargo.toml crates/claw-worker/
+COPY crates/claw-scheduler/Cargo.toml crates/claw-scheduler/
+COPY crates/claw-cli/Cargo.toml crates/claw-cli/
+
+RUN mkdir -p crates/claw-models/src && echo "pub fn _dummy() {}" > crates/claw-models/src/lib.rs && \
+    mkdir -p crates/claw-redis/src && echo "pub fn _dummy() {}" > crates/claw-redis/src/lib.rs && \
+    mkdir -p crates/claw-api/src && echo "fn main() {}" > crates/claw-api/src/main.rs && \
+    mkdir -p crates/claw-worker/src && echo "fn main() {}" > crates/claw-worker/src/main.rs && \
+    mkdir -p crates/claw-scheduler/src && echo "fn main() {}" > crates/claw-scheduler/src/main.rs && \
+    mkdir -p crates/claw-cli/src && echo "fn main() {}" > crates/claw-cli/src/main.rs
+
+RUN cargo build --release -p claw-worker 2>/dev/null || true
+
+COPY crates/ crates/
+RUN find crates -name "*.rs" -exec touch {} +
+RUN cargo build --release -p claw-worker
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git nodejs npm && \
+    rm -rf /var/lib/apt/lists/*
+
+ARG CLAUDE_CODE_VERSION=latest
+RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+RUN useradd -m -s /bin/bash claw
+COPY --from=builder /build/target/release/claw-worker /usr/local/bin/
+
+USER claw
+CMD ["claw-worker"]

@@ -140,6 +140,19 @@ GET    /api/v1/events/jobs             — SSE stream of job status updates (via
 
 Clients receive `job_update` events with `{type, job_id, status}` payloads. The connection auto-sends keepalive pings.
 
+## Authentication Endpoints
+
+```
+POST   /api/v1/auth/login              — login with {username, password}, returns session cookie
+POST   /api/v1/auth/logout             — logout, clears session cookie
+GET    /api/v1/auth/me                 — get current user {username, role}
+POST   /api/v1/auth/users              — create user (admin only): {username, password, role}
+GET    /api/v1/auth/users              — list users (admin only)
+DELETE /api/v1/auth/users/{username}   — delete user (admin only)
+```
+
+Auth uses session cookies (`claw_session`) for the UI and bearer tokens (`CLAW_API_TOKEN`) for CLI/automation. Sessions are stored in Redis with 24h TTL. On first startup, an admin user is bootstrapped from `CLAW_ADMIN_USER`/`CLAW_ADMIN_PASSWORD` env vars (only if no users exist). Redis keys: `claw:user:{username}` (hash: password_hash, role, created_at), `claw:session:{uuid}` (hash: username, created_at, TTL 24h).
+
 ## Workspace File Endpoints
 
 ```
@@ -236,7 +249,12 @@ Every phase must be validated end-to-end before proceeding. After writing code, 
 | `CLAW_STATIC_DIR` | `flutter_ui/build/web` | Flutter build directory to serve |
 | `CLAW_WORKER_CONCURRENCY` | `1` | Number of parallel worker tasks |
 | `CLAW_LOG_FORMAT` | (text) | Set to `json` for structured JSON logging |
-| `CLAW_API_TOKEN` | (unset) | API auth token. If set, all API requests require `Authorization: Bearer <token>` header |
+| `CLAW_API_TOKEN` | (unset) | API bearer token for CLI/automation. If set, acts as admin-level auth |
+| `CLAW_ADMIN_USER` | (unset) | Bootstrap admin username (only used when no users exist) |
+| `CLAW_ADMIN_PASSWORD` | (unset) | Bootstrap admin password (only used when no users exist) |
+| `CLAW_CORS_ORIGIN` | (permissive) | Restrict CORS to this origin (e.g., `https://192.168.1.50`) |
+| `CLAW_REDIS_PASSWORD` | (unset) | Redis AUTH password (used in docker-compose) |
+| `CLAW_HOST_IP` | `localhost` | Server IP for Caddy TLS cert and CORS |
 | `CLAW_FAILURE_WEBHOOK_URL` | (unset) | POST to this URL when a job fails |
 | `CLAW_COMPLETION_WEBHOOK_URL` | (unset) | POST to this URL when any job completes |
 | `CLAW_WORKSPACES_DIR` | `~/.claw/workspaces` | Base directory for legacy workspaces |

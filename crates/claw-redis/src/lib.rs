@@ -7,6 +7,8 @@ pub mod workspaces;
 pub mod pipelines;
 pub mod job_templates;
 pub mod config;
+pub mod users;
+pub mod sessions;
 
 pub use pool::*;
 pub use jobs::*;
@@ -17,3 +19,5 @@ pub use workspaces::*;
 pub use pipelines::*;
 pub use job_templates::*;
 pub use config::*;
+pub use users::*;
+pub use sessions::*;

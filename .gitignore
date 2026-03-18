@@ -3,3 +3,4 @@
 flutter_ui/build/
 .pids/
 .logs/
+claw-ca.crt

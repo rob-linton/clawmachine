@@ -36,7 +36,9 @@ class EventService {
     while (_running) {
       _cancelToken = CancelToken();
       try {
-        final dio = Dio();
+        final dio = Dio(BaseOptions(
+          extra: {'withCredentials': true},
+        ));
         final response = await dio.get<ResponseBody>(
           '$_baseUrl/api/v1/events/jobs',
           options: Options(

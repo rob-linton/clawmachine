@@ -1,7 +1,28 @@
 # ============================================
+# Stage 0: Build Flutter web frontend
+# ============================================
+FROM debian:bookworm-slim AS flutter-builder
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates curl git unzip xz-utils && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Flutter SDK
+ARG FLUTTER_VERSION=3.41.1
+RUN git clone --depth 1 --branch ${FLUTTER_VERSION} https://github.com/flutter/flutter.git /opt/flutter
+ENV PATH="/opt/flutter/bin:/opt/flutter/bin/cache/dart-sdk/bin:${PATH}"
+RUN flutter precache --web && flutter doctor -v
+
+COPY flutter_ui/ /build/flutter_ui/
+WORKDIR /build/flutter_ui
+RUN flutter pub get && \
+    flutter build web --release --no-tree-shake-icons --dart-define="API_URL="
+
+# ============================================
 # Stage 1: Build all Rust binaries
 # ============================================
-FROM rust:1.83-bookworm AS builder
+FROM rust:1.88-bookworm AS builder
 
 WORKDIR /build
 
@@ -44,8 +65,8 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/$(uname -m)/docke
 RUN useradd -m -s /bin/bash claw
 COPY --from=builder /build/target/release/claw-api /usr/local/bin/
 
-# Flutter web build (copy from host build context)
-COPY flutter_ui/build/web /app/static
+# Flutter web build from the flutter-builder stage
+COPY --from=flutter-builder /build/flutter_ui/build/web /app/static
 
 # Bundle Dockerfile.sandbox for the build endpoint
 COPY docker/Dockerfile.sandbox /app/docker/Dockerfile.sandbox

@@ -1,0 +1,18 @@
+[Unit]
+Description=ClaudeCodeClaw Job Queue Orchestrator
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=claw
+Group=claw
+WorkingDirectory=/opt/claudecodeclaw
+EnvironmentFile=/opt/claudecodeclaw/.env
+ExecStart=/usr/bin/docker compose -f /opt/claudecodeclaw/docker/docker-compose.yml --env-file /opt/claudecodeclaw/.env up
+ExecStop=/usr/bin/docker compose -f /opt/claudecodeclaw/docker/docker-compose.yml --env-file /opt/claudecodeclaw/.env down
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
