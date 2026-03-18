@@ -159,19 +159,38 @@ pub async fn teardown_environment(env: &PreparedEnvironment) {
 
 /// Recover from previous unclean shutdowns.
 pub async fn crash_recovery() {
-    let tmp_dir = PathBuf::from("/tmp/claw-jobs");
-    if !tmp_dir.exists() {
-        return;
+    let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+    let claw_dir = home.join(".claw");
+
+    // Scan both jobs/ and pipelines/ dirs for stale working dirs
+    for subdir in &["jobs", "pipelines"] {
+        let scan_dir = claw_dir.join(subdir);
+        if !scan_dir.exists() {
+            continue;
+        }
+
+        tracing::info!(dir = %scan_dir.display(), "Scanning for crash recovery...");
+
+        if let Ok(mut entries) = tokio::fs::read_dir(&scan_dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                if path.is_dir() {
+                    recover_workspace(&path).await;
+                    tokio::fs::remove_dir_all(&path).await.ok();
+                }
+            }
+        }
     }
 
-    tracing::info!("Scanning for crash recovery...");
-
-    if let Ok(mut entries) = tokio::fs::read_dir(&tmp_dir).await {
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            if path.is_dir() {
-                recover_workspace(&path).await;
-                tokio::fs::remove_dir_all(&path).await.ok();
+    // Also clean up legacy /tmp/claw-job-* and /tmp/claw-pipeline-* dirs
+    for prefix in &["claw-job-", "claw-pipeline-", "claw-jobs"] {
+        if let Ok(mut entries) = tokio::fs::read_dir("/tmp").await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.starts_with(prefix) && entry.path().is_dir() {
+                    tracing::info!(path = %entry.path().display(), "Cleaning up legacy temp dir");
+                    tokio::fs::remove_dir_all(entry.path()).await.ok();
+                }
             }
         }
     }
@@ -202,17 +221,19 @@ async fn resolve_working_dir(job: &Job, workspace: Option<&Workspace>, pipeline_
             return Ok((path.clone(), false, false));
         }
 
-        // New-style workspace — clone from bare repo into temp dir
+        // New-style workspace — clone from bare repo into job working dir
         let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
         let repo_path = home
             .join(".claw")
             .join("repos")
             .join(format!("{}.git", ws.id));
 
-        let tmp = PathBuf::from(format!("/tmp/claw-job-{}", job.id));
-        tokio::fs::create_dir_all(tmp.parent().unwrap_or(&PathBuf::from("/tmp")))
+        // Use ~/.claw/jobs/{job_id} so the dir is inside the shared volume
+        // (accessible to Docker sandbox containers via host path mapping)
+        let tmp = home.join(".claw").join("jobs").join(job.id.to_string());
+        tokio::fs::create_dir_all(tmp.parent().unwrap())
             .await
-            .map_err(|e| format!("Failed to create temp dir: {e}"))?;
+            .map_err(|e| format!("Failed to create jobs dir: {e}"))?;
 
         // Clone from bare repo — for snapshot mode, clone at the claw/base tag
         let tmp_clone = tmp.clone();
@@ -278,7 +299,9 @@ async fn resolve_working_dir(job: &Job, workspace: Option<&Workspace>, pipeline_
         return Ok((wd.clone(), false, false));
     }
 
-    let tmp = PathBuf::from("/tmp/claw-jobs").join(job.id.to_string());
+    // No workspace — use ~/.claw/jobs/{job_id} (shared volume for Docker access)
+    let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+    let tmp = home.join(".claw").join("jobs").join(job.id.to_string());
     tokio::fs::create_dir_all(&tmp)
         .await
         .map_err(|e| format!("Failed to create temp workspace: {e}"))?;

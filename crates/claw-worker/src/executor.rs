@@ -1,4 +1,4 @@
-use claw_models::Job;
+use claw_models::{Job, Workspace};
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -35,6 +35,7 @@ pub async fn dispatch_execute(
     job: &Job,
     working_dir: &std::path::Path,
     docker_config: Option<&DockerConfig>,
+    workspace: Option<&Workspace>,
     system_prompt: Option<&str>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
@@ -45,7 +46,7 @@ pub async fn dispatch_execute(
         }
         ExecutionBackend::Docker => {
             let config = docker_config.ok_or("Docker config not available")?;
-            docker::docker_execute_job(job, working_dir, config, system_prompt, log_tx, cancel)
+            docker::docker_execute_job(job, working_dir, config, workspace, system_prompt, log_tx, cancel)
                 .await
         }
     }

@@ -60,34 +60,39 @@ async fn main() {
         }
     }
 
-    // Crash recovery: clean up stale temp dirs from previous runs
+    // Crash recovery: clean up stale job/pipeline dirs from previous runs
     environment::crash_recovery().await;
-    // Also clean up stale job/pipeline temp dirs
-    for prefix in &["/tmp/claw-job-", "/tmp/claw-pipeline-"] {
-        if let Ok(mut entries) = tokio::fs::read_dir("/tmp").await {
-            while let Ok(Some(entry)) = entries.next_entry().await {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with(prefix.trim_start_matches("/tmp/")) {
-                    tracing::info!(path = %entry.path().display(), "Cleaning up stale temp dir");
-                    tokio::fs::remove_dir_all(entry.path()).await.ok();
-                }
-            }
-        }
-    }
 
-    // If Docker backend is configured, ensure sandbox image is available
+    // If Docker backend is configured, verify Docker is available and sandbox image exists
     let backend_str = claw_redis::get_config(&pool, "execution_backend")
         .await
         .unwrap_or_else(|_| {
-            std::env::var("CLAW_EXECUTION_BACKEND").unwrap_or_else(|_| "local".into())
+            std::env::var("CLAW_EXECUTION_BACKEND").unwrap_or_else(|_| "docker".into())
         });
     if backend_str == "docker" {
+        // Check Docker socket is accessible
+        if let Err(e) = docker::check_docker_socket().await {
+            tracing::error!(error = %e, "Docker socket not accessible — cannot start in Docker mode");
+            tracing::info!("Mount /var/run/docker.sock into the worker container, or set execution_backend=local");
+            std::process::exit(1);
+        }
+
+        // Check sandbox image exists
         let image = claw_redis::get_config(&pool, "sandbox_image")
             .await
             .unwrap_or_else(|_| "claw-sandbox:latest".into());
         match docker::ensure_image(&image).await {
             Ok(()) => tracing::info!(image, "Docker sandbox image ready"),
-            Err(e) => tracing::warn!(error = %e, "Docker sandbox image not available — Docker jobs will fail until image is built/pulled"),
+            Err(e) => {
+                tracing::error!(error = %e, "Docker sandbox image not available — cannot start in Docker mode");
+                tracing::info!("Build with: POST /api/v1/docker/images/build, or set execution_backend=local");
+                std::process::exit(1);
+            }
+        }
+
+        // Validate host data dir if set (for Docker-in-Docker volume mapping)
+        if let Ok(host_dir) = std::env::var("CLAW_HOST_DATA_DIR") {
+            tracing::info!(host_data_dir = %host_dir, "Docker-in-Docker host path mapping configured");
         }
     }
 
@@ -351,6 +356,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     &job,
                     &prepared_env.working_dir,
                     docker_config.as_ref(),
+                    workspace.as_ref(),
                     Some(&system_prompt),
                     log_tx,
                     cancel,

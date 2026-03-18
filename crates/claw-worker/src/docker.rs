@@ -1,4 +1,4 @@
-use claw_models::Job;
+use claw_models::{Job, Workspace};
 use std::path::Path;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -122,11 +122,65 @@ pub async fn ensure_image(image: &str) -> Result<(), String> {
     ))
 }
 
+/// Check that the Docker socket is accessible.
+pub async fn check_docker_socket() -> Result<(), String> {
+    let output = Command::new("docker")
+        .args(["info", "--format", "{{.ServerVersion}}"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run docker info: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Docker socket not accessible. Ensure /var/run/docker.sock is mounted: {}",
+            stderr.trim()
+        ));
+    }
+    Ok(())
+}
+
+/// Translate a container-local path to a host path for Docker volume mounts.
+/// When the worker runs inside a container, paths like /home/claw/.claw/jobs/{id}
+/// must be translated to the host equivalent (e.g., /opt/claw/data/jobs/{id}).
+fn translate_to_host_path(container_path: &Path) -> String {
+    let container_str = container_path.to_string_lossy();
+
+    // If CLAW_HOST_DATA_DIR is set, translate ~/.claw → host path
+    if let Ok(host_data_dir) = std::env::var("CLAW_HOST_DATA_DIR") {
+        let home = dirs::home_dir().unwrap_or_else(|| "/home/claw".into());
+        let container_claw_dir = home.join(".claw").to_string_lossy().to_string();
+        if container_str.starts_with(&container_claw_dir) {
+            return container_str.replace(&container_claw_dir, &host_data_dir);
+        }
+    }
+
+    // No translation needed (local mode or path not under ~/.claw)
+    container_str.to_string()
+}
+
+/// Translate credential mount paths to host paths for Docker-in-Docker.
+fn translate_credential_host_path(host_path: &str) -> String {
+    // CLAW_HOST_CLAUDE_HOME overrides ~/.claude paths
+    if let Ok(host_claude) = std::env::var("CLAW_HOST_CLAUDE_HOME") {
+        let home = dirs::home_dir().unwrap_or_else(|| "/home/claw".into());
+        let local_claude = home.join(".claude").to_string_lossy().to_string();
+        let expanded = expand_tilde(host_path);
+        if expanded == local_claude || expanded.starts_with(&format!("{}/", local_claude)) {
+            return expanded.replace(&local_claude, &host_claude);
+        }
+    }
+    expand_tilde(host_path)
+}
+
 /// Execute a job inside a Docker container.
 pub async fn docker_execute_job(
     job: &Job,
     working_dir: &Path,
     config: &DockerConfig,
+    workspace: Option<&Workspace>,
     system_prompt: Option<&str>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
@@ -135,12 +189,26 @@ pub async fn docker_execute_job(
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let prompt = job.assembled_prompt.as_deref().unwrap_or(&job.prompt);
 
-    // Resolve workspace-specific image override
-    let image = &config.image;
+    // Merge: workspace overrides > global config > defaults
+    let image = workspace
+        .and_then(|w| w.base_image.as_deref())
+        .unwrap_or(&config.image);
+    let memory = workspace
+        .and_then(|w| w.memory_limit.as_deref())
+        .unwrap_or(&config.memory_limit);
+    let cpu = workspace
+        .and_then(|w| w.cpu_limit.map(|c| c.to_string()))
+        .unwrap_or_else(|| config.cpu_limit.clone());
+    let network = workspace
+        .and_then(|w| w.network_mode.as_deref())
+        .unwrap_or("bridge"); // Claude Code requires network for Anthropic API
 
     // Build docker run command
     let container_name = format!("claw-job-{}", job.id);
     let uid_gid = format!("{}:{}", users::get_current_uid(), users::get_current_gid());
+
+    // Translate workspace path to host path for Docker volume mount
+    let host_workspace_path = translate_to_host_path(working_dir);
 
     let mut args: Vec<String> = vec![
         "run".into(),
@@ -151,22 +219,27 @@ pub async fn docker_execute_job(
         uid_gid,
         "--workdir".into(),
         "/workspace".into(),
+        // Network mode
+        "--network".into(),
+        network.to_string(),
         // Resource limits
         "--memory".into(),
-        config.memory_limit.clone(),
+        memory.to_string(),
         "--cpus".into(),
-        config.cpu_limit.clone(),
+        cpu,
         "--pids-limit".into(),
         config.pids_limit.clone(),
-        // Mount workspace
+        // Mount workspace (using host path)
         "-v".into(),
-        format!("{}:/workspace", working_dir.to_string_lossy()),
+        format!("{}:/workspace", host_workspace_path),
     ];
 
-    // Mount credentials
+    // Mount credentials (translate paths for Docker-in-Docker)
     for mount in &config.credential_mounts {
-        let host = expand_tilde(&mount.host_path);
-        if !Path::new(&host).exists() {
+        let host = translate_credential_host_path(&mount.host_path);
+        // Check if the path exists from this container's perspective
+        let local = expand_tilde(&mount.host_path);
+        if !Path::new(&local).exists() {
             continue; // Skip non-existent credential paths
         }
         let mode = if mount.readonly { "ro" } else { "rw" };
@@ -175,7 +248,7 @@ pub async fn docker_execute_job(
     }
 
     // Image
-    args.push(image.clone());
+    args.push(image.to_string());
 
     // Claude arguments
     args.push("-p".into());
