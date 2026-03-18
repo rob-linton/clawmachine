@@ -49,14 +49,14 @@ pub async fn dispatch_execute(
 
 /// Execute a job locally (direct subprocess).
 /// Cancellation is cooperative via the CancellationToken.
-/// Times out after job.timeout_secs (default 1800s / 30min).
+/// Times out after job.timeout_secs (default 3600s / 1h).
 pub async fn local_execute_job(
     job: &Job,
     working_dir: &std::path::Path,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
-    let timeout_secs = job.timeout_secs.unwrap_or(1800);
+    let timeout_secs = job.timeout_secs.unwrap_or(3600);
     let timeout = std::time::Duration::from_secs(timeout_secs);
     // Use the assembled prompt (with skill injections) if available, otherwise raw prompt
     let prompt = job.assembled_prompt.as_deref().unwrap_or(&job.prompt);
@@ -69,6 +69,10 @@ pub async fn local_execute_job(
 
     if let Some(model) = &job.model {
         cmd.arg("--model").arg(model);
+    }
+
+    if let Some(budget) = job.max_budget_usd {
+        cmd.arg("--max-budget-usd").arg(budget.to_string());
     }
 
     // Apply allowed tools: explicit list from job, or safe default
@@ -109,6 +113,7 @@ pub async fn local_execute_job(
     let mut lines = reader.lines();
     let mut result_text = String::new();
     let mut final_result: Option<serde_json::Value> = None;
+    let mut assistant_texts: Vec<String> = Vec::new();
 
     let output = tokio::select! {
         r = async {
@@ -117,11 +122,31 @@ pub async fn local_execute_job(
                 let _ = log_tx.try_send(line.clone());
 
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if val.get("type").and_then(|t| t.as_str()) == Some("result") {
-                        final_result = Some(val.clone());
-                        if let Some(text) = val.get("result").and_then(|r| r.as_str()) {
-                            result_text = text.to_string();
+                    match val.get("type").and_then(|t| t.as_str()) {
+                        Some("result") => {
+                            final_result = Some(val.clone());
+                            if let Some(text) = val.get("result").and_then(|r| r.as_str()) {
+                                result_text = text.to_string();
+                            }
                         }
+                        Some("assistant") => {
+                            // Capture assistant text for fallback result
+                            if let Some(content) = val.get("message")
+                                .and_then(|m| m.get("content"))
+                                .and_then(|c| c.as_array())
+                            {
+                                for item in content {
+                                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                                            if !text.is_empty() {
+                                                assistant_texts.push(text.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -149,6 +174,15 @@ pub async fn local_execute_job(
             exit_status.code().unwrap_or(-1),
             stderr_output.trim()
         ));
+    }
+
+    // Fallback: if result is empty, use accumulated assistant text
+    if result_text.is_empty() && !assistant_texts.is_empty() {
+        result_text = assistant_texts.join("\n\n");
+        if result_text.len() > 50_000 {
+            result_text.truncate(50_000);
+            result_text.push_str("\n\n[truncated]");
+        }
     }
 
     // Try multiple fields for cost extraction (varies by Claude Code version)

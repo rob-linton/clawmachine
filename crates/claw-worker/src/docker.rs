@@ -130,7 +130,7 @@ pub async fn docker_execute_job(
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
-    let timeout_secs = job.timeout_secs.unwrap_or(1800);
+    let timeout_secs = job.timeout_secs.unwrap_or(3600);
     let timeout = std::time::Duration::from_secs(timeout_secs);
     let prompt = job.assembled_prompt.as_deref().unwrap_or(&job.prompt);
 
@@ -189,6 +189,11 @@ pub async fn docker_execute_job(
         args.push(model.clone());
     }
 
+    if let Some(budget) = job.max_budget_usd {
+        args.push("--max-budget-usd".into());
+        args.push(budget.to_string());
+    }
+
     match &job.allowed_tools {
         Some(tools) if !tools.is_empty() => {
             args.push("--allowedTools".into());
@@ -240,6 +245,7 @@ pub async fn docker_execute_job(
     let mut lines = reader.lines();
     let mut result_text = String::new();
     let mut final_result: Option<serde_json::Value> = None;
+    let mut assistant_texts: Vec<String> = Vec::new();
 
     let container_for_cancel = container_id.clone();
     let container_for_timeout = container_id.clone();
@@ -249,11 +255,30 @@ pub async fn docker_execute_job(
             while let Ok(Some(line)) = lines.next_line().await {
                 let _ = log_tx.try_send(line.clone());
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&line) {
-                    if val.get("type").and_then(|t| t.as_str()) == Some("result") {
-                        final_result = Some(val.clone());
-                        if let Some(text) = val.get("result").and_then(|r| r.as_str()) {
-                            result_text = text.to_string();
+                    match val.get("type").and_then(|t| t.as_str()) {
+                        Some("result") => {
+                            final_result = Some(val.clone());
+                            if let Some(text) = val.get("result").and_then(|r| r.as_str()) {
+                                result_text = text.to_string();
+                            }
                         }
+                        Some("assistant") => {
+                            if let Some(content) = val.get("message")
+                                .and_then(|m| m.get("content"))
+                                .and_then(|c| c.as_array())
+                            {
+                                for item in content {
+                                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                                            if !text.is_empty() {
+                                                assistant_texts.push(text.to_string());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -299,11 +324,21 @@ pub async fn docker_execute_job(
         return Err(format!("claude exited with code {exit_code} inside container"));
     }
 
+    // Fallback: if result is empty, use accumulated assistant text
+    if result_text.is_empty() && !assistant_texts.is_empty() {
+        result_text = assistant_texts.join("\n\n");
+        if result_text.len() > 50_000 {
+            result_text.truncate(50_000);
+            result_text.push_str("\n\n[truncated]");
+        }
+    }
+
     let cost_usd = final_result
         .as_ref()
         .and_then(|r| {
-            r.get("cost_usd")
+            r.get("total_cost_usd")
                 .and_then(|c| c.as_f64())
+                .or_else(|| r.get("cost_usd").and_then(|c| c.as_f64()))
                 .or_else(|| r.get("total_cost").and_then(|c| c.as_f64()))
                 .or_else(|| {
                     r.get("usage")
