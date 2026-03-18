@@ -79,6 +79,8 @@ CLAW_WORKER_CONCURRENCY=1
 CLAW_WORKER_REPLICAS=1
 CLAW_CRON_INTERVAL=30
 RUST_LOG=info
+CLAUDE_HOME=$HOME/.claude
+CLAUDE_JSON=$HOME/.claude.json
 ENVEOF
 green "  .env written"
 
@@ -142,8 +144,8 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - \${HOME}/.claude:/home/claw/.claude:ro
-      - \${HOME}/.claude.json:/home/claw/.claude.json:ro
+      - \${CLAUDE_HOME}:/home/claw/.claude:ro
+      - \${CLAUDE_JSON}:/home/claw/.claude.json:ro
     deploy:
       replicas: \${CLAW_WORKER_REPLICAS:-1}
 
