@@ -374,10 +374,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     claw_redis::update_workspace(&pool, &updated_ws).await.ok();
                 }
 
-                // 8. Teardown environment
-                environment::teardown_environment(&prepared_env).await;
-
-                // 8b. Git snapshot: post-job commit
+                // 8. Git snapshot: post-job commit (BEFORE teardown which deletes temp dirs)
                 // Legacy: commit in workspace dir. New: commit in temp checkout + push to bare repo.
                 if let Some(ref ws) = workspace {
                     if ws.is_legacy() && !prepared_env.is_temp {
@@ -419,6 +416,9 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     }
                     // Ephemeral: no commit, no push — temp dir just gets cleaned up
                 }
+
+                // 8b. Teardown environment (after git commit so temp dirs still exist)
+                environment::teardown_environment(&prepared_env).await;
 
                 // 9. Release workspace lock (skip for pipeline jobs — pipeline runner handles it)
                 if !is_pipeline_job {
