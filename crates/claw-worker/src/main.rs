@@ -350,6 +350,18 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     }
                 });
 
+                // 5b. Emit workspace event: job started
+                if let Some(ws_id) = job.workspace_id {
+                    let prompt_preview: String = job.prompt.chars().take(100).collect();
+                    let event = claw_models::WorkspaceEvent {
+                        timestamp: chrono::Utc::now(),
+                        event_type: claw_models::WorkspaceEventType::JobStarted,
+                        related_id: Some(job_id.to_string()),
+                        description: format!("Job started: {}", prompt_preview),
+                    };
+                    claw_redis::append_workspace_event(&pool, ws_id, &event).await.ok();
+                }
+
                 // 6. Execute in prepared workspace
                 let result = executor::dispatch_execute(
                     &backend,
@@ -442,6 +454,19 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                             tracing::error!(job_id = %job_id, error = %e, "Failed to store completion");
                         }
 
+                        // Emit workspace event: job completed
+                        if let Some(ws_id) = job.workspace_id {
+                            let duration_str = format!("{:.1}s", r.duration_ms as f64 / 1000.0);
+                            let result_preview: String = r.result_text.chars().take(200).collect();
+                            let event = claw_models::WorkspaceEvent {
+                                timestamp: chrono::Utc::now(),
+                                event_type: claw_models::WorkspaceEventType::JobCompleted,
+                                related_id: Some(job_id.to_string()),
+                                description: format!("Job completed (${:.2}, {}): {}", r.cost_usd, duration_str, result_preview),
+                            };
+                            claw_redis::append_workspace_event(&pool, ws_id, &event).await.ok();
+                        }
+
                         // File output
                         if let claw_models::OutputDest::File { path } = &job.output_dest {
                             if let Err(e) = tokio::fs::create_dir_all(path).await {
@@ -512,6 +537,18 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                         pipeline_runner::check_and_advance(&pool, &job, &r.result_text).await;
                     }
                     Err(e) => {
+                        // Emit workspace event: job failed
+                        if let Some(ws_id) = job.workspace_id {
+                            let error_preview: String = e.chars().take(200).collect();
+                            let event = claw_models::WorkspaceEvent {
+                                timestamp: chrono::Utc::now(),
+                                event_type: claw_models::WorkspaceEventType::JobFailed,
+                                related_id: Some(job_id.to_string()),
+                                description: format!("Job failed: {}", error_preview),
+                            };
+                            claw_redis::append_workspace_event(&pool, ws_id, &event).await.ok();
+                        }
+
                         if e == "Job was cancelled" {
                             if let Err(re) = claw_redis::cancel_job(&pool, job_id).await {
                                 tracing::error!(job_id = %job_id, error = %re, "Failed to store cancellation");

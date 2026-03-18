@@ -6,7 +6,7 @@ use axum::{
     Json, Router,
 };
 use claw_models::*;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppState;
@@ -23,6 +23,19 @@ pub fn router() -> Router<AppState> {
         .route("/workspaces/{id}/revert/{hash}", post(revert_commit))
         .route("/workspaces/{id}/promote", post(promote_snapshot))
         .route("/workspaces/{id}/sync", post(sync_workspace))
+        .route("/workspaces/{id}/fork", post(fork_workspace))
+        .route("/workspaces/{id}/branches", get(list_branches))
+        .route("/workspaces/{id}/events", get(list_events))
+}
+
+/// Enhanced workspace response with resolved derived fields.
+#[derive(Serialize)]
+struct WorkspaceResponse {
+    #[serde(flatten)]
+    workspace: Workspace,
+    parent_name: Option<String>,
+    child_count: u32,
+    skill_names: Vec<String>,
 }
 
 /// Resolve the filesystem path for a workspace.
@@ -133,6 +146,13 @@ async fn create_workspace(
                     // Still return success — workspace metadata is in Redis
                 }
             }
+            // Emit initialization event
+            let skill_count = ws.skill_ids.len();
+            let desc = format!("Workspace created ({}, {} skills)",
+                serde_json::to_string(&ws.persistence).unwrap_or_default().trim_matches('"'),
+                skill_count);
+            emit_event(&state.pool, ws.id, WorkspaceEventType::Initialized, None, &desc).await;
+
             (StatusCode::CREATED, Json(ws)).into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
@@ -166,10 +186,49 @@ async fn get_workspace(
     Path(id): Path<Uuid>,
 ) -> impl IntoResponse {
     match claw_redis::get_workspace(&state.pool, id).await {
-        Ok(Some(ws)) => Json(ws).into_response(),
+        Ok(Some(ws)) => {
+            // Resolve parent name
+            let parent_name = if let Some(pid) = ws.parent_workspace_id {
+                claw_redis::get_workspace(&state.pool, pid)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|p| p.name)
+            } else {
+                None
+            };
+
+            // Resolve child count
+            let child_count = claw_redis::count_children(&state.pool, id)
+                .await
+                .unwrap_or(0);
+
+            // Resolve skill names
+            let skill_names = resolve_skill_names(&state.pool, &ws.skill_ids).await;
+
+            Json(WorkspaceResponse {
+                workspace: ws,
+                parent_name,
+                child_count,
+                skill_names,
+            })
+            .into_response()
+        }
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
+}
+
+async fn resolve_skill_names(pool: &deadpool_redis::Pool, skill_ids: &[String]) -> Vec<String> {
+    let mut names = Vec::new();
+    for id in skill_ids {
+        if let Ok(Some(skill)) = claw_redis::get_skill(pool, id).await {
+            names.push(skill.name);
+        } else {
+            names.push(id.clone());
+        }
+    }
+    names
 }
 
 async fn update_workspace(
@@ -838,7 +897,318 @@ async fn sync_workspace(
     }).await.unwrap_or(Err("Task failed".into()));
 
     match result {
-        Ok(()) => Json(serde_json::json!({"synced": true, "remote_url": ws.remote_url})).into_response(),
+        Ok(()) => {
+            emit_event(&state.pool, id, WorkspaceEventType::Synced, None,
+                &format!("Synced from {}", ws.remote_url.as_deref().unwrap_or("remote"))).await;
+            Json(serde_json::json!({"synced": true, "remote_url": ws.remote_url})).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Sync failed: {e}")}))).into_response(),
+    }
+}
+
+// --- Fork workspace ---
+
+#[derive(Deserialize)]
+struct ForkRequest {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    persistence: Option<WorkspacePersistence>,
+    /// Git ref to fork from (defaults to HEAD).
+    #[serde(default, rename = "ref")]
+    git_ref: Option<String>,
+    #[serde(default)]
+    skill_ids: Option<Vec<String>>,
+    #[serde(default)]
+    claude_md: Option<Option<String>>,
+    #[serde(default)]
+    network_mode: Option<String>,
+    #[serde(default)]
+    memory_limit: Option<String>,
+    #[serde(default)]
+    cpu_limit: Option<f64>,
+    #[serde(default)]
+    base_image: Option<String>,
+}
+
+async fn fork_workspace(
+    State(state): State<AppState>,
+    Path(parent_id): Path<Uuid>,
+    Json(req): Json<ForkRequest>,
+) -> impl IntoResponse {
+    let parent = match claw_redis::get_workspace(&state.pool, parent_id).await {
+        Ok(Some(ws)) => ws,
+        Ok(None) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Parent workspace not found"}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    if parent.is_legacy() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Cannot fork legacy workspaces (no bare repo)"}))).into_response();
+    }
+
+    // Resolve the git ref to a commit hash
+    let git_ref = req.git_ref.as_deref().unwrap_or("HEAD");
+    let parent_repo = bare_repo_path(&parent);
+
+    let ref_to_resolve = git_ref.to_string();
+    let parent_repo_clone = parent_repo.clone();
+    let resolved_ref = match tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", &ref_to_resolve])
+            .current_dir(&parent_repo_clone)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output();
+        match output {
+            Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).trim().to_string()),
+            Ok(o) => Err(format!("Invalid ref '{}': {}", ref_to_resolve, String::from_utf8_lossy(&o.stderr).trim())),
+            Err(e) => Err(format!("git rev-parse failed: {e}")),
+        }
+    }).await {
+        Ok(Ok(hash)) => hash,
+        Ok(Err(e)) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Task failed: {e}")}))).into_response(),
+    };
+
+    // Create the workspace in Redis
+    let persistence = req.persistence.unwrap_or_else(|| parent.persistence.clone());
+    let is_snapshot = persistence == WorkspacePersistence::Snapshot;
+    let create_req = CreateWorkspaceRequest {
+        name: req.name,
+        description: req.description,
+        path: None,
+        skill_ids: req.skill_ids.unwrap_or_else(|| parent.skill_ids.clone()),
+        claude_md: req.claude_md.unwrap_or_else(|| parent.claude_md.clone()),
+        persistence: Some(persistence),
+        remote_url: None, // Don't inherit remote_url
+        base_image: req.base_image.or_else(|| parent.base_image.clone()),
+        memory_limit: req.memory_limit.or_else(|| parent.memory_limit.clone()),
+        cpu_limit: req.cpu_limit.or(parent.cpu_limit),
+        network_mode: req.network_mode.or_else(|| parent.network_mode.clone()),
+        parent_workspace_id: Some(parent_id),
+        parent_ref: Some(if git_ref == "HEAD" { resolved_ref.clone() } else { git_ref.to_string() }),
+    };
+
+    let new_ws = match claw_redis::create_workspace(&state.pool, &create_req).await {
+        Ok(ws) => ws,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let new_id = new_ws.id;
+
+    // Fork the bare repo
+    match fork_bare_repo(parent_id, new_id, &resolved_ref, is_snapshot).await {
+        Ok(()) => {
+            // Record parent-child relationship
+            claw_redis::add_child_workspace(&state.pool, parent_id, new_id).await.ok();
+
+            // Emit events
+            emit_event(&state.pool, new_id, WorkspaceEventType::Forked, Some(&parent_id.to_string()),
+                &format!("Forked from workspace '{}' at {}", parent.name, &resolved_ref[..7.min(resolved_ref.len())])).await;
+            emit_event(&state.pool, parent_id, WorkspaceEventType::ChildForked, Some(&new_id.to_string()),
+                &format!("Forked to workspace '{}'", new_ws.name)).await;
+
+            (StatusCode::CREATED, Json(new_ws)).into_response()
+        }
+        Err(e) => {
+            // Rollback: delete the Redis entry
+            tracing::error!(error = %e, new_id = %new_id, "Fork failed, rolling back");
+            claw_redis::delete_workspace(&state.pool, new_id).await.ok();
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Fork failed: {e}")}))).into_response()
+        }
+    }
+}
+
+/// Clone a bare repo and set up the fork.
+async fn fork_bare_repo(parent_id: Uuid, new_id: Uuid, commit_hash: &str, is_snapshot: bool) -> Result<(), String> {
+    let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+    let repos_dir = home.join(".claw").join("repos");
+    let checkouts_dir = home.join(".claw").join("checkouts");
+    let parent_repo = repos_dir.join(format!("{}.git", parent_id));
+    let new_repo = repos_dir.join(format!("{}.git", new_id));
+    let new_checkout = checkouts_dir.join(new_id.to_string());
+
+    let commit = commit_hash.to_string();
+
+    tokio::task::spawn_blocking(move || {
+        use std::process::Command;
+
+        let run = |cmd: &str, args: &[&str], dir: &std::path::Path| -> Result<(), String> {
+            let output = Command::new(cmd)
+                .args(args)
+                .current_dir(dir)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .output()
+                .map_err(|e| format!("Failed to run {cmd}: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!("{cmd} failed: {stderr}"));
+            }
+            Ok(())
+        };
+
+        // 1. Clone bare repo
+        run("git", &["clone", "--bare", &parent_repo.to_string_lossy(), &new_repo.to_string_lossy()], &repos_dir)?;
+
+        // 2. Reset main to the target commit
+        run("git", &["symbolic-ref", "HEAD", "refs/heads/main"], &new_repo)?;
+        run("git", &["update-ref", "refs/heads/main", &commit], &new_repo)?;
+
+        // 3. Clean up inherited branches
+        let branch_output = Command::new("git")
+            .args(["for-each-ref", "--format=%(refname:short)", "refs/heads/"])
+            .current_dir(&new_repo)
+            .stdout(std::process::Stdio::piped())
+            .output()
+            .map_err(|e| format!("list branches: {e}"))?;
+        let branches = String::from_utf8_lossy(&branch_output.stdout);
+        for branch in branches.lines() {
+            let branch = branch.trim();
+            if branch != "main" && !branch.is_empty() {
+                Command::new("git")
+                    .args(["branch", "-D", branch])
+                    .current_dir(&new_repo)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .ok();
+            }
+        }
+
+        // 4. Remove origin remote
+        Command::new("git")
+            .args(["remote", "remove", "origin"])
+            .current_dir(&new_repo)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok();
+
+        // 5. Clone into checkout
+        std::fs::create_dir_all(&checkouts_dir).map_err(|e| format!("mkdir checkouts: {e}"))?;
+        run("git", &["clone", &new_repo.to_string_lossy(), &new_checkout.to_string_lossy()], &checkouts_dir)?;
+
+        // 6. Tag for snapshot mode
+        if is_snapshot {
+            run("git", &["tag", "claw/base"], &new_repo)?;
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("spawn_blocking: {e}"))?
+}
+
+// --- List branches ---
+
+async fn list_branches(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let ws = match claw_redis::get_workspace(&state.pool, id).await {
+        Ok(Some(ws)) => ws,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    if ws.is_legacy() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Branches not available for legacy workspaces"}))).into_response();
+    }
+
+    let repo = bare_repo_path(&ws);
+
+    let result = tokio::task::spawn_blocking(move || {
+        let output = std::process::Command::new("git")
+            .args(["for-each-ref", "--format=%(refname:short)|%(objectname:short)|%(creatordate:iso)", "refs/heads/"])
+            .current_dir(&repo)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .map_err(|e| format!("git for-each-ref failed: {e}"))?;
+
+        if !output.status.success() {
+            return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let branches: Vec<serde_json::Value> = stdout
+            .lines()
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.splitn(3, '|').collect();
+                if parts.len() >= 2 {
+                    let name = parts[0].trim();
+                    let hash = parts[1].trim();
+                    let date = parts.get(2).map(|d| d.trim()).unwrap_or("");
+                    // Extract job_id from snapshot branch names
+                    let job_id = name.strip_prefix("claw/snapshot-").map(|s| s.to_string());
+                    Some(serde_json::json!({
+                        "name": name,
+                        "hash": hash,
+                        "date": date,
+                        "job_id": job_id,
+                    }))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        Ok(branches)
+    })
+    .await
+    .unwrap_or(Err("Task failed".into()));
+
+    match result {
+        Ok(branches) => Json(serde_json::json!({"branches": branches})).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
+    }
+}
+
+// --- Workspace events timeline ---
+
+#[derive(Deserialize)]
+struct EventsQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
+}
+
+async fn list_events(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<EventsQuery>,
+) -> impl IntoResponse {
+    let limit = query.limit.unwrap_or(50).min(100);
+    let offset = query.offset.unwrap_or(0);
+
+    match claw_redis::list_workspace_events(&state.pool, id, limit, offset).await {
+        Ok((events, total)) => Json(serde_json::json!({
+            "events": events,
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+// --- Event emission helper ---
+
+async fn emit_event(
+    pool: &deadpool_redis::Pool,
+    workspace_id: Uuid,
+    event_type: WorkspaceEventType,
+    related_id: Option<&str>,
+    description: &str,
+) {
+    let event = WorkspaceEvent {
+        timestamp: chrono::Utc::now(),
+        event_type,
+        related_id: related_id.map(|s| s.to_string()),
+        description: description.to_string(),
+    };
+    if let Err(e) = claw_redis::append_workspace_event(pool, workspace_id, &event).await {
+        tracing::warn!(error = %e, workspace_id = %workspace_id, "Failed to emit workspace event");
     }
 }
