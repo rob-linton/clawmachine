@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-INSTALL_DIR="${1:-/opt/claw}"
+INSTALL_DIR="${1:-$HOME/claw}"
 REPO="ghcr.io/rob-linton/claudecodeclaw"
 
 red()    { printf '\033[0;31m%s\033[0m\n' "$1"; }
@@ -19,26 +19,30 @@ if ! command -v docker &>/dev/null; then
   red "Missing: docker — install it and re-run."
   exit 1
 fi
-if ! docker compose version &>/dev/null; then
+if ! docker compose version &>/dev/null && ! sudo docker compose version &>/dev/null; then
   red "Missing: docker compose v2"
   exit 1
 fi
 
-# Install Node.js 20+ and npm if missing or too old
-NODE_VERSION=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1)
-if [ -z "$NODE_VERSION" ] || [ "$NODE_VERSION" -lt 18 ] 2>/dev/null; then
-  yellow "  Installing Node.js 20 (needed for Claude Code CLI)..."
-  if command -v apt-get &>/dev/null; then
-    curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-    sudo apt-get install -y nodejs
-  elif command -v yum &>/dev/null; then
-    curl -fsSL https://rpm.nodesource.com/setup_20.x | sudo bash -
-    sudo yum install -y nodejs
+# Detect if we need sudo for docker (snap installs, etc.)
+DOCKER="docker"
+if ! docker info &>/dev/null 2>&1; then
+  if sudo docker info &>/dev/null 2>&1; then
+    DOCKER="sudo docker"
+    yellow "  Using sudo for docker (snap or permissions)"
   else
-    red "Cannot auto-install Node.js. Install Node.js 18+ manually and re-run."
+    red "Cannot connect to Docker. Is the daemon running?"
     exit 1
   fi
-  green "  Node.js $(node --version) installed"
+fi
+DC="$DOCKER compose"
+
+# Install Node.js 20+ and npm if missing or too old (needed for Claude Code CLI)
+NODE_VERSION=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
+if [ "$NODE_VERSION" -lt 18 ] 2>/dev/null; then
+  yellow "  Node.js 18+ required for Claude Code CLI."
+  yellow "  Install Node.js 20 (https://nodejs.org/) and re-run."
+  exit 1
 fi
 
 # --- Create install directory ---
@@ -78,17 +82,8 @@ RUST_LOG=info
 ENVEOF
 green "  .env written"
 
-# --- Write Caddyfile ---
-cat > Caddyfile <<'CADDYEOF'
-https://{$CLAW_HOST_IP}:443 {
-	tls internal
-	reverse_proxy api:8080
-}
-
-http://{$CLAW_HOST_IP}:80 {
-	redir https://{$CLAW_HOST_IP}{uri} permanent
-}
-CADDYEOF
+# --- Write Caddyfile (use spaces not tabs — heredoc-safe) ---
+printf 'https://{$CLAW_HOST_IP}:443 {\n\ttls internal\n\treverse_proxy api:8080\n}\n\nhttp://{$CLAW_HOST_IP}:80 {\n\tredir https://{$CLAW_HOST_IP}{uri} permanent\n}\n' > Caddyfile
 green "  Caddyfile written"
 
 # --- Write docker-compose.yml ---
@@ -192,26 +187,35 @@ echo "==========================================="
 echo "  Step: Authenticate Claude Code"
 echo "==========================================="
 echo ""
-echo "  The worker needs Claude Code logged in."
-echo "  This will launch Claude interactively."
-echo "  Follow the OAuth URL, then type /exit."
+echo "  The worker needs Claude Code logged in on this machine."
+echo "  The token is stored in ~/.claude.json (mounted into the container)."
 echo ""
 
 if ! command -v claude &>/dev/null; then
   yellow "  Installing Claude Code CLI..."
-  npm install -g @anthropic-ai/claude-code
+  npm install -g @anthropic-ai/claude-code 2>&1 | tail -1
 fi
 
-if [ ! -f "$HOME/.claude.json" ] || claude -p "say ok" --output-format stream-json 2>&1 | grep -q "authentication_failed"; then
-  read -p "Press Enter to start Claude login..."
+if [ ! -f "$HOME/.claude.json" ]; then
+  echo "  No ~/.claude.json found. Launching Claude for login..."
+  echo ""
+  read -p "  Press Enter to start Claude login..."
   claude
   echo ""
+elif claude -p "say ok" --output-format stream-json 2>&1 | grep -q "authentication_failed"; then
+  echo "  Claude token expired. Launching login..."
+  echo ""
+  read -p "  Press Enter to start Claude login..."
+  claude
+  echo ""
+else
+  green "  Claude already authenticated"
 fi
 
 if [ -f "$HOME/.claude.json" ]; then
-  green "  Claude authenticated — ~/.claude.json exists"
+  green "  ~/.claude.json exists — worker will use it"
 else
-  red "  WARNING: ~/.claude.json not found. Worker may fail."
+  red "  WARNING: ~/.claude.json not found. Worker will fail."
   red "  Run 'claude' manually to log in, then restart the worker."
 fi
 
@@ -221,25 +225,29 @@ echo "==========================================="
 echo "  Pulling images and starting..."
 echo "==========================================="
 echo ""
-docker compose --env-file .env pull 2>&1 | grep -v "Pulling"
-docker compose --env-file .env up -d 2>&1
+ENV_FILE="$INSTALL_DIR/.env"
+$DC --env-file "$ENV_FILE" pull 2>&1 | grep -v "^$" | tail -10
+echo ""
+$DC --env-file "$ENV_FILE" up -d 2>&1
 
 # --- Wait for healthy ---
 echo ""
 echo "Waiting for API..."
 for i in $(seq 1 30); do
-  if docker compose --env-file .env exec -T api curl -sf http://localhost:8080/api/v1/status >/dev/null 2>&1; then
+  if $DC --env-file "$ENV_FILE" exec -T api curl -sf http://localhost:8080/api/v1/status >/dev/null 2>&1; then
+    green "  API healthy!"
     break
   fi
+  printf "."
   sleep 2
 done
 
 echo ""
-docker compose --env-file .env ps --format "table {{.Name}}\t{{.Status}}"
+$DC --env-file "$ENV_FILE" ps --format "table {{.Name}}\t{{.Status}}" 2>&1
 
 # --- Extract CA cert ---
 echo ""
-docker compose --env-file .env cp caddy:/data/caddy/pki/authorities/local/root.crt ./claw-ca.crt 2>&1 | grep -v "Copying\|Copied" || true
+$DC --env-file "$ENV_FILE" cp caddy:/data/caddy/pki/authorities/local/root.crt "$INSTALL_DIR/claw-ca.crt" 2>&1 | grep -v "Copying\|Copied" || true
 
 echo ""
 echo "==========================================="
@@ -250,12 +258,10 @@ echo "  Login:      $CLAW_ADMIN_USER / <your password>"
 echo "  Install dir: $INSTALL_DIR"
 echo ""
 echo "  TLS CA cert: $INSTALL_DIR/claw-ca.crt"
-echo "  Install this on each team member's machine"
-echo "  to avoid browser security warnings."
+echo "  Install this cert on team machines to avoid browser warnings."
 echo ""
-echo "  Useful commands:"
-echo "    cd $INSTALL_DIR"
-echo "    docker compose --env-file .env logs -f worker"
-echo "    docker compose --env-file .env restart worker"
-echo "    docker compose --env-file .env down"
+echo "  Commands (run from $INSTALL_DIR):"
+echo "    $DC --env-file $ENV_FILE logs -f worker"
+echo "    $DC --env-file $ENV_FILE restart worker"
+echo "    $DC --env-file $ENV_FILE down"
 echo "==========================================="
