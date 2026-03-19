@@ -41,7 +41,7 @@ services:
         condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${CLAW_DATA_DIR:-/opt/claw/data}:/home/claw/.claw
+      - ${CLAW_DATA_DIR:-~/.claw-data}:/home/claw/.claw
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/status"]
       interval: 10s
@@ -57,10 +57,11 @@ services:
     environment:
       CLAW_REDIS_URL: "redis://:${CLAW_REDIS_PASSWORD:-changeme}@redis:6379/${CLAW_REDIS_DB:-0}"
       CLAW_WORKER_CONCURRENCY: "${CLAW_WORKER_CONCURRENCY:-2}"
+      CLAW_EXECUTION_BACKEND: "${CLAW_EXECUTION_BACKEND:-local}"
       RUST_LOG: "${RUST_LOG:-info,claw_worker=debug}"
       HOME: /home/claw
       # Docker-in-Docker: host path for volume mounts into sandbox containers
-      CLAW_HOST_DATA_DIR: "${CLAW_DATA_DIR:-/opt/claw/data}"
+      CLAW_HOST_DATA_DIR: "${CLAW_DATA_DIR:-~/.claw-data}"
       CLAW_HOST_CLAUDE_HOME: "${CLAUDE_HOME:-~/.claude}"
     depends_on:
       redis:
@@ -69,7 +70,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - ${CLAUDE_HOME:-~/.claude}:/home/claw/.claude
       - ${CLAUDE_JSON:-~/.claude.json}:/home/claw/.claude.json:ro
-      - ${CLAW_DATA_DIR:-/opt/claw/data}:/home/claw/.claw
+      - ${CLAW_DATA_DIR:-~/.claw-data}:/home/claw/.claw
     deploy:
       replicas: ${CLAW_WORKER_REPLICAS:-1}
 

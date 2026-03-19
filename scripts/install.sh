@@ -37,7 +37,7 @@ if ! docker info &>/dev/null 2>&1; then
 fi
 DC="$DOCKER compose"
 
-# Install Node.js 20+ and npm if missing or too old (needed for Claude Code CLI)
+# Install Node.js 18+ and npm if missing or too old (needed for Claude Code CLI)
 NODE_VERSION=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
 if [ "$NODE_VERSION" -lt 18 ] 2>/dev/null; then
   yellow "  Node.js 18+ required for Claude Code CLI."
@@ -68,8 +68,25 @@ done
 CLAW_REDIS_PASSWORD=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 24)
 echo ""
 
+# --- Data directory ---
+# Use home dir to avoid permission issues (no sudo needed)
+CLAW_DATA_DIR="$HOME/.claw-data"
+mkdir -p "$CLAW_DATA_DIR"
+green "  Data directory: $CLAW_DATA_DIR"
+
+# Migrate from named volume if it exists (upgrade scenario)
+if $DOCKER volume inspect claw_data &>/dev/null 2>&1; then
+  VOLUME_PATH=$($DOCKER volume inspect claw_data --format '{{ .Mountpoint }}' 2>/dev/null || true)
+  if [ -n "$VOLUME_PATH" ] && [ -d "$VOLUME_PATH" ]; then
+    yellow "  Found existing claw_data volume at $VOLUME_PATH"
+    yellow "  Migrating data to $CLAW_DATA_DIR..."
+    sudo cp -a "$VOLUME_PATH/." "$CLAW_DATA_DIR/" 2>/dev/null || true
+    sudo chown -R "$(id -u):$(id -g)" "$CLAW_DATA_DIR" 2>/dev/null || true
+    green "  Data migrated. Old volume can be removed with: $DOCKER volume rm claw_data"
+  fi
+fi
+
 # --- Write .env ---
-CLAW_DATA_DIR="/opt/claw/data"
 cat > .env <<ENVEOF
 CLAW_HOST_IP=$CLAW_HOST_IP
 CLAW_ADMIN_USER=$CLAW_ADMIN_USER
@@ -85,28 +102,9 @@ CLAUDE_JSON=$HOME/.claude.json
 CLAW_DATA_DIR=$CLAW_DATA_DIR
 CLAW_EXECUTION_BACKEND=docker
 ENVEOF
-
-# Create data directory for workspace bind mount
-if [ ! -d "$CLAW_DATA_DIR" ]; then
-  echo "  Creating $CLAW_DATA_DIR..."
-  sudo mkdir -p "$CLAW_DATA_DIR"
-  sudo chown "$(id -u):$(id -g)" "$CLAW_DATA_DIR"
-fi
-
-# Migrate from named volume if it exists
-if $DOCKER volume inspect claw_data &>/dev/null 2>&1; then
-  VOLUME_PATH=$($DOCKER volume inspect claw_data --format '{{ .Mountpoint }}' 2>/dev/null || true)
-  if [ -n "$VOLUME_PATH" ] && [ -d "$VOLUME_PATH" ]; then
-    yellow "  Found existing claw_data volume at $VOLUME_PATH"
-    yellow "  Migrating data to $CLAW_DATA_DIR..."
-    sudo cp -a "$VOLUME_PATH/." "$CLAW_DATA_DIR/" 2>/dev/null || true
-    sudo chown -R "$(id -u):$(id -g)" "$CLAW_DATA_DIR"
-    green "  Data migrated. Old volume can be removed with: $DOCKER volume rm claw_data"
-  fi
-fi
 green "  .env written"
 
-# --- Write Caddyfile (use spaces not tabs — heredoc-safe) ---
+# --- Write Caddyfile ---
 printf 'https://{$CLAW_HOST_IP}:443 {\n\ttls internal\n\treverse_proxy api:8080\n}\n\nhttp://{$CLAW_HOST_IP}:80 {\n\tredir https://{$CLAW_HOST_IP}{uri} permanent\n}\n' > Caddyfile
 green "  Caddyfile written"
 
@@ -149,7 +147,7 @@ services:
         condition: service_healthy
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - \${CLAW_DATA_DIR:-/opt/claw/data}:/home/claw/.claw
+      - \${CLAW_DATA_DIR}:/home/claw/.claw
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/status"]
       interval: 10s
@@ -163,9 +161,10 @@ services:
     environment:
       CLAW_REDIS_URL: "redis://:\${CLAW_REDIS_PASSWORD:-changeme}@redis:6379/\${CLAW_REDIS_DB:-0}"
       CLAW_WORKER_CONCURRENCY: "\${CLAW_WORKER_CONCURRENCY:-1}"
+      CLAW_EXECUTION_BACKEND: "\${CLAW_EXECUTION_BACKEND:-docker}"
       RUST_LOG: "\${RUST_LOG:-info}"
       HOME: /home/claw
-      CLAW_HOST_DATA_DIR: "\${CLAW_DATA_DIR:-/opt/claw/data}"
+      CLAW_HOST_DATA_DIR: "\${CLAW_DATA_DIR}"
       CLAW_HOST_CLAUDE_HOME: "\${CLAUDE_HOME}"
     depends_on:
       redis:
@@ -174,7 +173,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       - \${CLAUDE_HOME}:/home/claw/.claude
       - \${CLAUDE_JSON}:/home/claw/.claude.json:ro
-      - \${CLAW_DATA_DIR:-/opt/claw/data}:/home/claw/.claw
+      - \${CLAW_DATA_DIR}:/home/claw/.claw
     deploy:
       replicas: \${CLAW_WORKER_REPLICAS:-1}
 
@@ -219,7 +218,7 @@ echo "  Step: Authenticate Claude Code"
 echo "==========================================="
 echo ""
 echo "  The worker needs Claude Code logged in on this machine."
-echo "  The token is stored in ~/.claude.json (mounted into the container)."
+echo "  On Linux, auth tokens are stored in ~/.claude/"
 echo ""
 
 if ! command -v claude &>/dev/null; then
@@ -227,47 +226,57 @@ if ! command -v claude &>/dev/null; then
   npm install -g @anthropic-ai/claude-code 2>&1 | tail -1
 fi
 
-if [ ! -f "$HOME/.claude.json" ]; then
-  echo "  No ~/.claude.json found. Launching Claude for login..."
-  echo ""
-  read -p "  Press Enter to start Claude login..."
-  claude
-  echo ""
-elif claude -p "say ok" --output-format stream-json 2>&1 | grep -q "authentication_failed"; then
-  echo "  Claude token expired. Launching login..."
+if [ ! -d "$HOME/.claude" ] || [ ! -f "$HOME/.claude.json" ]; then
+  echo "  Claude Code not authenticated. Launching login..."
   echo ""
   read -p "  Press Enter to start Claude login..."
   claude
   echo ""
 else
-  green "  Claude already authenticated"
+  # Quick check if auth works
+  if claude --version &>/dev/null; then
+    green "  Claude Code authenticated ($(claude --version 2>/dev/null || echo 'installed'))"
+  else
+    yellow "  Claude Code installed but may need re-authentication."
+    read -p "  Press Enter to start Claude login (or Ctrl+C to skip)..."
+    claude
+  fi
 fi
 
-if [ -f "$HOME/.claude.json" ]; then
-  green "  ~/.claude.json exists — worker will use it"
+if [ -d "$HOME/.claude" ]; then
+  green "  ~/.claude/ exists — auth will be mounted into containers"
 else
-  red "  WARNING: ~/.claude.json not found. Worker will fail."
+  red "  WARNING: ~/.claude/ not found. Worker will fail."
   red "  Run 'claude' manually to log in, then restart the worker."
 fi
 
-# --- Build sandbox image ---
+# --- Sandbox image ---
 echo ""
 echo "==========================================="
-echo "  Building Docker sandbox image..."
+echo "  Setting up Docker sandbox image..."
 echo "==========================================="
 echo ""
-# Try to pull pre-built sandbox image first, then build if unavailable
-if ! $DOCKER pull "$REPO/sandbox:latest" &>/dev/null; then
-  yellow "  Pre-built sandbox image not available, building locally..."
-  if [ -f "docker/Dockerfile.sandbox" ]; then
-    $DOCKER build -t claw-sandbox:latest -f docker/Dockerfile.sandbox . 2>&1 | tail -3
-    green "  Sandbox image built"
-  else
-    yellow "  No Dockerfile.sandbox found — sandbox image will need to be built via API"
-  fi
-else
+# Pull the pre-built sandbox image from the registry
+if $DOCKER pull "$REPO/sandbox:latest" 2>/dev/null; then
   $DOCKER tag "$REPO/sandbox:latest" claw-sandbox:latest
-  green "  Sandbox image ready"
+  green "  Sandbox image pulled and tagged as claw-sandbox:latest"
+else
+  yellow "  Could not pull sandbox image from registry."
+  yellow "  This is expected on first install if the image is private."
+  echo ""
+  echo "  The sandbox image will need to be loaded manually:"
+  echo "    Option 1: Build locally (requires the Dockerfile):"
+  echo "      docker build -t claw-sandbox:latest -f docker/Dockerfile.sandbox ."
+  echo "    Option 2: Load from a tar file:"
+  echo "      docker load < sandbox.tar.gz"
+  echo "    Option 3: Use local execution mode (no sandbox):"
+  echo "      Edit .env and set CLAW_EXECUTION_BACKEND=local"
+  echo ""
+  read -p "  Continue without sandbox image? (worker will use local mode) [Y/n]: " SKIP_SANDBOX
+  if [ "${SKIP_SANDBOX:-Y}" != "n" ] && [ "${SKIP_SANDBOX:-Y}" != "N" ]; then
+    sed -i 's/CLAW_EXECUTION_BACKEND=docker/CLAW_EXECUTION_BACKEND=local/' .env
+    yellow "  Set to local execution mode. Change to docker mode after loading sandbox image."
+  fi
 fi
 
 # --- Pull images and start ---
@@ -296,6 +305,13 @@ done
 echo ""
 $DC --env-file "$ENV_FILE" ps --format "table {{.Name}}\t{{.Status}}" 2>&1
 
+# Set execution_backend in Redis config (so Settings screen reflects it)
+BACKEND=$(grep CLAW_EXECUTION_BACKEND .env | cut -d= -f2)
+$DC --env-file "$ENV_FILE" exec -T api curl -sf \
+  -X PUT http://localhost:8080/api/v1/config/execution_backend \
+  -H "Content-Type: application/json" \
+  -d "{\"value\":\"$BACKEND\"}" >/dev/null 2>&1 || true
+
 # --- Extract CA cert ---
 echo ""
 $DC --env-file "$ENV_FILE" cp caddy:/data/caddy/pki/authorities/local/root.crt "$INSTALL_DIR/claw-ca.crt" 2>&1 | grep -v "Copying\|Copied" || true
@@ -307,6 +323,14 @@ echo ""
 echo "  Dashboard:  https://$CLAW_HOST_IP"
 echo "  Login:      $CLAW_ADMIN_USER / <your password>"
 echo "  Install dir: $INSTALL_DIR"
+echo "  Data dir:    $CLAW_DATA_DIR"
+echo ""
+echo "  Execution:  $BACKEND mode"
+if [ "$BACKEND" = "docker" ]; then
+  echo "  Jobs run in isolated claw-sandbox containers"
+else
+  echo "  Jobs run as direct subprocesses (set CLAW_EXECUTION_BACKEND=docker for isolation)"
+fi
 echo ""
 echo "  TLS CA cert: $INSTALL_DIR/claw-ca.crt"
 echo "  Install this cert on team machines to avoid browser warnings."

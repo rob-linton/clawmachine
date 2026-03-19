@@ -262,8 +262,8 @@ Every phase must be validated end-to-end before proceeding. After writing code, 
 | `CLAW_COMPLETION_WEBHOOK_URL` | (unset) | POST to this URL when any job completes |
 | `CLAW_WORKSPACES_DIR` | `~/.claw/workspaces` | Base directory for legacy workspaces |
 | `CLAW_EXECUTION_BACKEND` | `docker` | Fallback if Redis config not set: `local` or `docker`. Redis default is `local` for dev safety |
-| `CLAW_DATA_DIR` | `/opt/claw/data` | Host path for workspace data bind mount |
-| `CLAW_HOST_DATA_DIR` | `/opt/claw/data` | Host path for Docker-in-Docker volume mapping (set inside worker container) |
+| `CLAW_DATA_DIR` | `~/.claw-data` | Host path for workspace data bind mount |
+| `CLAW_HOST_DATA_DIR` | `~/.claw-data` | Host path for Docker-in-Docker volume mapping (set automatically from CLAW_DATA_DIR) |
 | `CLAW_HOST_CLAUDE_HOME` | `~/.claude` | Host path for Claude credentials (Docker-in-Docker volume mapping) |
 
 Most new configuration is stored in Redis (`claw:config:*`) and managed from the Settings screen. Env vars are only used as bootstrap fallbacks.
