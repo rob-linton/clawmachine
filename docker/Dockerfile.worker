@@ -44,4 +44,7 @@ RUN useradd -m -s /bin/bash claw
 COPY --from=builder /build/target/release/claw-worker /usr/local/bin/
 
 ENV HOME=/home/claw
+# Allow git to operate on repos owned by other users (claw user creates repos,
+# but worker runs as root for Docker socket access)
+RUN git config --global --add safe.directory '*'
 CMD ["claw-worker"]
