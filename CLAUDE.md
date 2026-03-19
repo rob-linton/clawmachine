@@ -365,6 +365,16 @@ Returns `{access_token, refresh_token, expires_in, token_type}`. The new `refres
 
 3. **The worker must proactively refresh tokens before they expire.** The worker (or a scheduled task) should check `expiresAt` and refresh the token when it's within ~1h of expiry. The refresh must be atomic: read credentials → call refresh endpoint → write new tokens in one operation with file locking.
 
+## OAuth Redis Keys
+
+```
+claw:worker:oauth_status               — JSON: {status, expires_at, refresh_token_age_days} (written by worker)
+claw:oauth-login:active                — Lock key (SETNX with 600s TTL, prevents concurrent logins)
+claw:oauth-login:request               — Pub/sub channel: login requests from API to worker
+claw:oauth-login:progress:{request_id} — Pub/sub channel: progress events from worker to API (SSE)
+claw:oauth-login:mfa:{request_id}      — Pub/sub channel: MFA code from API to worker
+```
+
 ## Tool Redis Keys
 
 ```
