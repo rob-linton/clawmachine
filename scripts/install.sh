@@ -217,47 +217,21 @@ echo "  Step: Claude Code Authentication"
 echo "==========================================="
 echo ""
 echo "  The worker needs Claude Code authenticated on this machine."
-echo "  Auth tokens are stored in ~/.claude/ (mounted into containers)."
+echo "  On Linux, auth tokens are stored in ~/.claude/ (mounted into containers)."
 echo ""
-
-# Find claude binary (could be on PATH, in npm global, or in VSCode extension)
-CLAUDE_BIN=""
-if command -v claude &>/dev/null; then
-  CLAUDE_BIN="claude"
-else
-  # Check common locations
-  for loc in \
-    "$HOME/.vscode/extensions/"anthropic.claude-code-*/resources/native-binary/claude \
-    "$HOME/.vscode-server/extensions/"anthropic.claude-code-*/resources/native-binary/claude \
-    /usr/local/bin/claude /usr/bin/claude; do
-    if [ -x "$loc" ] 2>/dev/null; then
-      CLAUDE_BIN="$loc"
-      break
-    fi
-  done
-fi
 
 if [ -d "$HOME/.claude" ]; then
   green "  ~/.claude/ exists — auth tokens found"
-  if [ -n "$CLAUDE_BIN" ]; then
-    green "  Claude CLI: $CLAUDE_BIN"
-  fi
 else
   yellow "  ~/.claude/ not found — Claude Code needs to be authenticated."
   echo ""
-  if [ -n "$CLAUDE_BIN" ]; then
-    echo "  Found Claude at: $CLAUDE_BIN"
-    read -p "  Press Enter to launch Claude for login..."
-    "$CLAUDE_BIN"
-  else
-    echo "  Claude CLI not found on this machine."
-    echo "  Options to authenticate:"
-    echo "    1. Install Claude Code: npm install -g @anthropic-ai/claude-code && claude"
-    echo "    2. Use Claude Code in VS Code/Cursor (it creates ~/.claude/ automatically)"
-    echo "    3. Copy ~/.claude/ from another authenticated machine"
-    echo ""
-    read -p "  Press Enter once ~/.claude/ exists (or Ctrl+C to abort)..."
-  fi
+  echo "  To authenticate, run one of:"
+  echo "    claude              (if installed globally via npm)"
+  echo "    npx @anthropic-ai/claude-code   (one-time, no install needed)"
+  echo ""
+  echo "  Or use Claude Code in VS Code/Cursor — it creates ~/.claude/ automatically."
+  echo ""
+  read -p "  Press Enter once ~/.claude/ exists (or Ctrl+C to abort)..."
   echo ""
   if [ ! -d "$HOME/.claude" ]; then
     red "  WARNING: ~/.claude/ still not found. Worker auth will fail."
