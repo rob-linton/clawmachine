@@ -234,7 +234,25 @@ pub async fn docker_execute_job(
 
     // Build docker run command
     let container_name = format!("claw-job-{}", job.id);
-    let uid_gid = format!("{}:{}", users::get_current_uid(), users::get_current_gid());
+    // Use UID/GID of the workspace files owner, not the worker process.
+    // Worker runs as root (for Docker socket), but Claude Code refuses
+    // --dangerously-skip-permissions as root. Use the claw user (1000) or
+    // the actual owner of the workspace directory.
+    let (uid, gid) = {
+        let current_uid = users::get_current_uid();
+        if current_uid == 0 {
+            // Running as root — find the owner of the workspace dir
+            std::fs::metadata(working_dir)
+                .map(|m| {
+                    use std::os::unix::fs::MetadataExt;
+                    (m.uid(), m.gid())
+                })
+                .unwrap_or((1000, 1000))
+        } else {
+            (current_uid, users::get_current_gid())
+        }
+    };
+    let uid_gid = format!("{}:{}", uid, gid);
 
     // Translate workspace path to host path for Docker volume mount
     let host_workspace_path = translate_to_host_path(working_dir);
