@@ -303,9 +303,13 @@ $DC --env-file "$ENV_FILE" exec -T api curl -sf \
 
 # --- Extract CA cert ---
 echo ""
-$DC --env-file "$ENV_FILE" cp caddy:/data/caddy/pki/authorities/local/root.crt "/tmp/claw-ca.crt" 2>/dev/null && \
-  cp /tmp/claw-ca.crt "$INSTALL_DIR/claw-ca.crt" 2>/dev/null && \
-  rm /tmp/claw-ca.crt 2>/dev/null || true
+$DOCKER exec claw-caddy-1 cat /data/caddy/pki/authorities/local/root.crt > "$INSTALL_DIR/claw-ca.crt" 2>/dev/null || true
+if [ -s "$INSTALL_DIR/claw-ca.crt" ]; then
+  green "  CA cert extracted to $INSTALL_DIR/claw-ca.crt"
+else
+  yellow "  Could not extract CA cert (Caddy may still be generating it)."
+  yellow "  Try later: $DOCKER exec claw-caddy-1 cat /data/caddy/pki/authorities/local/root.crt > $INSTALL_DIR/claw-ca.crt"
+fi
 
 echo ""
 echo "==========================================="
