@@ -429,16 +429,6 @@ pub async fn docker_execute_job(
     })
 }
 
-async fn cleanup_container(container_id: &str) {
-    Command::new("docker")
-        .args(["rm", "-f", container_id])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .await
-        .ok();
-}
-
 fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
