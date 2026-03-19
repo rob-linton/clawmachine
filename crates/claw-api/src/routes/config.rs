@@ -86,7 +86,14 @@ async fn set_one(
     Json(req): Json<SetValueRequest>,
 ) -> impl IntoResponse {
     match claw_redis::set_config(&state.pool, &key, &req.value).await {
-        Ok(()) => Json(serde_json::json!({"key": key, "value": req.value})).into_response(),
+        Ok(()) => {
+            let display_val = if SENSITIVE_CONFIG_KEYS.contains(&key.as_str()) && !req.value.is_empty() {
+                "***set***".to_string()
+            } else {
+                req.value
+            };
+            Json(serde_json::json!({"key": key, "value": display_val})).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
