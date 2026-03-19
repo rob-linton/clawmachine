@@ -164,16 +164,19 @@ DELETE /api/v1/workspaces/{id}/files/{*path}      — delete file or folder (rec
 
 All file paths are validated server-side to prevent path traversal. Deleting a folder removes it and all contents recursively.
 
-## Workspace History Endpoints
+## Workspace History & Fork Endpoints
 
 ```
 GET    /api/v1/workspaces/{id}/history        — git log (last 20 commits)
 POST   /api/v1/workspaces/{id}/revert/{hash}  — git revert a specific commit
 POST   /api/v1/workspaces/{id}/promote        — move claw/base tag (snapshot mode, query: ref=...)
 POST   /api/v1/workspaces/{id}/sync           — pull latest from remote URL into bare repo
+POST   /api/v1/workspaces/{id}/fork           — create new workspace from existing one (VMware-style fork)
+GET    /api/v1/workspaces/{id}/branches       — list git branches (useful for snapshot workspaces)
+GET    /api/v1/workspaces/{id}/events         — workspace event timeline (paginated: ?limit=50&offset=0)
 ```
 
-Workspaces auto-commit before/after each job for rollback safety.
+Workspaces auto-commit before/after each job for rollback safety. Workspace events (initialized, forked, job started/completed/failed, file modified, etc.) are recorded for a human-readable history timeline.
 
 ## Workspace Persistence Modes
 
@@ -258,6 +261,19 @@ Every phase must be validated end-to-end before proceeding. After writing code, 
 | `CLAW_FAILURE_WEBHOOK_URL` | (unset) | POST to this URL when a job fails |
 | `CLAW_COMPLETION_WEBHOOK_URL` | (unset) | POST to this URL when any job completes |
 | `CLAW_WORKSPACES_DIR` | `~/.claw/workspaces` | Base directory for legacy workspaces |
-| `CLAW_EXECUTION_BACKEND` | `local` | Fallback if Redis config not set: `local` or `docker` |
+| `CLAW_EXECUTION_BACKEND` | `docker` | Fallback if Redis config not set: `local` or `docker` |
+| `CLAW_DATA_DIR` | `/opt/claw/data` | Host path for workspace data bind mount |
+| `CLAW_HOST_DATA_DIR` | `/opt/claw/data` | Host path for Docker-in-Docker volume mapping (set inside worker container) |
+| `CLAW_HOST_CLAUDE_HOME` | `~/.claude` | Host path for Claude credentials (Docker-in-Docker volume mapping) |
 
 Most new configuration is stored in Redis (`claw:config:*`) and managed from the Settings screen. Env vars are only used as bootstrap fallbacks.
+
+## Docker Isolation
+
+Jobs execute inside sandbox containers (`claw-sandbox:latest`) by default. Each job gets its own container with per-workspace resource limits. The worker spawns sandbox containers via the Docker socket.
+
+**Defaults**: execution backend `docker`, network mode `bridge` (Claude Code requires API access), memory `4g`, CPU `2.0`, PIDs `256`.
+
+**Per-workspace overrides**: `base_image`, `memory_limit`, `cpu_limit`, `network_mode` on the workspace override global Docker config.
+
+**Docker-in-Docker**: When the worker runs in a container, job dirs are at `~/.claw/jobs/{id}` (inside the shared bind mount). `CLAW_HOST_DATA_DIR` maps container paths to host paths for sandbox container volume mounts.
