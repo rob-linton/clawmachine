@@ -12,6 +12,7 @@ pub mod events;
 pub mod config;
 pub mod docker;
 pub mod auth_routes;
+pub mod oauth_login;
 
 use axum::Router;
 use crate::AppState;
@@ -32,4 +33,5 @@ pub fn router() -> Router<AppState> {
         .merge(config::router())
         .merge(docker::router())
         .merge(auth_routes::router())
+        .merge(oauth_login::router())
 }

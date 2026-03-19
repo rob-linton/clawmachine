@@ -62,6 +62,13 @@ fn is_exempt_path(path: &str) -> bool {
     if path == "/api/v1/auth/login" {
         return true;
     }
+    // OAuth login endpoints (public — status check, login initiation, MFA submission)
+    if path == "/api/v1/auth/oauth-status"
+        || path == "/api/v1/auth/oauth-login"
+        || path == "/api/v1/auth/oauth-mfa"
+    {
+        return true;
+    }
     // Health check
     if path == "/api/v1/status" {
         return true;

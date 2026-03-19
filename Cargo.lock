@@ -387,8 +387,10 @@ checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
 name = "claw-api"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
  "async-stream",
  "axum",
+ "base64",
  "bcrypt",
  "chrono",
  "claw-models",
@@ -398,9 +400,11 @@ dependencies = [
  "dirs",
  "dotenvy",
  "futures",
+ "rand",
  "redis",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tokio-stream",
  "tower-http",
@@ -480,13 +484,18 @@ dependencies = [
 name = "claw-worker"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm",
+ "base64",
  "chrono",
  "claw-models",
  "claw-redis",
  "deadpool-redis",
  "dirs",
  "dotenvy",
+ "futures",
  "hostname",
+ "rand",
+ "redis",
  "reqwest",
  "serde",
  "serde_json",

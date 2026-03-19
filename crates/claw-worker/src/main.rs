@@ -1,6 +1,7 @@
 mod docker;
 mod environment;
 mod executor;
+mod oauth_login_handler;
 mod pipeline_runner;
 mod prompt_builder;
 mod token_refresh;
@@ -118,6 +119,7 @@ async fn main() {
             Ok(false) => {}
             Err(e) => tracing::error!(error = %e, "Startup token refresh failed"),
         }
+        token_refresh::write_oauth_status(&pool).await;
     }
 
     tracing::info!(worker_id, concurrency, "claw-worker starting");
@@ -160,6 +162,15 @@ async fn main() {
         let shutdown = shutdown.clone();
         handles.push(tokio::spawn(async move {
             token_refresh_loop(pool, shutdown).await;
+        }));
+    }
+
+    // Spawn OAuth login handler
+    {
+        let pool = pool.clone();
+        let shutdown = shutdown.clone();
+        handles.push(tokio::spawn(async move {
+            oauth_login_handler::oauth_login_loop(pool, shutdown).await;
         }));
     }
 
@@ -224,6 +235,7 @@ async fn token_refresh_loop(pool: Pool, shutdown: Arc<AtomicBool>) {
             Ok(false) => {}
             Err(e) => tracing::error!(error = %e, "Periodic token refresh failed"),
         }
+        token_refresh::write_oauth_status(&pool).await;
     }
 }
 
@@ -250,12 +262,19 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
         };
         let backend = executor::ExecutionBackend::from_config_str(&backend_str);
 
-        // Resolve Anthropic API key: Redis config (Settings UI) > env var
-        let anthropic_api_key = claw_redis::get_config(&pool, "anthropic_api_key")
+        // Resolve auth: prefer OAuth over API key.
+        // If OAuth is valid, don't pass API key (hide it from Claude Code).
+        // If OAuth is expired/missing, fall back to API key.
+        let raw_api_key = claw_redis::get_config(&pool, "anthropic_api_key")
             .await
             .ok()
             .filter(|s| !s.is_empty())
             .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty()));
+        let anthropic_api_key = if token_refresh::is_oauth_valid() {
+            None // OAuth is valid — hide API key from Claude Code
+        } else {
+            raw_api_key.clone() // OAuth unavailable — fall back to API key
+        };
 
         let docker_config = if backend == executor::ExecutionBackend::Docker {
             let all_config = claw_redis::get_all_config(&pool).await.unwrap_or_default();
@@ -274,8 +293,8 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     "Job claimed, executing"
                 );
 
-                // Pre-job OAuth token check
-                if let Err(e) = token_refresh::ensure_token_fresh(anthropic_api_key.as_deref()).await {
+                // Pre-job OAuth token check (use raw_api_key for bypass check, not the filtered one)
+                if let Err(e) = token_refresh::ensure_token_fresh(raw_api_key.as_deref()).await {
                     tracing::warn!(job_id = %job_id, error = %e, "Token refresh failed — job may fail if expired");
                 }
 

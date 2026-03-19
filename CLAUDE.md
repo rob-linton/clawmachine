@@ -249,6 +249,18 @@ Tools are CLI programs (az, aws, gh, etc.) installed into Docker sandbox images 
 
 **Auth scripts**: When tools have `auth_script`, the Docker entrypoint is overridden to run auth commands before `claude -p`. The prompt is written to a script file to prevent shell injection.
 
+## OAuth Login Endpoints
+
+```
+GET    /api/v1/auth/oauth-status      — current OAuth token status (valid/expired/missing + expiry)
+POST   /api/v1/auth/oauth-login       — trigger automated OAuth login (requires email + password)
+POST   /api/v1/auth/oauth-mfa         — submit MFA code for in-progress OAuth login
+```
+
+The login flow uses Puppeteer (headless Chromium) in the worker container to automate the browser-based OAuth consent. If the simple Puppeteer script fails, it falls back to Claude Code (using API key) to analyze and navigate the page dynamically.
+
+**Auth preference order**: OAuth > API key. When valid OAuth tokens exist, the worker does NOT pass `ANTHROPIC_API_KEY` to Claude Code processes, ensuring the subscription (Max plan) is used. API key is only used as fallback when OAuth is unavailable.
+
 ## Credential Endpoints
 
 ```

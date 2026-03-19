@@ -13,9 +13,12 @@ class SettingsScreen extends ConsumerStatefulWidget {
 class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   Map<String, dynamic> _config = {};
   Map<String, dynamic> _status = {};
+  Map<String, dynamic> _oauthStatus = {};
   bool _loading = true;
   bool _dockerLoading = false;
   String? _dockerActionResult;
+  bool _oauthLoginInProgress = false;
+  String? _oauthLoginMessage;
 
   @override
   void initState() {
@@ -30,10 +33,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       final results = await Future.wait([
         api.getConfig(),
         api.getFullStatus(),
+        api.getOAuthStatus().catchError((_) => <String, dynamic>{'status': 'unknown'}),
       ]);
       setState(() {
         _config = results[0];
         _status = results[1];
+        _oauthStatus = results[2];
         _loading = false;
       });
     } catch (e) {
@@ -54,6 +59,128 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text('Failed to save: $e')));
       }
+    }
+  }
+
+  Widget _buildOAuthStatusChip() {
+    final status = _oauthStatus['status'] ?? 'unknown';
+    final expiresAt = _oauthStatus['expires_at'] as num? ?? 0;
+
+    String label;
+    Color color;
+    IconData icon;
+
+    if (status == 'valid') {
+      final expiresIn = expiresAt - DateTime.now().millisecondsSinceEpoch;
+      final hours = (expiresIn / 3600000).ceil();
+      label = 'OAuth: valid (${hours}h)';
+      color = Colors.green;
+      icon = Icons.check_circle;
+    } else if (status == 'expired') {
+      label = 'OAuth: expired';
+      color = Colors.red;
+      icon = Icons.error;
+    } else {
+      label = 'OAuth: not configured';
+      color = Colors.grey;
+      icon = Icons.help_outline;
+    }
+
+    return Semantics(
+      label: label,
+      child: Chip(
+        avatar: Icon(icon, size: 16, color: color),
+        label: Text(label),
+        backgroundColor: color.withValues(alpha: 0.1),
+      ),
+    );
+  }
+
+  Future<void> _startOAuthLogin() async {
+    final email = _config['anthropic_email'] ?? '';
+    if (email.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Enter an Anthropic email first')));
+      return;
+    }
+
+    // Show password dialog
+    final passwordCtrl = TextEditingController();
+    final password = await showDialog<String>(
+      barrierDismissible: false,
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Semantics(
+          header: true,
+          label: 'OAuth Login',
+          child: const Text('OAuth Login'),
+        ),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Logging in as: $email'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: passwordCtrl,
+                obscureText: true,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: 'Anthropic Password',
+                  border: OutlineInputBorder(),
+                ),
+                onSubmitted: (_) => Navigator.pop(ctx, passwordCtrl.text),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Password is encrypted in transit and never stored.',
+                style: TextStyle(color: Colors.grey[500], fontSize: 12),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(ctx, passwordCtrl.text),
+              child: const Text('Login')),
+        ],
+      ),
+    );
+
+    if (password == null || password.isEmpty) return;
+
+    setState(() {
+      _oauthLoginInProgress = true;
+      _oauthLoginMessage = 'Starting OAuth login...';
+    });
+
+    try {
+      await ref.read(apiClientProvider).triggerOAuthLogin(
+            email: email,
+            password: password,
+          );
+      // The login is async (SSE stream). For now, just show a message
+      // and refresh status after a delay.
+      setState(() => _oauthLoginMessage = 'Login request sent. Check worker logs for progress.');
+      // Wait a bit then refresh status
+      await Future.delayed(const Duration(seconds: 10));
+      final newStatus = await ref.read(apiClientProvider).getOAuthStatus()
+          .catchError((_) => <String, dynamic>{'status': 'unknown'});
+      setState(() {
+        _oauthStatus = newStatus;
+        _oauthLoginInProgress = false;
+        _oauthLoginMessage = newStatus['status'] == 'valid'
+            ? 'OAuth login successful!'
+            : 'Login may still be in progress. Refresh to check.';
+      });
+    } catch (e) {
+      setState(() {
+        _oauthLoginInProgress = false;
+        _oauthLoginMessage = 'Error: $e';
+      });
     }
   }
 
@@ -167,38 +294,80 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
 
           // Claude Authentication
           _buildSection('Claude Authentication', Icons.vpn_key, [
+            // Auth status chips
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                _buildOAuthStatusChip(),
+                if (_config['anthropic_api_key'] == '***set***')
+                  Semantics(
+                    label: 'API Key: set (fallback)',
+                    child: Chip(
+                      avatar: const Icon(Icons.key, size: 16, color: Colors.blue),
+                      label: const Text('API Key: set (fallback)'),
+                      backgroundColor: Colors.blue.withValues(alpha: 0.1),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // API Key field
             _buildEditableRow(
               'Anthropic API Key',
               _config['anthropic_api_key'] == '***set***'
-                  ? '' // Don't show the redacted placeholder
+                  ? ''
                   : (_config['anthropic_api_key'] ?? ''),
               (val) => _setConfig('anthropic_api_key', val),
-              helperText: 'sk-ant-... If set, bypasses OAuth. Leave empty for OAuth.',
+              helperText: 'sk-ant-... Fallback when OAuth unavailable.',
               obscureText: true,
             ),
+            const SizedBox(height: 12),
+
+            // OAuth Login section
+            _buildEditableRow(
+              'Anthropic Email',
+              _config['anthropic_email'] ?? '',
+              (val) => _setConfig('anthropic_email', val),
+              helperText: 'Email for automated OAuth login',
+            ),
             const SizedBox(height: 8),
-            Semantics(
-              label: _config['anthropic_api_key'] == '***set***'
-                  ? 'Authentication mode: API Key'
-                  : 'Authentication mode: OAuth',
-              child: Chip(
-                avatar: Icon(
-                  _config['anthropic_api_key'] == '***set***'
-                      ? Icons.key
-                      : Icons.account_circle,
-                  size: 16,
+            Row(
+              children: [
+                FilledButton.icon(
+                  onPressed: _oauthLoginInProgress ? null : _startOAuthLogin,
+                  icon: _oauthLoginInProgress
+                      ? const SizedBox(
+                          width: 16,
+                          height: 16,
+                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                      : const Icon(Icons.login),
+                  label: Text(_oauthLoginInProgress ? 'Logging in...' : 'Login with OAuth'),
                 ),
-                label: Text(
-                  _config['anthropic_api_key'] == '***set***'
-                      ? 'Using: API Key'
-                      : 'Using: OAuth (auto-refresh)',
-                ),
-              ),
+                if (_oauthLoginMessage != null) ...[
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Semantics(
+                      label: _oauthLoginMessage!,
+                      child: Text(
+                        _oauthLoginMessage!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: _oauthLoginMessage!.contains('Error')
+                              ? Colors.red
+                              : Colors.green,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ],
             ),
             const SizedBox(height: 4),
             Text(
-              'API keys bypass OAuth entirely (no token refresh needed). '
-              'OAuth uses your Claude subscription. Set via Settings or ANTHROPIC_API_KEY env var.',
+              'OAuth uses your Claude subscription (Max plan). '
+              'API key is billed separately. OAuth is preferred when available.',
               style: TextStyle(color: Colors.grey[400], fontSize: 12),
             ),
           ]),

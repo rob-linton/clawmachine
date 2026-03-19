@@ -1,3 +1,4 @@
+use deadpool_redis::redis;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,6 +28,69 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Get the current OAuth token status.
+/// Returns (status, expires_at_ms, refresh_token_age_days).
+pub fn get_oauth_status() -> (&'static str, u64, u64) {
+    let creds_path = credentials_path();
+    if !creds_path.exists() {
+        return ("missing", 0, 0);
+    }
+
+    let content = match std::fs::read_to_string(&creds_path) {
+        Ok(c) => c,
+        Err(_) => return ("missing", 0, 0),
+    };
+    let creds: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(c) => c,
+        Err(_) => return ("missing", 0, 0),
+    };
+
+    let oauth = match creds.get("claudeAiOauth") {
+        Some(o) => o,
+        None => return ("missing", 0, 0),
+    };
+
+    let expires_at = oauth
+        .get("expiresAt")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    let age_days = oauth
+        .get("_refreshTokenFirstSeen")
+        .and_then(|v| v.as_u64())
+        .map(|first_seen| (now_ms().saturating_sub(first_seen)) / (86400 * 1000))
+        .unwrap_or(0);
+
+    let status = if expires_at > now_ms() { "valid" } else { "expired" };
+    (status, expires_at, age_days)
+}
+
+/// Write current OAuth status to Redis for the UI to read.
+pub async fn write_oauth_status(pool: &deadpool_redis::Pool) {
+    let (status, expires_at, age_days) = get_oauth_status();
+    let json = serde_json::json!({
+        "status": status,
+        "expires_at": expires_at,
+        "refresh_token_age_days": age_days,
+    });
+    let mut conn = match pool.get().await {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let _: Result<(), _> = redis::AsyncCommands::set(
+        &mut *conn,
+        "claw:worker:oauth_status",
+        json.to_string(),
+    )
+    .await;
+}
+
+/// Check if OAuth token is currently valid (non-expired).
+pub fn is_oauth_valid() -> bool {
+    let (status, _, _) = get_oauth_status();
+    status == "valid"
 }
 
 /// Check if the Claude OAuth token needs refreshing, and refresh if so.
