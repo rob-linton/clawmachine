@@ -1,33 +1,20 @@
 #!/usr/bin/env node
 // Puppeteer-based OAuth login script for ClaudeCodeClaw.
-// Reads: OAUTH_URL, OAUTH_EMAIL, OAUTH_PASSWORD, PUPPETEER_EXECUTABLE_PATH
-// Outputs JSON lines to stdout for progress. Reads MFA code from stdin if needed.
+// Reads: OAUTH_URL, OAUTH_EMAIL, PUPPETEER_EXECUTABLE_PATH
+// Outputs JSON lines to stdout for progress.
+// Note: Anthropic uses passwordless (magic link) login.
 
 const puppeteer = require('puppeteer-core');
 
 const URL = process.env.OAUTH_URL;
 const EMAIL = process.env.OAUTH_EMAIL;
-const PASSWORD = process.env.OAUTH_PASSWORD;
 const BROWSER = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/chromium';
 
 function emit(obj) { console.log(JSON.stringify(obj)); }
 
-async function readLine(timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('MFA timeout')), timeoutMs);
-    process.stdin.setEncoding('utf8');
-    process.stdin.resume();
-    process.stdin.once('data', (data) => {
-      clearTimeout(timer);
-      process.stdin.pause();
-      resolve(data.toString().trim());
-    });
-  });
-}
-
 (async () => {
-  if (!URL || !EMAIL || !PASSWORD) {
-    emit({ step: 'error', message: 'Missing OAUTH_URL, OAUTH_EMAIL, or OAUTH_PASSWORD' });
+  if (!URL || !EMAIL) {
+    emit({ step: 'error', message: 'Missing OAUTH_URL or OAUTH_EMAIL' });
     process.exit(1);
   }
 
@@ -36,67 +23,82 @@ async function readLine(timeoutMs) {
     browser = await puppeteer.launch({
       executablePath: BROWSER,
       headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+        '--window-size=1920,1080',
+      ],
     });
     const page = await browser.newPage();
 
-    emit({ step: 'navigating', message: 'Opening login page...' });
-    await page.goto(URL, { waitUntil: 'networkidle2', timeout: 30000 });
-
-    // Find and fill email
-    const emailSel = await page.waitForSelector(
-      'input[type=email], input[name=email], #email',
-      { timeout: 10000 }
+    // Stealth: realistic user agent + hide webdriver
+    await page.setUserAgent(
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     );
-    await emailSel.type(EMAIL, { delay: 50 });
-
-    // Find and fill password
-    const passSel = await page.waitForSelector(
-      'input[type=password], input[name=password], #password',
-      { timeout: 10000 }
-    );
-    await passSel.type(PASSWORD, { delay: 50 });
-
-    // Find and click submit
-    const submitBtn = await page.waitForSelector(
-      'button[type=submit], input[type=submit]',
-      { timeout: 5000 }
-    );
-    emit({ step: 'login', message: 'Submitting credentials...' });
-    await submitBtn.click();
-
-    await new Promise(r => setTimeout(r, 3000));
-
-    // Check for MFA
-    const mfaInput = await page.$([
-      'input[autocomplete=one-time-code]',
-      'input[name=code]',
-      'input[name=totp]',
-      'input[name=mfa]',
-    ].join(', '));
-
-    const mfaLabel = await page.evaluate(() => {
-      const labels = Array.from(document.querySelectorAll('label, p, h2, h3'));
-      return labels.some(el => /verification|authenticator|code/i.test(el.textContent));
+    await page.evaluateOnNewDocument(() => {
+      Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      window.chrome = { runtime: {} };
     });
+    await page.setViewport({ width: 1920, height: 1080 });
 
-    if (mfaInput || mfaLabel) {
-      emit({ step: 'mfa_required', mfa_type: 'totp' });
-      const code = await readLine(300000); // 5 min timeout
-      const target = mfaInput || await page.$('input[type=text], input[type=number]');
-      if (target) {
-        await target.type(code, { delay: 50 });
-        const mfaSubmit = await page.$('button[type=submit], input[type=submit]');
-        if (mfaSubmit) await mfaSubmit.click();
+    emit({ step: 'navigating', message: 'Opening Anthropic login page...' });
+    await page.goto(URL, { waitUntil: 'networkidle0', timeout: 60000 });
+
+    // Fill email field
+    const emailInput = await page.waitForSelector('input#email, input[type=email]', { timeout: 10000 });
+    await emailInput.click({ clickCount: 3 }); // select all existing text
+    await emailInput.type(EMAIL, { delay: 30 });
+
+    emit({ step: 'login', message: 'Submitting email for magic link...' });
+
+    // Click "Continue with email"
+    const buttons = await page.$$('button[type=submit]');
+    let clicked = false;
+    for (const btn of buttons) {
+      const text = await page.evaluate(el => el.textContent.trim(), btn);
+      if (text.toLowerCase().includes('continue with email') || text.toLowerCase().includes('continue')) {
+        await btn.click();
+        clicked = true;
+        break;
       }
     }
+    if (!clicked && buttons.length > 0) {
+      await buttons[0].click();
+    }
 
-    emit({ step: 'authorizing', message: 'Completing authorization...' });
-    await page.waitForNavigation({ timeout: 30000 }).catch(() => {});
+    // Wait for the page to respond
     await new Promise(r => setTimeout(r, 3000));
 
-    emit({ step: 'success', message: 'OAuth login completed' });
+    // Check what happened after clicking
+    const afterClick = await page.evaluate(() => ({
+      url: window.location.href,
+      body: document.body.innerText.substring(0, 500),
+    }));
+
+    emit({
+      step: 'email_sent',
+      message: `Check your email (${EMAIL}) for a login link from Anthropic. Click it to complete the OAuth flow.`,
+      detail: afterClick.body.substring(0, 200),
+    });
+
+    // Now we wait. The user clicks the magic link in their email,
+    // which redirects to the claude auth login callback.
+    // We don't need to do anything else in the browser.
+    // The claude auth login process (running in parallel) will receive the callback.
+
+    // Wait up to 5 minutes for claude auth login to complete
+    // (the parent process monitors the credentials file)
+    emit({ step: 'waiting', message: 'Waiting for you to click the login link in your email (up to 5 minutes)...' });
+
+    // Keep browser alive for a bit in case there are redirects
+    await new Promise(r => setTimeout(r, 10000));
+
     await browser.close();
+
+    // Signal that the browser part is done — parent process checks for credentials
+    emit({ step: 'browser_done', message: 'Browser flow complete. Checking for OAuth tokens...' });
     process.exit(0);
   } catch (err) {
     emit({ step: 'error', message: err.message || String(err) });

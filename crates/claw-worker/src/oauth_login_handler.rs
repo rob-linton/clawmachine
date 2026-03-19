@@ -332,38 +332,55 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
         }
     }
 
-    // Wait for script to exit
+    // Wait for Puppeteer script to exit (it submits the email and exits quickly)
     let exit_status = match child.wait().await {
         Ok(s) => s,
         Err(e) => {
             publish_progress(pool, &progress_channel, "error", &format!("Script wait failed: {e}")).await;
+            let _ = login_proc.kill().await;
             cleanup_lock(pool).await;
             return;
         }
     };
 
-    // Wait for claude auth login to finish (it should complete after OAuth callback)
-    // Give it 30 seconds, then kill it
-    match tokio::time::timeout(std::time::Duration::from_secs(30), login_proc.wait()).await {
-        Ok(Ok(status)) => {
-            tracing::info!(exit_code = ?status.code(), "claude auth login completed");
-        }
-        Ok(Err(e)) => {
-            tracing::warn!(error = %e, "claude auth login wait error");
-        }
-        Err(_) => {
-            tracing::warn!("claude auth login didn't exit in 30s, killing");
-            let _ = login_proc.kill().await;
-        }
+    if !exit_status.success() {
+        let code = exit_status.code().unwrap_or(-1);
+        publish_progress(pool, &progress_channel, "error", &format!("Login script exited with code {code}")).await;
+        let _ = login_proc.kill().await;
+        cleanup_lock(pool).await;
+        return;
     }
 
-    if exit_status.success() {
-        // Verify credentials file exists
-        let creds_path = dirs::home_dir()
-            .unwrap_or_else(|| "/home/claw".into())
-            .join(".claude")
-            .join(".credentials.json");
+    // The Puppeteer script sent the magic link email.
+    // Now wait for the user to click the link and for claude auth login to receive the callback.
+    // Poll for credentials file or claude auth login exit (up to 5 minutes).
+    publish_progress(pool, &progress_channel, "waiting_for_email", "Magic link sent! Check your email and click the login link. Waiting up to 5 minutes...").await;
 
+    let creds_path = dirs::home_dir()
+        .unwrap_or_else(|| "/home/claw".into())
+        .join(".claude")
+        .join(".credentials.json");
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    let mut success = false;
+
+    loop {
+        // Check if claude auth login has exited (meaning callback received)
+        match login_proc.try_wait() {
+            Ok(Some(status)) => {
+                tracing::info!(exit_code = ?status.code(), "claude auth login completed");
+                // Give it a moment to write the file
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                break;
+            }
+            Ok(None) => {} // Still running
+            Err(e) => {
+                tracing::warn!(error = %e, "Error checking claude auth login status");
+                break;
+            }
+        }
+
+        // Check if credentials file appeared
         if creds_path.exists() {
             if let Ok(content) = tokio::fs::read_to_string(&creds_path).await {
                 if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&content) {
@@ -376,24 +393,30 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
                         .duration_since(std::time::UNIX_EPOCH)
                         .unwrap_or_default()
                         .as_millis() as u64;
-
                     if expires_at > now_ms {
-                        publish_progress(pool, &progress_channel, "success", "OAuth login completed successfully").await;
-                    } else {
-                        publish_progress(pool, &progress_channel, "error", "Credentials file found but token is expired").await;
+                        success = true;
+                        break;
                     }
-                } else {
-                    publish_progress(pool, &progress_channel, "error", "Credentials file is not valid JSON").await;
                 }
-            } else {
-                publish_progress(pool, &progress_channel, "error", "Cannot read credentials file").await;
             }
-        } else {
-            publish_progress(pool, &progress_channel, "error", "Credentials file not found after login").await;
         }
+
+        if tokio::time::Instant::now() > deadline {
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    }
+
+    // Kill claude auth login if still running
+    let _ = login_proc.kill().await;
+
+    if success {
+        publish_progress(pool, &progress_channel, "success", "OAuth login completed successfully! Tokens obtained.").await;
+    } else if creds_path.exists() {
+        publish_progress(pool, &progress_channel, "error", "Credentials file found but token is invalid or expired").await;
     } else {
-        let code = exit_status.code().unwrap_or(-1);
-        publish_progress(pool, &progress_channel, "error", &format!("Login script exited with code {code}")).await;
+        publish_progress(pool, &progress_channel, "error", "Timed out waiting for login. Did you click the email link?").await;
     }
 
     // Update OAuth status in Redis
