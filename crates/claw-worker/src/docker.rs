@@ -1,5 +1,6 @@
 use claw_models::{Job, Workspace};
 use std::path::Path;
+use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
@@ -262,8 +263,8 @@ pub async fn docker_execute_job(
 
     let mut args: Vec<String> = vec![
         "run".into(),
-        "-d".into(), // detached — we stream logs separately
-        "-t".into(), // allocate pseudo-TTY so Node.js flushes stdout
+        "--rm".into(), // auto-remove on exit
+        "-i".into(), // keep stdin open (prevents Node.js from exiting immediately)
         "--name".into(),
         container_name.clone(),
         "--user".into(),
@@ -337,46 +338,40 @@ pub async fn docker_execute_job(
 
     tracing::debug!(args = ?args, "Docker run command");
 
-    // Start container
-    let start_output = Command::new("docker")
+    // Run container attached (not detached) — stdout comes directly to us.
+    // This avoids Node.js stdout buffering issues that occur in non-TTY mode
+    // when using `docker run -d` + `docker logs -f`.
+    let mut child = Command::new("docker")
         .args(&args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
         .map_err(|e| format!("Failed to start docker container: {e}"))?;
 
-    if !start_output.status.success() {
-        let stderr = String::from_utf8_lossy(&start_output.stderr);
-        // Best-effort cleanup in case container was partially created
-        cleanup_container(&container_name).await;
-        return Err(format!("docker run failed: {}", stderr.trim()));
-    }
+    tracing::info!(container = %container_name, job_id = %job.id, "Docker container started");
 
-    let container_id = String::from_utf8_lossy(&start_output.stdout)
-        .trim()
-        .to_string();
+    let stdout = child.stdout.take().ok_or("No stdout")?;
+    let stderr = child.stderr.take().ok_or("No stderr")?;
 
-    tracing::info!(container = %container_id, job_id = %job.id, "Docker container started");
+    // Capture stderr in background
+    let stderr_reader = BufReader::new(stderr);
+    let stderr_handle = tokio::spawn(async move {
+        let mut lines = stderr_reader.lines();
+        let mut output = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            output.push_str(&line);
+            output.push('\n');
+        }
+        output
+    });
 
-    // Stream logs
-    let mut log_cmd = Command::new("docker");
-    log_cmd.args(["logs", "-f", &container_id]);
-    log_cmd.stdout(std::process::Stdio::piped());
-    log_cmd.stderr(std::process::Stdio::piped());
-    log_cmd.kill_on_drop(true);
-
-    let mut log_child = log_cmd
-        .spawn()
-        .map_err(|e| format!("Failed to stream docker logs: {e}"))?;
-
-    let stdout = log_child.stdout.take().ok_or("No log stdout")?;
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
     let mut state = crate::executor::StreamState::new();
 
-    let container_for_cancel = container_id.clone();
-    let container_for_timeout = container_id.clone();
+    let container_for_cancel = container_name.clone();
+    let container_for_timeout = container_name.clone();
 
     let output = tokio::select! {
         r = async {
@@ -384,63 +379,31 @@ pub async fn docker_execute_job(
                 let _ = log_tx.try_send(line.clone());
                 state.process_line(&line);
             }
-            // Wait for container to actually exit
-            Command::new("docker")
-                .args(["wait", &container_id])
-                .output()
-                .await
+            child.wait().await
         } => r,
 
         _ = cancel.cancelled() => {
             Command::new("docker").args(["kill", &container_for_cancel])
                 .output().await.ok();
-            cleanup_container(&container_for_cancel).await;
             return Err("Job was cancelled".to_string());
         }
 
         _ = tokio::time::sleep(timeout) => {
             Command::new("docker").args(["stop", "-t", "5", &container_for_timeout])
                 .output().await.ok();
-            cleanup_container(&container_for_timeout).await;
             return Err(format!("Job timed out after {}s", timeout_secs));
         }
     };
 
     let duration_ms = start.elapsed().as_millis() as u64;
+    let exit_status = output.map_err(|e| format!("Wait failed: {e}"))?;
+    let stderr_output = stderr_handle.await.unwrap_or_default();
 
-    // Check exit code
-    let exit_code = match output {
-        Ok(o) if o.status.success() => {
-            String::from_utf8_lossy(&o.stdout)
-                .trim()
-                .parse::<i32>()
-                .unwrap_or(-1)
-        }
-        _ => -1,
-    };
-
-    // Capture container stderr before cleanup (for error diagnosis)
-    if exit_code != 0 {
-        let stderr_output = Command::new("docker")
-            .args(["logs", "--tail", "20", &container_id])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await;
-        let stderr_text = stderr_output
-            .map(|o| {
-                let stdout = String::from_utf8_lossy(&o.stdout);
-                let stderr = String::from_utf8_lossy(&o.stderr);
-                format!("{}{}", stdout, stderr)
-            })
-            .unwrap_or_default();
-        tracing::error!(exit_code, stderr = %stderr_text.trim(), "Sandbox container failed");
-        cleanup_container(&container_id).await;
-        return Err(format!("claude exited with code {exit_code}: {}", stderr_text.trim().chars().take(500).collect::<String>()));
+    if !exit_status.success() {
+        let code = exit_status.code().unwrap_or(-1);
+        tracing::error!(exit_code = code, stderr = %stderr_output.trim(), "Sandbox container failed");
+        return Err(format!("claude exited with code {code}: {}", stderr_output.trim().chars().take(500).collect::<String>()));
     }
-
-    // Clean up container
-    cleanup_container(&container_id).await;
 
     let (result_text, cost_usd) = state.finalize();
 
