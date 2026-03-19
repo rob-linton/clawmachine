@@ -344,6 +344,24 @@ class ApiClient {
     await _dio.post('/workspaces/$id/promote', queryParameters: {'ref': ref});
   }
 
+  Future<Workspace> forkWorkspace(String id, Map<String, dynamic> data) async {
+    final resp = await _dio.post('/workspaces/$id/fork', data: data);
+    return Workspace.fromJson(resp.data);
+  }
+
+  Future<Map<String, dynamic>> listWorkspaceEvents(String id, {int limit = 50, int offset = 0}) async {
+    final resp = await _dio.get('/workspaces/$id/events', queryParameters: {
+      'limit': limit,
+      'offset': offset,
+    });
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<List<dynamic>> listWorkspaceBranches(String id) async {
+    final resp = await _dio.get('/workspaces/$id/branches');
+    return resp.data['branches'] as List? ?? [];
+  }
+
   // Extended status
   Future<Map<String, dynamic>> getFullStatus() async {
     final resp = await _dio.get('/status');

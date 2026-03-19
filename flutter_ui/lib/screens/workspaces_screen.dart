@@ -335,6 +335,12 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (ws.description.isNotEmpty) Text(ws.description),
+            if (ws.parentWorkspaceId != null)
+              Semantics(
+                label: 'Forked from ${ws.parentName ?? "deleted workspace"}',
+                child: Text('Forked from ${ws.parentName ?? "(deleted)"}',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[600])),
+              ),
             if (ws.isLegacy)
               Text(ws.path!, style: const TextStyle(fontFamily: 'monospace', fontSize: 12)),
             Row(
@@ -354,6 +360,12 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (!ws.isLegacy)
+              IconButton(
+                icon: const Icon(Icons.fork_right),
+                tooltip: 'Fork workspace',
+                onPressed: () => _showForkDialog(ws),
+              ),
             IconButton(
               icon: const Icon(Icons.open_in_new),
               tooltip: 'View Details',
@@ -369,6 +381,82 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
         onTap: () => context.go('/workspaces/${ws.id}'),
       ),
     );
+  }
+
+  Future<void> _showForkDialog(Workspace parent) async {
+    final nameCtrl = TextEditingController(text: '${parent.name} (fork)');
+    final descCtrl = TextEditingController(text: parent.description);
+    String persistence = parent.persistence;
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: const Text('Fork Workspace'),
+          content: SizedBox(
+            width: 500,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Semantics(
+                  label: 'Forking from ${parent.name}',
+                  child: Chip(
+                    avatar: const Icon(Icons.fork_right, size: 16),
+                    label: Text('From: ${parent.name}'),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(labelText: 'Name', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: descCtrl,
+                  decoration: const InputDecoration(labelText: 'Description', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                SegmentedButton<String>(
+                  segments: const [
+                    ButtonSegment(value: 'ephemeral', icon: Icon(Icons.refresh, size: 16), label: Text('Ephemeral')),
+                    ButtonSegment(value: 'persistent', icon: Icon(Icons.save, size: 16), label: Text('Persistent')),
+                    ButtonSegment(value: 'snapshot', icon: Icon(Icons.photo_camera, size: 16), label: Text('Snapshot')),
+                  ],
+                  selected: {persistence},
+                  onSelectionChanged: (v) => setDialogState(() => persistence = v.first),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Fork')),
+          ],
+        ),
+      ),
+    );
+
+    if (result != true) return;
+
+    try {
+      await ref.read(apiClientProvider).forkWorkspace(parent.id, {
+        'name': nameCtrl.text.trim(),
+        'description': descCtrl.text.trim(),
+        'persistence': persistence,
+      });
+      _refresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Forked "${parent.name}" successfully')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Fork failed: $e')),
+        );
+      }
+    }
   }
 }
 
@@ -387,6 +475,8 @@ class _WorkspaceDetailScreenState
   Workspace? _workspace;
   List<FileTreeNode> _treeRoots = [];
   List<dynamic> _commits = [];
+  List<dynamic> _events = [];
+  int _eventsTotal = 0;
   bool _loading = true;
   String? _selectedFolderPath;
   final _claudeMdCtrl = TextEditingController();
@@ -412,6 +502,13 @@ class _WorkspaceDetailScreenState
       try {
         commits = await api.getWorkspaceHistory(widget.workspaceId);
       } catch (_) {}
+      List<dynamic> events = [];
+      int eventsTotal = 0;
+      try {
+        final evData = await api.listWorkspaceEvents(widget.workspaceId);
+        events = evData['events'] as List? ?? [];
+        eventsTotal = evData['total'] as int? ?? 0;
+      } catch (_) {}
       final expanded = FileTreeNode.collectExpanded(_treeRoots);
       final newRoots = FileTreeNode.buildTree(files);
       FileTreeNode.restoreExpanded(newRoots, expanded);
@@ -422,6 +519,8 @@ class _WorkspaceDetailScreenState
         _workspace = ws;
         _treeRoots = newRoots;
         _commits = commits;
+        _events = events;
+        _eventsTotal = eventsTotal;
         _nameCtrl.text = ws.name;
         _descCtrl.text = ws.description;
         _claudeMdCtrl.text = ws.claudeMd ?? '';
@@ -602,6 +701,86 @@ class _WorkspaceDetailScreenState
                 ],
               ],
             ),
+            const SizedBox(height: 8),
+
+            // Lineage + Docker config metadata
+            Wrap(
+              spacing: 8,
+              runSpacing: 4,
+              children: [
+                if (ws.parentWorkspaceId != null) ...[
+                  Semantics(
+                    label: 'Forked from ${ws.parentName ?? "(deleted)"}',
+                    child: ActionChip(
+                      avatar: const Icon(Icons.fork_right, size: 16),
+                      label: Text('Forked from ${ws.parentName ?? "(deleted)"}',
+                          style: const TextStyle(fontSize: 11)),
+                      onPressed: ws.parentName != null
+                          ? () => context.go('/workspaces/${ws.parentWorkspaceId}')
+                          : null,
+                    ),
+                  ),
+                  if (ws.parentRef != null)
+                    Semantics(
+                      label: 'Fork point ${ws.parentRef}',
+                      child: Chip(
+                        avatar: const Icon(Icons.commit, size: 14),
+                        label: Text(ws.parentRef!.length > 7 ? ws.parentRef!.substring(0, 7) : ws.parentRef!,
+                            style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                    ),
+                ],
+                if (ws.childCount > 0)
+                  Semantics(
+                    label: '${ws.childCount} child workspaces',
+                    child: Chip(
+                      avatar: const Icon(Icons.account_tree, size: 14),
+                      label: Text('${ws.childCount} children', style: const TextStyle(fontSize: 11)),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                if (ws.skillNames.isNotEmpty)
+                  Semantics(
+                    label: 'Skills: ${ws.skillNames.join(", ")}',
+                    child: Chip(
+                      avatar: const Icon(Icons.psychology, size: 14),
+                      label: Text(ws.skillNames.join(', '), style: const TextStyle(fontSize: 11)),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                Semantics(
+                  label: 'Network mode ${ws.networkMode ?? "bridge"}',
+                  child: Chip(
+                    avatar: Icon(
+                      ws.networkMode == 'none' ? Icons.wifi_off : Icons.wifi,
+                      size: 14,
+                      color: ws.networkMode == 'none' ? Colors.red : Colors.green,
+                    ),
+                    label: Text('Network: ${ws.networkMode ?? "bridge"}', style: const TextStyle(fontSize: 11)),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+                if (ws.memoryLimit != null)
+                  Semantics(
+                    label: 'Memory limit ${ws.memoryLimit}',
+                    child: Chip(
+                      avatar: const Icon(Icons.memory, size: 14),
+                      label: Text('Memory: ${ws.memoryLimit}', style: const TextStyle(fontSize: 11)),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+                if (ws.cpuLimit != null)
+                  Semantics(
+                    label: 'CPU limit ${ws.cpuLimit}',
+                    child: Chip(
+                      avatar: const Icon(Icons.speed, size: 14),
+                      label: Text('CPU: ${ws.cpuLimit}', style: const TextStyle(fontSize: 11)),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                  ),
+              ],
+            ),
             const SizedBox(height: 24),
 
             // CLAUDE.md Editor
@@ -697,48 +876,126 @@ class _WorkspaceDetailScreenState
               ),
             ),
 
-            // Git History (hidden for ephemeral workspaces)
-            if (ws.persistence != 'ephemeral') ...[
-              const SizedBox(height: 24),
-              Text('History', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 8),
-              if (_commits.isEmpty)
-                const Text('No git history yet. History is created when jobs run.')
-              else
-                Card(
-                  child: SizedBox(
-                    height: 250,
-                    child: ListView.builder(
-                      itemCount: _commits.length,
-                      itemBuilder: (context, i) {
-                        final commit = _commits[i];
-                        final hash = (commit['hash'] ?? '').toString();
-                        final message = commit['message'] ?? '';
-                        final date = commit['date'] ?? '';
-                        final shortHash = hash.length >= 7 ? hash.substring(0, 7) : hash;
-                        return ListTile(
-                          dense: true,
-                          leading: const Icon(Icons.commit, size: 18),
-                          title: Text(message,
-                              style: const TextStyle(fontSize: 13)),
-                          subtitle: Text('$shortHash — $date',
-                              style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
-                          trailing: message.startsWith('claw: post-job')
-                              ? TextButton(
-                                  onPressed: () => _revertCommit(hash),
-                                  child: const Text('Revert'),
-                                )
-                              : null,
-                        );
-                      },
+            // Timeline + Git History
+            const SizedBox(height: 24),
+            Text('History', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+            DefaultTabController(
+              length: ws.persistence != 'ephemeral' ? 2 : 1,
+              child: Column(
+                children: [
+                  TabBar(
+                    isScrollable: true,
+                    tabs: [
+                      const Tab(text: 'Timeline'),
+                      if (ws.persistence != 'ephemeral')
+                        const Tab(text: 'Git Commits'),
+                    ],
+                  ),
+                  SizedBox(
+                    height: 300,
+                    child: TabBarView(
+                      children: [
+                        // Tab 1: Timeline (application events)
+                        _events.isEmpty
+                            ? const Center(child: Text('No events yet.'))
+                            : ListView.builder(
+                                itemCount: _events.length,
+                                itemBuilder: (context, i) {
+                                  final ev = _events[i] as Map<String, dynamic>;
+                                  final eventType = ev['event_type'] ?? '';
+                                  final desc = ev['description'] ?? '';
+                                  final ts = ev['timestamp'] ?? '';
+                                  final relId = ev['related_id'];
+                                  final dateStr = ts.length >= 16 ? ts.substring(0, 16).replaceFirst('T', ' ') : ts;
+                                  return ListTile(
+                                    dense: true,
+                                    leading: Icon(_eventIcon(eventType), size: 18, color: _eventColor(eventType)),
+                                    title: Semantics(
+                                      label: desc,
+                                      child: Text(desc, style: const TextStyle(fontSize: 13), maxLines: 2, overflow: TextOverflow.ellipsis),
+                                    ),
+                                    subtitle: Text(dateStr, style: const TextStyle(fontSize: 11)),
+                                    trailing: relId != null && (eventType == 'job_started' || eventType == 'job_completed' || eventType == 'job_failed')
+                                        ? IconButton(
+                                            icon: const Icon(Icons.open_in_new, size: 16),
+                                            tooltip: 'View job',
+                                            onPressed: () => context.go('/jobs/$relId'),
+                                          )
+                                        : relId != null && (eventType == 'forked' || eventType == 'child_forked')
+                                            ? IconButton(
+                                                icon: const Icon(Icons.open_in_new, size: 16),
+                                                tooltip: 'View workspace',
+                                                onPressed: () => context.go('/workspaces/$relId'),
+                                              )
+                                            : null,
+                                  );
+                                },
+                              ),
+                        // Tab 2: Git Commits
+                        if (ws.persistence != 'ephemeral')
+                          _commits.isEmpty
+                              ? const Center(child: Text('No git history yet.'))
+                              : ListView.builder(
+                                  itemCount: _commits.length,
+                                  itemBuilder: (context, i) {
+                                    final commit = _commits[i];
+                                    final hash = (commit['hash'] ?? '').toString();
+                                    final message = commit['message'] ?? '';
+                                    final date = commit['date'] ?? '';
+                                    final shortHash = hash.length >= 7 ? hash.substring(0, 7) : hash;
+                                    return ListTile(
+                                      dense: true,
+                                      leading: const Icon(Icons.commit, size: 18),
+                                      title: Text(message, style: const TextStyle(fontSize: 13)),
+                                      subtitle: Text('$shortHash — $date',
+                                          style: const TextStyle(fontFamily: 'monospace', fontSize: 11)),
+                                      trailing: message.startsWith('claw: post-job')
+                                          ? TextButton(
+                                              onPressed: () => _revertCommit(hash),
+                                              child: const Text('Revert'),
+                                            )
+                                          : null,
+                                    );
+                                  },
+                                ),
+                      ],
                     ),
                   ),
-                ),
-            ],
+                ],
+              ),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  IconData _eventIcon(String type) {
+    switch (type) {
+      case 'initialized': return Icons.play_arrow;
+      case 'forked': return Icons.fork_right;
+      case 'job_started': return Icons.rocket_launch;
+      case 'job_completed': return Icons.check_circle;
+      case 'job_failed': return Icons.error;
+      case 'snapshot_promoted': return Icons.arrow_upward;
+      case 'file_modified': return Icons.edit;
+      case 'synced': return Icons.sync;
+      case 'reverted': return Icons.undo;
+      case 'child_forked': return Icons.account_tree;
+      default: return Icons.info;
+    }
+  }
+
+  Color _eventColor(String type) {
+    switch (type) {
+      case 'job_completed': return Colors.green;
+      case 'job_failed': return Colors.red;
+      case 'job_started': return Colors.blue;
+      case 'initialized': return Colors.teal;
+      case 'forked': case 'child_forked': return Colors.purple;
+      default: return Colors.grey;
+    }
   }
 
   Future<void> _syncWorkspace() async {
