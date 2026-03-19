@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
         .route("/workspaces/{id}/fork", post(fork_workspace))
         .route("/workspaces/{id}/branches", get(list_branches))
         .route("/workspaces/{id}/events", get(list_events))
+        .route("/workspaces/{id}/download", get(download_workspace))
 }
 
 /// Enhanced workspace response with resolved derived fields.
@@ -439,9 +440,16 @@ async fn list_dir_entries(
     Ok(entries)
 }
 
+#[derive(Deserialize)]
+struct ReadFileQuery {
+    raw: Option<bool>,
+    download: Option<bool>,
+}
+
 async fn read_file(
     State(state): State<AppState>,
     Path((id, file_path)): Path<(Uuid, String)>,
+    Query(query): Query<ReadFileQuery>,
 ) -> impl IntoResponse {
     let ws = match claw_redis::get_workspace(&state.pool, id).await {
         Ok(Some(ws)) => ws,
@@ -459,6 +467,36 @@ async fn read_file(
         Err(status) => return status.into_response(),
     };
 
+    // Raw mode: serve binary bytes with correct Content-Type
+    if query.raw.unwrap_or(false) || query.download.unwrap_or(false) {
+        let bytes = match tokio::fs::read(&resolved).await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return StatusCode::NOT_FOUND.into_response(),
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        };
+
+        let content_type = mime_from_extension(&file_path);
+        let filename = std::path::Path::new(&file_path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "file".into());
+
+        let disposition = if query.download.unwrap_or(false) {
+            format!("attachment; filename=\"{}\"", filename)
+        } else {
+            "inline".to_string()
+        };
+
+        return (
+            [
+                (axum::http::header::CONTENT_TYPE, content_type),
+                (axum::http::header::CONTENT_DISPOSITION, disposition),
+            ],
+            bytes,
+        ).into_response();
+    }
+
+    // Default: JSON text mode (backward compatible)
     match tokio::fs::read_to_string(&resolved).await {
         Ok(content) => Json(serde_json::json!({
             "path": file_path,
@@ -467,6 +505,35 @@ async fn read_file(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
+}
+
+fn mime_from_extension(path: &str) -> String {
+    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "js" => "application/javascript",
+        "json" => "application/json",
+        "md" => "text/markdown",
+        "txt" => "text/plain",
+        "csv" => "text/csv",
+        "xml" => "application/xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "gz" | "tar" => "application/gzip",
+        "yaml" | "yml" => "text/yaml",
+        "toml" => "text/toml",
+        "rs" => "text/x-rust",
+        "py" => "text/x-python",
+        "dart" => "text/x-dart",
+        "sh" => "text/x-shellscript",
+        _ => "application/octet-stream",
+    }.to_string()
 }
 
 #[derive(Deserialize)]
@@ -632,6 +699,108 @@ async fn upload_zip(
                 &format!("ZIP uploaded: {} files", result.uploaded)).await;
             sync_checkout_to_bare(&ws).await;
             Json(result).into_response()
+        }
+        Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    }
+}
+
+// --- Workspace download ---
+
+#[derive(Deserialize)]
+struct DownloadQuery {
+    path: Option<String>,
+}
+
+async fn download_workspace(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Query(query): Query<DownloadQuery>,
+) -> impl IntoResponse {
+    let ws = match claw_redis::get_workspace(&state.pool, id).await {
+        Ok(Some(ws)) => ws,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let ws_dir = match ensure_checkout(&ws).await {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+
+    let base_dir = if let Some(ref subpath) = query.path {
+        if subpath.contains("..") {
+            return StatusCode::FORBIDDEN.into_response();
+        }
+        ws_dir.join(subpath)
+    } else {
+        ws_dir.clone()
+    };
+
+    if !base_dir.exists() || !base_dir.is_dir() {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Directory not found"}))).into_response();
+    }
+
+    // Build ZIP in memory
+    let base_dir_clone = base_dir.clone();
+    let ws_dir_clone = ws_dir.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let options = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+
+            let mut total_size: u64 = 0;
+            let max_size: u64 = 500 * 1024 * 1024; // 500MB limit
+
+            let mut stack = vec![base_dir_clone.clone()];
+            while let Some(dir) = stack.pop() {
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+                        // Skip .git and .claw directories
+                        if name == ".git" || name == ".claw" {
+                            continue;
+                        }
+
+                        if path.is_dir() {
+                            stack.push(path);
+                        } else if path.is_file() {
+                            let rel_path = path.strip_prefix(&ws_dir_clone)
+                                .unwrap_or(&path)
+                                .to_string_lossy()
+                                .to_string();
+
+                            if let Ok(data) = std::fs::read(&path) {
+                                total_size += data.len() as u64;
+                                if total_size > max_size {
+                                    return Err("Workspace exceeds 500MB size limit for ZIP download".to_string());
+                                }
+                                zip.start_file(&rel_path, options).map_err(|e| e.to_string())?;
+                                zip.write_all(&data).map_err(|e| e.to_string())?;
+                            }
+                        }
+                    }
+                }
+            }
+            zip.finish().map_err(|e| e.to_string())?;
+        }
+        Ok(buf)
+    }).await.unwrap_or(Err("ZIP creation failed".into()));
+
+    match result {
+        Ok(zip_bytes) => {
+            let filename = format!("{}.zip", ws.name.replace(' ', "_"));
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, "application/zip".to_string()),
+                    (axum::http::header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", filename)),
+                ],
+                zip_bytes,
+            ).into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
     }

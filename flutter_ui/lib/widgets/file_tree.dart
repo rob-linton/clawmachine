@@ -9,6 +9,7 @@ class FileTree extends StatefulWidget {
   final void Function(String? folderPath) onNewFileInFolder;
   final String? selectedFolderPath;
   final void Function(String? folderPath) onFolderSelected;
+  final void Function(String path)? onDownload;
 
   const FileTree({
     super.key,
@@ -19,6 +20,7 @@ class FileTree extends StatefulWidget {
     required this.onNewFileInFolder,
     this.selectedFolderPath,
     required this.onFolderSelected,
+    this.onDownload,
   });
 
   @override
@@ -185,12 +187,18 @@ class _FileTreeState extends State<FileTree> {
       icon: const Icon(Icons.more_horiz, size: 16, color: Colors.grey),
       padding: EdgeInsets.zero,
       itemBuilder: (_) => [
+        if (widget.onDownload != null)
+          const PopupMenuItem(
+            value: 'download',
+            child: Text('Download'),
+          ),
         const PopupMenuItem(
           value: 'delete',
           child: Text('Delete File', style: TextStyle(color: Colors.red)),
         ),
       ],
       onSelected: (action) {
+        if (action == 'download') widget.onDownload?.call(node.fullPath);
         if (action == 'delete') widget.onDelete(node.fullPath, false);
       },
     );

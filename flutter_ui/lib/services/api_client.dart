@@ -7,14 +7,28 @@ import '../models/workspace.dart';
 
 class ApiClient {
   final Dio _dio;
+  final String _baseUrl;
 
   ApiClient(String baseUrl)
-      : _dio = Dio(BaseOptions(
+      : _baseUrl = baseUrl,
+        _dio = Dio(BaseOptions(
           baseUrl: '$baseUrl/api/v1',
           connectTimeout: const Duration(seconds: 10),
           receiveTimeout: const Duration(seconds: 30),
           extra: {'withCredentials': true},
         ));
+
+  /// Build a direct URL for file download (opened in browser, not via Dio)
+  String fileDownloadUrl(String workspaceId, String path, {bool download = false}) {
+    final param = download ? 'download=true' : 'raw=true';
+    return '$_baseUrl/api/v1/workspaces/$workspaceId/files/$path?$param';
+  }
+
+  /// Build a URL for workspace ZIP download
+  String workspaceDownloadUrl(String workspaceId, {String? subpath}) {
+    final query = subpath != null ? '?path=$subpath' : '';
+    return '$_baseUrl/api/v1/workspaces/$workspaceId/download$query';
+  }
 
   // Auth
   Future<Map<String, dynamic>> login(String username, String password) async {

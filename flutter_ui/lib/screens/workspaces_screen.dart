@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../main.dart';
 import '../models/file_tree_node.dart';
 import '../models/skill.dart';
@@ -1001,6 +1002,12 @@ class _WorkspaceDetailScreenState
                   icon: const Icon(Icons.archive, size: 16),
                   label: const Text('Upload ZIP'),
                 ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: _downloadZip,
+                  icon: const Icon(Icons.download, size: 16),
+                  label: const Text('Download ZIP'),
+                ),
               ],
             ),
             if (_selectedFolderPath != null)
@@ -1044,6 +1051,7 @@ class _WorkspaceDetailScreenState
                       onDelete: _confirmDelete,
                       onUploadToFolder: (folder) => _uploadFileToFolder(folder),
                       onNewFileInFolder: (folder) => _showNewFileDialog(initialPath: folder),
+                      onDownload: (path) => _downloadFile(path),
                     ),
                   ),
                 ),
@@ -1282,6 +1290,18 @@ class _WorkspaceDetailScreenState
         );
       }
     }
+  }
+
+  void _downloadFile(String path) {
+    final api = ref.read(apiClientProvider);
+    final url = api.fileDownloadUrl(widget.workspaceId, path, download: true);
+    launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+  }
+
+  void _downloadZip() {
+    final api = ref.read(apiClientProvider);
+    final url = api.workspaceDownloadUrl(widget.workspaceId);
+    launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
   }
 
   Future<void> _syncWorkspace() async {
@@ -1608,15 +1628,58 @@ class _WorkspaceDetailScreenState
     if (saved == true) _refresh();
   }
 
+  bool _isImageFile(String path) {
+    final ext = path.split('.').last.toLowerCase();
+    return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg'].contains(ext);
+  }
+
+  bool _isMarkdownFile(String path) {
+    return path.toLowerCase().endsWith('.md');
+  }
+
   Future<void> _showFileEditor(String filePath) async {
+    final api = ref.read(apiClientProvider);
+
+    // Image files: show preview dialog
+    if (_isImageFile(filePath)) {
+      final imageUrl = api.fileDownloadUrl(widget.workspaceId, filePath);
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Row(
+            children: [
+              Expanded(child: Text(filePath)),
+              IconButton(
+                icon: const Icon(Icons.download),
+                tooltip: 'Download',
+                onPressed: () => _downloadFile(filePath),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 600,
+            height: 400,
+            child: Image.network(imageUrl, fit: BoxFit.contain,
+              errorBuilder: (_, e, __) => Center(child: Text('Failed to load image: $e'))),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // Text/markdown files: show editor with optional markdown preview
     String content = '';
     try {
-      content = await ref.read(apiClientProvider).getWorkspaceFile(
-          widget.workspaceId, filePath);
+      content = await api.getWorkspaceFile(widget.workspaceId, filePath);
     } catch (_) {}
 
     final contentCtrl = TextEditingController(text: content);
     String? errorText;
+    bool showPreview = _isMarkdownFile(filePath);
 
     if (!mounted) return;
 
@@ -1625,34 +1688,55 @@ class _WorkspaceDetailScreenState
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setDialogState) => AlertDialog(
-          title: Text(filePath),
-          content: SizedBox(
-            width: 600,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: contentCtrl,
-                  maxLines: 16,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-                  decoration: const InputDecoration(
-                    border: OutlineInputBorder(),
-                    alignLabelWithHint: true,
-                  ),
+          title: Row(
+            children: [
+              Expanded(child: Text(filePath)),
+              if (_isMarkdownFile(filePath))
+                SegmentedButton<bool>(
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('Edit')),
+                    ButtonSegment(value: true, label: Text('Preview')),
+                  ],
+                  selected: {showPreview},
+                  onSelectionChanged: (v) => setDialogState(() => showPreview = v.first),
                 ),
-                if (errorText != null) ...[
-                  const SizedBox(height: 8),
-                  Text(errorText!, style: const TextStyle(color: Colors.red)),
-                ],
-              ],
-            ),
+              const SizedBox(width: 8),
+              IconButton(
+                icon: const Icon(Icons.download),
+                tooltip: 'Download',
+                onPressed: () => _downloadFile(filePath),
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 700,
+            height: 500,
+            child: showPreview
+                ? SingleChildScrollView(
+                    child: SelectableText(contentCtrl.text,
+                      style: const TextStyle(fontSize: 14, height: 1.5)),
+                  )
+                : TextField(
+                    controller: contentCtrl,
+                    maxLines: null,
+                    expands: true,
+                    style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                    decoration: const InputDecoration(
+                      border: OutlineInputBorder(),
+                      alignLabelWithHint: true,
+                    ),
+                  ),
           ),
           actions: [
+            if (errorText != null)
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Text(errorText!, style: const TextStyle(color: Colors.red)),
+              ),
             TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
             FilledButton(
               onPressed: () async {
                 try {
-                  final api = ref.read(apiClientProvider);
                   await api.putWorkspaceFile(
                     widget.workspaceId, filePath, contentCtrl.text,
                   );
