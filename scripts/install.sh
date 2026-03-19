@@ -139,7 +139,7 @@ services:
       CLAW_API_TOKEN: "\${CLAW_API_TOKEN:-}"
       CLAW_ADMIN_USER: "\${CLAW_ADMIN_USER:-admin}"
       CLAW_ADMIN_PASSWORD: "\${CLAW_ADMIN_PASSWORD}"
-      CLAW_CORS_ORIGIN: "https://\${CLAW_HOST_IP:-localhost}"
+      CLAW_CORS_ORIGIN: "http://\${CLAW_HOST_IP:-localhost}"
       RUST_LOG: "\${RUST_LOG:-info}"
     depends_on:
       redis:
