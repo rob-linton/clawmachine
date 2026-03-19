@@ -272,11 +272,29 @@ Most new configuration is stored in Redis (`claw:config:*`) and managed from the
 
 Jobs execute inside sandbox containers (`claw-sandbox:latest`) by default. Each job gets its own container with per-workspace resource limits. The worker spawns sandbox containers via the Docker socket.
 
-**Defaults**: execution backend `docker`, network mode `bridge` (Claude Code requires API access), memory `4g`, CPU `2.0`, PIDs `256`.
+**Defaults**: execution backend `docker`, network mode `bridge` (Claude Code requires API access), memory `4g`, CPU `2.0`, PIDs `256`, budget `$1000`, timeout `30 minutes`.
 
 **Per-workspace overrides**: `base_image`, `memory_limit`, `cpu_limit`, `network_mode` on the workspace override global Docker config.
 
 **Docker-in-Docker**: When the worker runs in a container, job dirs are at `~/.claw/jobs/{id}` (inside the shared bind mount). `CLAW_HOST_DATA_DIR` maps container paths to host paths for sandbox container volume mounts.
+
+### Sandbox Container Requirements (critical)
+
+These requirements were discovered through production testing and must not be regressed:
+
+1. **`HOME=/home/claw`** must be set via `-e HOME=/home/claw` on `docker run`. Without it, Claude Code cannot find `~/.claude/` and `~/.claude.json`, producing zero stdout and appearing hung.
+
+2. **`~/.claude.json` must be mounted read-write** (not `:ro`). Claude Code writes to this file at runtime. Read-only mount causes `EROFS` errors and early exit after ~7 turns.
+
+3. **`~/.claude/` must be mounted read-write**. Claude Code writes session state to `~/.claude/session-env/` at runtime.
+
+4. **Node.js 20+** required in the sandbox image. Debian bookworm ships Node 18 which lacks `Array.with()` (added in Node 20). Claude Code crashes with `TypeError: A.with is not a function` on Node 18.
+
+5. **Workspace files must be owned by the sandbox user** (not root). The worker runs as root but the sandbox runs as the `.claude/` owner (typically uid 1000). After cloning a workspace, the worker `chown -R` the job dir to match.
+
+6. **Worker runs as root** for Docker socket access. The sandbox container runs as the authenticated user (uid from `~/.claude/` ownership). `--dangerously-skip-permissions` is rejected when running as root.
+
+7. **`git config --global safe.directory '*'`** required in worker image. Worker is root but bare repos are owned by claw user — git refuses operations without this.
 
 ## Workspace Redis Keys
 
