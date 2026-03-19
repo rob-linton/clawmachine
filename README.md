@@ -1,90 +1,201 @@
 # ClaudeCodeClaw
 
-A job queue orchestrator for [Claude Code](https://claude.ai/code). Submit prompts via CLI, API, webhooks, cron schedules, or file drops. Parallel workers claim and execute them using `claude -p` in isolated workspaces. Results flow back through Redis to a Flutter web dashboard.
+A self-hosted job orchestrator for [Claude Code](https://claude.ai/code). Run AI coding tasks in isolated Docker containers with git-backed workspaces, pipelines, schedules, and a web dashboard.
 
 ```
-CLI / API / Cron / File Drop
+CLI / API / Cron / Webhooks
         |
-   Axum REST API ──> Redis Queue ──> Workers (claude -p)
+   Axum REST API ──> Redis Queue ──> Workers
         |                                |
-   Flutter Dashboard            Workspaces (git-backed)
+   Flutter Dashboard         Docker Sandbox Containers
+                                         |
+                              Git-backed Workspaces
 ```
 
-## Quick Start
+## Why ClaudeCodeClaw?
 
-### Prerequisites
+- **Docker isolation** — Every job runs in its own sandbox container with memory, CPU, and network limits. No job can affect the host or other jobs.
+- **Git-backed workspaces** — Workspaces are versioned with git. Fork workspaces, revert to any commit, create snapshots, and track full history.
+- **Pipelines** — Chain jobs together. Each step passes context to the next. Results from step 1 become input for step 2.
+- **Schedules** — Run jobs on cron schedules. Generate daily reports, run nightly analysis, poll APIs on intervals.
+- **Real-time streaming** — Watch Claude work in real-time via the web dashboard. Logs stream as they're produced.
+- **Web dashboard** — Manage everything from a browser: submit jobs, browse workspace files, view rendered markdown reports, download results.
 
-| Tool | Version | Install |
-|------|---------|---------|
-| Rust | 1.83+ | [rustup.rs](https://rustup.rs) |
-| Flutter | 3.x+ | [flutter.dev](https://flutter.dev/docs/get-started/install) |
-| Redis | 7+ | `docker run -d -p 6379:6379 redis:7-alpine` |
-| Claude Code | Latest | `npm install -g @anthropic-ai/claude-code` |
-| Docker | 20.10+ | Optional, for sandboxed execution |
+## Install (Production)
 
-**Authenticate Claude Code** before starting (workers inherit your session):
+Requires Docker and Claude Code authenticated on the host.
 
 ```bash
-claude   # Complete OAuth login once
+# Authenticate Claude Code (one-time)
+claude
+
+# Run the installer
+curl -fsSL https://raw.githubusercontent.com/rob-linton/claudecodeclaw/main/scripts/install.sh | bash
 ```
 
-### Start Everything
+The installer:
+1. Prompts for server IP and admin credentials
+2. Pulls all container images (API, worker, scheduler, sandbox)
+3. Starts services with Docker Compose
+4. Sets up TLS via Caddy
 
-```bash
-git clone <repo-url> && cd claudecodeclaw
+Dashboard opens at `http://<your-ip>`.
 
-# One command — builds, starts all services, opens browser
-./scripts/startup.sh
+## How It Works
+
+### Docker Isolation
+
+Every job runs inside a disposable Docker container:
+
+```
+Worker Container                  Sandbox Container (per job)
+┌──────────────────┐             ┌─────────────────────┐
+│  claw-worker     │──spawns──>  │  claw-sandbox        │
+│  (orchestrator)  │             │  - Claude Code CLI   │
+│  - claims jobs   │             │  - Node.js 20        │
+│  - streams logs  │             │  - git, gh CLI       │
+│  - manages git   │             │  - /workspace mount  │
+└──────────────────┘             └─────────────────────┘
+        │                                 │
+        └── Docker socket ───────────────-┘
 ```
 
-Dashboard opens at **http://localhost:8080**.
+Each sandbox container gets:
+- **Memory limit** (default 4GB, configurable per workspace)
+- **CPU limit** (default 2.0 cores)
+- **PID limit** (256, prevents fork bombs)
+- **Network mode** (bridge for API access, or none for full isolation)
+- **Workspace mount** — only the job's workspace directory is visible
+- **Claude auth** — host credentials mounted read-write
 
-### Submit Your First Job
+The worker runs as root (for Docker socket access) but sandbox containers run as the authenticated user (non-root). Claude Code refuses `--dangerously-skip-permissions` as root, so this is enforced.
 
-```bash
-# Via script
-./scripts/submit.sh "What is the capital of France?"
-./scripts/result.sh <job_id>
+### Git-Backed Workspaces
 
-# Via API
-curl -X POST http://localhost:8080/api/v1/jobs \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "What is the capital of France?"}'
+Workspaces use git as the version control layer — like VMware snapshots but for code:
 
-# Via dashboard
-# Click "New Job" in the UI
 ```
+~/.claw-data/
+├── repos/           # Bare git repos (source of truth)
+│   └── {uuid}.git
+├── checkouts/       # Working copies (for file browser)
+│   └── {uuid}/
+└── jobs/            # Temporary job working dirs
+    └── {job-uuid}/
+```
+
+**Three persistence modes:**
+
+| Mode | Behavior | Use Case |
+|------|----------|----------|
+| **Persistent** | Changes accumulate. Full git history. | Long-running projects |
+| **Ephemeral** | Fresh clone each job. Changes discarded. | CI tasks, one-off jobs |
+| **Snapshot** | Clone from base tag. Results on branches. | A/B testing, approval workflows |
+
+**Fork any workspace** to create a new one starting from its current state. Forks track lineage — you can see which workspace was forked from which, navigate the tree, and create new workspaces from snapshot branches.
+
+Every file browser edit, job execution, fork, and sync is recorded in a **workspace event timeline** — a human-readable history of everything that happened.
+
+### Pipelines
+
+Chain multiple jobs together. Each step's output becomes context for the next:
+
+```json
+{
+  "name": "Weekly Report",
+  "steps": [
+    {"prompt": "Analyze the Splunk error logs and summarize findings"},
+    {"prompt": "Using {{previous_result}}, create a formatted report with charts"},
+    {"prompt": "Using {{previous_result}}, email the report to the team"}
+  ],
+  "workspace_id": "..."
+}
+```
+
+Steps execute sequentially in the same workspace. Artifacts from step 1 (files, data) are available to step 2.
+
+### Schedules
+
+Run jobs on cron schedules:
+
+```json
+{
+  "name": "Nightly Error Report",
+  "schedule": "0 0 2 * * *",
+  "prompt": "Generate the daily error report from Splunk",
+  "workspace_id": "...",
+  "enabled": true
+}
+```
+
+The scheduler checks every 30 seconds and fires jobs when due. Deduplication prevents overlapping runs — if the previous job is still running, the next fire is skipped.
+
+## Dashboard
+
+The Flutter web dashboard provides:
+
+- **Job management** — Submit, monitor, cancel, view results with real-time log streaming
+- **Workspace browser** — File tree, inline editor, markdown preview, image preview, ZIP upload/download
+- **Workspace forking** — Create new workspaces from existing ones, view lineage
+- **Event timeline** — Human-readable history of workspace events (jobs, forks, file edits)
+- **Git history** — View commits, revert changes, promote snapshots
+- **Settings** — Configure Docker execution, resource limits, credential mounts
 
 ## Development Setup
 
-Use two terminals for the best dev experience:
-
-**Terminal 1 — Backend** (API + Worker + Scheduler):
 ```bash
-./scripts/backend.sh           # Live output, auto-restarts on crash
-./scripts/backend.sh stop      # Stop all services
+git clone https://github.com/rob-linton/claudecodeclaw.git
+cd claudecodeclaw
+
+# Prerequisites: Rust 1.83+, Flutter 3.x+, Redis, Claude Code CLI
+# Start Redis: docker run -d -p 6379:6379 redis:7-alpine
+# Authenticate: claude
+
+# Start everything
+./scripts/startup.sh
 ```
 
-**Terminal 2 — Frontend** (Flutter hot reload):
-```bash
-./scripts/frontend.sh          # Dev server on :3000 with hot reload
-./scripts/frontend.sh build    # Build release for production
-```
-
-Logs are written to `.logs/api.log`, `.logs/worker.log`, `.logs/scheduler.log`.
-
-### Build Commands
+**Two-terminal setup for development:**
 
 ```bash
-cargo build --workspace                        # Build all crates
-cargo check                                    # Type-check only
-cargo clippy -- -D warnings                    # Lint
-cargo test --workspace -- --test-threads=1     # Tests (needs Redis)
+# Terminal 1: Backend (API + Worker + Scheduler)
+./scripts/backend.sh
+
+# Terminal 2: Frontend (Flutter hot reload on :3000)
+./scripts/frontend.sh
 ```
+
+## API
+
+Full REST API with session cookies or bearer token auth:
+
+```bash
+# Submit a job
+curl -X POST http://localhost:8080/api/v1/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Analyze this codebase", "workspace_id": "..."}'
+
+# Create a workspace
+curl -X POST http://localhost:8080/api/v1/workspaces \
+  -H "Content-Type: application/json" \
+  -d '{"name": "My Project", "persistence": "persistent"}'
+
+# Fork a workspace
+curl -X POST http://localhost:8080/api/v1/workspaces/{id}/fork \
+  -d '{"name": "Experiment Branch"}'
+
+# Download workspace as ZIP
+curl http://localhost:8080/api/v1/workspaces/{id}/download -o workspace.zip
+
+# Create a schedule
+curl -X POST http://localhost:8080/api/v1/crons \
+  -H "Content-Type: application/json" \
+  -d '{"name": "Daily", "schedule": "0 0 9 * * *", "prompt": "Run checks"}'
+```
+
+See [CLAUDE.md](CLAUDE.md) for full API reference.
 
 ## Architecture
-
-### Crate Structure
 
 ```
 claw-models  ──>  claw-redis  ──>  claw-api
@@ -93,230 +204,26 @@ claw-models  ──>  claw-redis  ──>  claw-api
                       |            claw-cli
 ```
 
-- **claw-models** — Shared types (Job, Workspace, Skill, Pipeline)
-- **claw-redis** — Redis client with atomic Lua scripts for job claiming
-- **claw-api** — Axum REST API + Flutter static file serving
-- **claw-worker** — Claims jobs, runs `claude -p`, streams results
-- **claw-scheduler** — Cron engine + file watcher for job submission
-- **claw-cli** — Command-line interface
-
-### How Jobs Execute
-
-1. Job submitted via API → stored in Redis → pushed to priority queue
-2. Worker claims job atomically (Lua script prevents double-claiming)
-3. Worker resolves workspace (clone git repo or use legacy directory)
-4. Skills + CLAUDE.md deployed to workspace
-5. `claude -p "<prompt>" --output-format stream-json` runs in workspace
-6. Output streamed to Redis (real-time log forwarding)
-7. Result stored, workspace cleaned up, next job claimed
-
-### Workspaces
-
-Workspaces are isolated environments where Claude executes. Three persistence modes:
-
-| Mode | Behavior | Use Case |
-|------|----------|----------|
-| **Persistent** | Changes accumulate across jobs. Full git history. | Active projects |
-| **Ephemeral** | Fresh clone each job. Changes discarded. | CI tasks, one-off jobs |
-| **Snapshot** | Clone from a tagged base. Optionally promote results. | Reproducible builds |
-
-New workspaces are backed by git bare repos at `~/.claw/repos/{id}.git` with working checkouts at `~/.claw/checkouts/{id}/` for the file browser. Legacy workspaces with explicit paths continue to work.
-
-Create workspaces from the dashboard — set persistence mode, optional remote URL (GitHub/Gitea), skills, and CLAUDE.md.
-
-### Execution Backends
-
-Jobs can run in two modes, switchable from **Settings** in the dashboard:
-
-**Local** (default) — `claude -p` runs directly on the host. Simple, uses host OAuth tokens.
-
-**Docker** (sandboxed) — Each job runs in an isolated container with Claude Code + gh CLI pre-installed. Resource limits (memory, CPU, PIDs) configurable per-workspace. Build or pull the sandbox image from the Settings screen — no terminal commands needed.
-
-## API Reference
-
-### Jobs
-```
-POST   /api/v1/jobs                    — submit job
-GET    /api/v1/jobs                    — list jobs (?status=pending&limit=20)
-GET    /api/v1/jobs/{id}               — get job details
-GET    /api/v1/jobs/{id}/result        — get result
-GET    /api/v1/jobs/{id}/logs          — get log lines
-POST   /api/v1/jobs/{id}/cancel        — cancel running job
-DELETE /api/v1/jobs/{id}               — delete job
-```
-
-### Workspaces
-```
-POST   /api/v1/workspaces             — create workspace
-GET    /api/v1/workspaces             — list workspaces
-GET    /api/v1/workspaces/{id}        — get workspace
-PUT    /api/v1/workspaces/{id}        — update workspace
-DELETE /api/v1/workspaces/{id}        — delete (?delete_files=true)
-GET    /api/v1/workspaces/{id}/files  — list files
-GET    /api/v1/workspaces/{id}/files/{path} — read file
-PUT    /api/v1/workspaces/{id}/files/{path} — write file
-DELETE /api/v1/workspaces/{id}/files/{path} — delete file
-POST   /api/v1/workspaces/{id}/upload — upload ZIP
-GET    /api/v1/workspaces/{id}/history — git log
-POST   /api/v1/workspaces/{id}/revert/{hash} — git revert
-POST   /api/v1/workspaces/{id}/promote — move snapshot base tag (?ref=...)
-POST   /api/v1/workspaces/{id}/sync   — pull from remote URL
-```
-
-### Skills
-```
-POST   /api/v1/skills                 — create skill
-GET    /api/v1/skills                 — list skills
-GET    /api/v1/skills/{id}            — get skill
-PUT    /api/v1/skills/{id}            — update skill
-DELETE /api/v1/skills/{id}            — delete skill
-POST   /api/v1/skills/upload          — upload skill ZIP
-```
-
-### Pipelines
-```
-POST   /api/v1/pipelines              — create pipeline
-GET    /api/v1/pipelines              — list pipelines
-DELETE /api/v1/pipelines/{id}         — delete pipeline
-POST   /api/v1/pipelines/{id}/run     — run pipeline
-GET    /api/v1/pipeline-runs          — list runs
-GET    /api/v1/pipeline-runs/{id}     — get run status
-```
-
-### Schedules (Crons)
-```
-POST   /api/v1/crons                  — create schedule
-GET    /api/v1/crons                  — list schedules
-PUT    /api/v1/crons/{id}             — update schedule
-DELETE /api/v1/crons/{id}             — delete schedule
-POST   /api/v1/crons/{id}/trigger     — trigger now
-```
-
-### Job Templates
-```
-POST   /api/v1/job-templates          — create template
-GET    /api/v1/job-templates          — list templates
-PUT    /api/v1/job-templates/{id}     — update template
-DELETE /api/v1/job-templates/{id}     — delete template
-POST   /api/v1/job-templates/{id}/run — run template
-```
-
-### System
-```
-GET    /api/v1/status                 — health + queue + docker + worker info
-GET    /api/v1/config                 — get all system config
-PUT    /api/v1/config                 — update config (partial merge)
-GET    /api/v1/docker/status          — Docker availability
-GET    /api/v1/docker/images          — list sandbox images
-POST   /api/v1/docker/images/pull     — pull sandbox image
-POST   /api/v1/docker/images/build    — build sandbox image
-GET    /api/v1/events/jobs            — SSE stream of job updates
-```
+| Crate | Purpose |
+|-------|---------|
+| **claw-models** | Shared types (Job, Workspace, Skill, Pipeline, WorkspaceEvent) |
+| **claw-redis** | Redis client with atomic Lua scripts for job claiming and workspace locking |
+| **claw-api** | Axum REST API, Flutter static serving, WebSocket events |
+| **claw-worker** | Claims jobs, spawns Docker sandboxes, streams logs, manages git |
+| **claw-scheduler** | Cron engine (30s tick) + file watcher for .job file submission |
+| **claw-cli** | Command-line interface for job submission and management |
 
 ## Configuration
 
-### Environment Variables
+Most configuration is managed from the **Settings** screen in the dashboard. Environment variables are used for bootstrap:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `CLAW_REDIS_URL` | `redis://127.0.0.1:6379` | Redis connection |
 | `CLAW_API_PORT` | `8080` | API server port |
-| `CLAW_API_TOKEN` | (unset) | If set, requires `Authorization: Bearer <token>` |
+| `CLAW_EXECUTION_BACKEND` | `docker` | `local` or `docker` |
+| `CLAW_DATA_DIR` | `~/.claw-data` | Workspace data directory |
 | `CLAW_WORKER_CONCURRENCY` | `1` | Parallel jobs per worker |
-| `CLAW_EXECUTION_BACKEND` | `local` | `local` or `docker` (fallback if Redis config not set) |
-| `CLAW_STATIC_DIR` | `flutter_ui/build/web` | Flutter build directory |
-| `CLAW_FAILURE_WEBHOOK_URL` | (unset) | POST on job failure |
-| `CLAW_COMPLETION_WEBHOOK_URL` | (unset) | POST on any job completion |
-| `RUST_LOG` | `info` | Log level (`debug`, `info`, `warn`) |
-
-Most new configuration is stored in Redis and managed from the **Settings** screen in the dashboard.
-
-### Settings Screen
-
-The dashboard Settings page lets you configure everything without touching env vars:
-
-- **Execution Backend** — Toggle between Local and Docker
-- **Sandbox Image** — Pull or build the Docker sandbox image
-- **Resource Limits** — Default memory, CPU, PID limits for Docker containers
-- **Credential Mounts** — Host paths mounted into containers (Claude OAuth, gh CLI, SSH keys)
-- **System Health** — Docker status, Redis connection, worker count
-
-## Docker Deployment
-
-### Docker Compose
-
-```bash
-# Build and start (Redis + API + Scheduler)
-docker compose -f docker/docker-compose.yml up --build -d
-
-# Worker runs on the host (not in container — avoids Docker-in-Docker)
-cargo run -p claw-worker
-
-# Scale workers
-CLAW_WORKER_CONCURRENCY=3 cargo run -p claw-worker
-```
-
-The worker runs on the host because it needs to create Docker containers for sandboxed execution. Running a worker inside Docker would require Docker-in-Docker, which adds complexity and has path mapping issues.
-
-### Sandbox Image
-
-The sandbox image contains Claude Code + common tools for job execution:
-
-```bash
-# Build from Settings screen (recommended)
-# Or manually:
-docker build -f docker/Dockerfile.sandbox -t claw-sandbox:latest docker/
-```
-
-Contents: Debian slim, git, Node.js, Claude Code CLI, GitHub CLI.
-
-## Testing
-
-### Unit Tests
-```bash
-cargo test --workspace -- --test-threads=1   # Needs Redis on test DB
-```
-
-### E2E Tests (Playwright)
-```bash
-./scripts/startup.sh                          # Start everything first
-
-cd tests/e2e
-npm install
-npx playwright test                           # Run all E2E tests
-npx playwright test --reporter=list           # Verbose output
-npx playwright test specs/workspace-rearchitect.spec.ts  # Specific suite
-```
-
-### Manual Smoke Test
-```bash
-./scripts/submit.sh "Say hello"
-./scripts/result.sh <job_id>
-curl http://localhost:8080/api/v1/status
-```
-
-## Project Structure
-
-```
-claudecodeclaw/
-├── crates/                    # Rust workspace (6 crates)
-│   ├── claw-models/           # Shared types
-│   ├── claw-redis/            # Redis client + config
-│   ├── claw-api/              # REST API server
-│   ├── claw-worker/           # Job executor
-│   ├── claw-scheduler/        # Cron + file watcher
-│   └── claw-cli/              # CLI tool
-├── flutter_ui/                # Flutter web dashboard
-├── docker/                    # Dockerfiles + compose
-│   ├── Dockerfile.backend     # Multi-stage (API, worker, scheduler)
-│   ├── Dockerfile.sandbox     # Sandbox image for Docker execution
-│   └── docker-compose.yml     # Production deployment
-├── scripts/                   # Dev scripts (startup, submit, result)
-├── tests/e2e/                 # Playwright E2E tests
-├── Documents/architecture/    # 12 architecture documents
-├── CLAUDE.md                  # Project instructions for Claude Code
-└── .logs/                     # Runtime logs
-```
 
 ## License
 
