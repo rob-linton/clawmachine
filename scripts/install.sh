@@ -37,12 +37,15 @@ if ! docker info &>/dev/null 2>&1; then
 fi
 DC="$DOCKER compose"
 
-# Install Node.js 18+ and npm if missing or too old (needed for Claude Code CLI)
-NODE_VERSION=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
-if [ "$NODE_VERSION" -lt 18 ] 2>/dev/null; then
-  yellow "  Node.js 18+ required for Claude Code CLI."
-  yellow "  Install Node.js 20 (https://nodejs.org/) and re-run."
-  exit 1
+# Check Node.js (needed for Claude Code CLI install, but not if already installed)
+if ! command -v claude &>/dev/null; then
+  NODE_VERSION=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
+  if [ "$NODE_VERSION" -lt 18 ] 2>/dev/null; then
+    yellow "  Node.js 18+ required to install Claude Code CLI."
+    yellow "  Install Node.js 20 (https://nodejs.org/) and re-run."
+    yellow "  Or install Claude Code separately: npm install -g @anthropic-ai/claude-code"
+    exit 1
+  fi
 fi
 
 # --- Create install directory ---
