@@ -14,6 +14,9 @@ pub struct PreparedEnvironment {
     pub working_dir: PathBuf,
     pub is_temp: bool,
     pub is_pipeline_reuse: bool,
+    /// True if this job is part of a pipeline (any step, not just reuse).
+    /// Pipeline first steps should not delete the temp dir — next steps need it.
+    pub is_pipeline_job: bool,
     pub claude_md_backup: Option<PathBuf>,
     pub original_claude_md: Option<String>,
     pub marker_file: Option<PathBuf>,
@@ -49,6 +52,7 @@ pub async fn prepare_environment(
         working_dir,
         is_temp,
         is_pipeline_reuse,
+        is_pipeline_job: job.pipeline_run_id.is_some(),
         claude_md_backup,
         original_claude_md,
         marker_file,
@@ -118,9 +122,9 @@ pub async fn harvest_skills(env: &PreparedEnvironment) -> HarvestedSkills {
 /// For temp workspaces: restore CLAUDE.md (it gets deleted with the dir anyway).
 /// For pipeline-reused checkouts: skip cleanup (next step needs the state).
 pub async fn teardown_environment(env: &PreparedEnvironment) {
-    if env.is_pipeline_reuse {
-        // Pipeline step reusing an existing checkout — don't clean up.
-        // Skills and CLAUDE.md stay in place for the next step.
+    if env.is_pipeline_reuse || env.is_pipeline_job {
+        // Pipeline job (any step) — don't clean up. Next step needs the workspace.
+        // Pipeline runner handles cleanup after all steps complete.
         return;
     }
 
