@@ -513,6 +513,7 @@ async fn write_file(
         Ok(()) => {
             emit_event(&state.pool, id, WorkspaceEventType::FileModified, None,
                 &format!("File written: {}", file_path)).await;
+            sync_checkout_to_bare(&ws).await;
             StatusCode::NO_CONTENT.into_response()
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
@@ -548,6 +549,7 @@ async fn delete_file(
             Ok(()) => {
                 emit_event(&state.pool, id, WorkspaceEventType::FileModified, None,
                     &format!("Folder deleted: {}", file_path)).await;
+                sync_checkout_to_bare(&ws).await;
                 StatusCode::NO_CONTENT.into_response()
             }
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
@@ -557,6 +559,7 @@ async fn delete_file(
             Ok(()) => {
                 emit_event(&state.pool, id, WorkspaceEventType::FileModified, None,
                     &format!("File deleted: {}", file_path)).await;
+                sync_checkout_to_bare(&ws).await;
                 StatusCode::NO_CONTENT.into_response()
             }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND.into_response(),
@@ -625,6 +628,9 @@ async fn upload_zip(
     match upload_utils::extract_zip_to_dir(&data, &ws_dir, &prefix, &limits).await {
         Ok(result) => {
             tracing::info!(workspace_id = %id, uploaded = result.uploaded, skipped = result.skipped, "ZIP uploaded to workspace");
+            emit_event(&state.pool, id, WorkspaceEventType::FileModified, None,
+                &format!("ZIP uploaded: {} files", result.uploaded)).await;
+            sync_checkout_to_bare(&ws).await;
             Json(result).into_response()
         }
         Err(e) => (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
@@ -1272,6 +1278,46 @@ async fn list_events(
 }
 
 // --- Helpers ---
+
+/// Auto-commit and push checkout changes to the bare repo.
+/// Called after file browser mutations (write, delete, upload) so that
+/// forks and the git history reflect the current workspace state.
+async fn sync_checkout_to_bare(ws: &Workspace) {
+    if ws.is_legacy() {
+        return; // Legacy workspaces don't have bare repos
+    }
+    let checkout = resolve_workspace_dir(ws);
+    if !checkout.join(".git").exists() {
+        return;
+    }
+    let checkout_clone = checkout.clone();
+    tokio::task::spawn_blocking(move || {
+        use std::process::Command;
+        let run = |args: &[&str]| -> bool {
+            Command::new("git")
+                .args(args)
+                .current_dir(&checkout_clone)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+        };
+        run(&["add", "-A"]);
+        // Only commit if there are staged changes
+        let has_changes = Command::new("git")
+            .args(["diff", "--cached", "--quiet"])
+            .current_dir(&checkout_clone)
+            .status()
+            .map(|s| !s.success()) // exit 1 = has changes
+            .unwrap_or(false);
+        if has_changes {
+            run(&["-c", "user.name=ClaudeCodeClaw", "-c", "user.email=claw@local",
+                  "commit", "-m", "claw: file browser update"]);
+            run(&["push", "origin", "HEAD"]);
+        }
+    }).await.ok();
+}
 
 /// Validate a git ref to prevent argument injection.
 /// Rejects refs starting with `-` (could be interpreted as flags) and
