@@ -176,7 +176,7 @@ pub async fn local_execute_job(
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
-    let timeout_secs = job.timeout_secs.unwrap_or(3600);
+    let timeout_secs = job.timeout_secs.unwrap_or(1800);
     let timeout = std::time::Duration::from_secs(timeout_secs);
     // Use the user's prompt directly — no wrapping
     let prompt = job.assembled_prompt.as_deref().unwrap_or(&job.prompt);
@@ -191,9 +191,9 @@ pub async fn local_execute_job(
         cmd.arg("--model").arg(model);
     }
 
-    if let Some(budget) = job.max_budget_usd {
-        cmd.arg("--max-budget-usd").arg(budget.to_string());
-    }
+    // Default budget $10 so jobs hit the timeout before the turn limit
+    let budget = job.max_budget_usd.unwrap_or(10.0);
+    cmd.arg("--max-budget-usd").arg(budget.to_string());
 
     // Only restrict tools when the job explicitly specifies a tool list.
     // When not specified, let Claude use all tools.
