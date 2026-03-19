@@ -234,15 +234,18 @@ pub async fn docker_execute_job(
 
     // Build docker run command
     let container_name = format!("claw-job-{}", job.id);
-    // Use UID/GID of the workspace files owner, not the worker process.
+    // Use UID/GID of the Claude auth directory owner, not the worker process.
     // Worker runs as root (for Docker socket), but Claude Code refuses
-    // --dangerously-skip-permissions as root. Use the claw user (1000) or
-    // the actual owner of the workspace directory.
+    // --dangerously-skip-permissions as root. The ~/.claude dir is mounted
+    // from the host and owned by the actual user who authenticated.
     let (uid, gid) = {
         let current_uid = users::get_current_uid();
         if current_uid == 0 {
-            // Running as root — find the owner of the workspace dir
-            std::fs::metadata(working_dir)
+            // Running as root — find the owner of the .claude credential dir
+            let claude_dir = dirs::home_dir()
+                .unwrap_or_else(|| "/home/claw".into())
+                .join(".claude");
+            std::fs::metadata(&claude_dir)
                 .map(|m| {
                     use std::os::unix::fs::MetadataExt;
                     (m.uid(), m.gid())
