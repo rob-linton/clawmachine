@@ -3,8 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../main.dart';
 import '../models/cron_schedule.dart';
 import '../models/skill.dart';
+import '../models/tool.dart';
 import '../models/workspace.dart';
 import '../widgets/skill_selector.dart';
+import '../widgets/tool_selector.dart';
 
 class SchedulesScreen extends ConsumerStatefulWidget {
   const SchedulesScreen({super.key});
@@ -94,6 +96,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
     String? selectedTemplateId;
     String? workspaceId;
     final selectedSkills = <String>{...existing?.skillIds ?? []};
+    final selectedToolIds = <String>{...existing?.toolIds ?? []};
     final budgetCtrl = TextEditingController(text: existing?.maxBudgetUsd?.toString() ?? '');
     final tagsCtrl = TextEditingController(text: existing?.tags.join(', ') ?? '');
     String outputType = 'redis';
@@ -101,9 +104,11 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
     final webhookUrlCtrl = TextEditingController();
     List<dynamic> templates = [];
     List<Skill> skills = [];
+    List<Tool> tools = [];
     List<Workspace> workspaces = [];
     try { templates = await ref.read(apiClientProvider).listJobTemplates(); } catch (_) {}
     try { skills = await ref.read(apiClientProvider).listSkills(); } catch (_) {}
+    try { tools = await ref.read(apiClientProvider).listTools(); } catch (_) {}
     try { workspaces = await ref.read(apiClientProvider).listWorkspaces(); } catch (_) {}
     String? errorText;
 
@@ -227,6 +232,17 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                       selectedSkills.addAll(ids);
                     }),
                   ),
+                  const SizedBox(height: 12),
+
+                  // CLI Tools
+                  ToolSelector(
+                    availableTools: tools,
+                    selectedIds: selectedToolIds,
+                    onChanged: (ids) => setDialogState(() {
+                      selectedToolIds.clear();
+                      selectedToolIds.addAll(ids);
+                    }),
+                  ),
 
                   // Advanced: budget, output, tags
                   ExpansionTile(
@@ -297,6 +313,7 @@ class _SchedulesScreenState extends ConsumerState<SchedulesScreen> {
                     'template_id': selectedTemplateId,
                   if (workspaceId != null) 'workspace_id': workspaceId,
                   if (selectedSkills.isNotEmpty) 'skill_ids': selectedSkills.toList(),
+                  if (selectedToolIds.isNotEmpty) 'tool_ids': selectedToolIds.toList(),
                   if (budgetCtrl.text.trim().isNotEmpty)
                     'max_budget_usd': double.tryParse(budgetCtrl.text.trim()),
                   if (tagsCtrl.text.trim().isNotEmpty)

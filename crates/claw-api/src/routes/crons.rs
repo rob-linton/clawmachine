@@ -92,6 +92,7 @@ async fn update_cron(
         enabled: req.enabled,
         prompt: req.prompt,
         skill_ids: req.skill_ids,
+        tool_ids: req.tool_ids,
         working_dir: req.working_dir.unwrap_or_else(|| ".".into()),
         model: req.model,
         max_budget_usd: req.max_budget_usd,
@@ -137,6 +138,7 @@ async fn trigger_cron(
             Ok(Some(tmpl)) => CreateJobRequest {
                 prompt: tmpl.prompt,
                 skill_ids: tmpl.skill_ids,
+                tool_ids: tmpl.tool_ids,
                 skill_tags: vec![],
                 working_dir: None,
                 model: tmpl.model,
@@ -156,6 +158,7 @@ async fn trigger_cron(
         CreateJobRequest {
             prompt: cron.prompt,
             skill_ids: cron.skill_ids,
+            tool_ids: cron.tool_ids,
             skill_tags: vec![],
             working_dir: Some(cron.working_dir),
             model: cron.model,

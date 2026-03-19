@@ -15,6 +15,10 @@ uuid = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 dirs = "6.0.0"
+aes-gcm = "0.10"
+base64 = "0.22"
+rand = "0.8"
+sha2 = "0.10"
 
 [dev-dependencies]
 dotenvy = { workspace = true }

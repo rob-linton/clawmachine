@@ -5,6 +5,7 @@ class CronSchedule {
   final bool enabled;
   final String prompt;
   final List<String> skillIds;
+  final List<String> toolIds;
   final String workingDir;
   final String? model;
   final double? maxBudgetUsd;
@@ -24,6 +25,7 @@ class CronSchedule {
     this.enabled = true,
     required this.prompt,
     this.skillIds = const [],
+    this.toolIds = const [],
     this.workingDir = '.',
     this.model,
     this.maxBudgetUsd,
@@ -44,6 +46,7 @@ class CronSchedule {
         enabled: json['enabled'] ?? true,
         prompt: json['prompt'] ?? '',
         skillIds: List<String>.from(json['skill_ids'] ?? []),
+        toolIds: List<String>.from(json['tool_ids'] ?? []),
         workingDir: json['working_dir'] ?? '.',
         model: json['model'],
         maxBudgetUsd: (json['max_budget_usd'] as num?)?.toDouble(),
@@ -65,6 +68,7 @@ class CronSchedule {
         'enabled': enabled,
         'prompt': prompt,
         if (skillIds.isNotEmpty) 'skill_ids': skillIds,
+        if (toolIds.isNotEmpty) 'tool_ids': toolIds,
         if (workingDir != '.') 'working_dir': workingDir,
         if (model != null) 'model': model,
         if (maxBudgetUsd != null) 'max_budget_usd': maxBudgetUsd,

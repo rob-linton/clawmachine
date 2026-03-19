@@ -4,6 +4,8 @@ import '../models/job.dart';
 import '../models/skill.dart';
 import '../models/cron_schedule.dart';
 import '../models/workspace.dart';
+import '../models/tool.dart';
+import '../models/credential.dart';
 
 class ApiClient {
   final Dio _dio;
@@ -53,6 +55,7 @@ class ApiClient {
     required String prompt,
     List<String> skillIds = const [],
     List<String> skillTags = const [],
+    List<String> toolIds = const [],
     String? model,
     double? maxBudget,
     int? priority,
@@ -67,6 +70,7 @@ class ApiClient {
       'prompt': prompt,
       if (skillIds.isNotEmpty) 'skill_ids': skillIds,
       if (skillTags.isNotEmpty) 'skill_tags': skillTags,
+      if (toolIds.isNotEmpty) 'tool_ids': toolIds,
       if (model != null) 'model': model,
       if (maxBudget != null) 'max_budget_usd': maxBudget,
       if (priority != null) 'priority': priority,
@@ -139,6 +143,69 @@ class ApiClient {
 
   Future<void> deleteSkill(String id) async {
     await _dio.delete('/skills/$id');
+  }
+
+  // Tools
+  Future<List<Tool>> listTools() async {
+    final resp = await _dio.get('/tools');
+    final items = resp.data['items'] as List? ?? [];
+    return items.map((t) => Tool.fromJson(t)).toList();
+  }
+
+  Future<Tool> getTool(String id) async {
+    final resp = await _dio.get('/tools/$id');
+    return Tool.fromJson(resp.data);
+  }
+
+  Future<void> createTool(Tool tool) async {
+    await _dio.post('/tools', data: tool.toJson());
+  }
+
+  Future<void> updateTool(String id, Tool tool) async {
+    await _dio.put('/tools/$id', data: tool.toJson());
+  }
+
+  Future<void> deleteTool(String id) async {
+    await _dio.delete('/tools/$id');
+  }
+
+  // Credentials
+  Future<List<Credential>> listCredentials() async {
+    final resp = await _dio.get('/credentials');
+    final items = resp.data['items'] as List? ?? [];
+    return items.map((c) => Credential.fromJson(c)).toList();
+  }
+
+  Future<void> createCredential({
+    required String id,
+    required String name,
+    String description = '',
+    required Map<String, String> values,
+  }) async {
+    await _dio.post('/credentials', data: {
+      'id': id,
+      'name': name,
+      'description': description,
+      'values': values,
+    });
+  }
+
+  Future<void> updateCredential({
+    required String id,
+    required String name,
+    String description = '',
+    required Map<String, String> values,
+  }) async {
+    await _dio.put('/credentials/$id', data: {
+      'id': id,
+      'name': name,
+      'description': description,
+      'values': values,
+    });
+  }
+
+  Future<void> deleteCredential(String id) async {
+    await _dio.delete('/credentials/$id');
   }
 
   // Crons

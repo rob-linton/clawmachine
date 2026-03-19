@@ -12,6 +12,8 @@ pub struct Job {
     pub skill_ids: Vec<String>,
     #[serde(default)]
     pub skill_tags: Vec<String>,
+    #[serde(default)]
+    pub tool_ids: Vec<String>,
     #[serde(default = "default_working_dir")]
     pub working_dir: PathBuf,
     pub model: Option<String>,
@@ -60,6 +62,8 @@ pub struct CreateJobRequest {
     pub skill_ids: Vec<String>,
     #[serde(default)]
     pub skill_tags: Vec<String>,
+    #[serde(default)]
+    pub tool_ids: Vec<String>,
     pub working_dir: Option<PathBuf>,
     pub model: Option<String>,
     pub max_budget_usd: Option<f64>,

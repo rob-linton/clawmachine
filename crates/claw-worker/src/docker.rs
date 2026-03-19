@@ -1,4 +1,5 @@
-use claw_models::{Job, Workspace};
+use claw_models::{Job, Tool, Workspace};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Stdio;
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -218,12 +219,101 @@ fn translate_credential_host_path(host_path: &str) -> String {
     expanded
 }
 
+/// Build a derived Docker image with the given tools installed.
+/// Returns the derived image tag (or base_image if no tools).
+/// Images are cached by content hash — rebuilds only happen when tools change.
+pub async fn ensure_tool_image(base_image: &str, tools: &[Tool]) -> Result<String, String> {
+    if tools.is_empty() {
+        return Ok(base_image.to_string());
+    }
+
+    // Compute content hash: base_image + sorted tools by id + install_commands
+    let mut hasher = Sha256::new();
+    hasher.update(base_image.as_bytes());
+    let mut sorted_tools: Vec<&Tool> = tools.iter().collect();
+    sorted_tools.sort_by(|a, b| a.id.cmp(&b.id));
+    for tool in &sorted_tools {
+        hasher.update(tool.id.as_bytes());
+        hasher.update(tool.install_commands.as_bytes());
+    }
+    let hash = format!("{:x}", hasher.finalize());
+    let tag = format!("claw-tools:{}", &hash[..12]);
+
+    // Check if image already exists
+    let check = Command::new("docker")
+        .args(["image", "inspect", &tag])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+
+    if let Ok(status) = check {
+        if status.success() {
+            tracing::info!(tag = %tag, "Derived tool image already exists");
+            return Ok(tag);
+        }
+    }
+
+    // Build derived image
+    tracing::info!(tag = %tag, tools = ?sorted_tools.iter().map(|t| &t.id).collect::<Vec<_>>(), "Building derived tool image");
+
+    let temp_dir = tempfile::tempdir().map_err(|e| format!("Failed to create temp dir: {e}"))?;
+
+    // Generate Dockerfile: join multiline install_commands with " && "
+    let mut dockerfile = format!("FROM {}\nUSER root\n", base_image);
+    for tool in &sorted_tools {
+        let joined = tool
+            .install_commands
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect::<Vec<_>>()
+            .join(" && ");
+        if !joined.is_empty() {
+            dockerfile.push_str(&format!("RUN {}\n", joined));
+        }
+    }
+
+    let dockerfile_path = temp_dir.path().join("Dockerfile");
+    std::fs::write(&dockerfile_path, &dockerfile)
+        .map_err(|e| format!("Failed to write Dockerfile: {e}"))?;
+
+    let build_output = Command::new("docker")
+        .args([
+            "build",
+            "-t",
+            &tag,
+            "-f",
+            &dockerfile_path.to_string_lossy(),
+            &temp_dir.path().to_string_lossy(),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|e| format!("Failed to run docker build: {e}"))?;
+
+    if !build_output.status.success() {
+        let stderr = String::from_utf8_lossy(&build_output.stderr);
+        return Err(format!(
+            "Docker build failed for tool image '{}': {}",
+            tag,
+            stderr.chars().take(1000).collect::<String>()
+        ));
+    }
+
+    tracing::info!(tag = %tag, "Derived tool image built successfully");
+    Ok(tag)
+}
+
 /// Execute a job inside a Docker container.
 pub async fn docker_execute_job(
     job: &Job,
     working_dir: &Path,
     config: &DockerConfig,
     workspace: Option<&Workspace>,
+    tools: &[Tool],
+    credential_env_vars: &std::collections::HashMap<String, String>,
     system_prompt: Option<&str>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
@@ -233,9 +323,12 @@ pub async fn docker_execute_job(
     let prompt = job.assembled_prompt.as_deref().unwrap_or(&job.prompt);
 
     // Merge: workspace overrides > global config > defaults
-    let image = workspace
+    let base_image = workspace
         .and_then(|w| w.base_image.as_deref())
         .unwrap_or(&config.image);
+
+    // Build derived image with tools installed (cached by content hash)
+    let image = ensure_tool_image(base_image, tools).await?;
     let memory = workspace
         .and_then(|w| w.memory_limit.as_deref())
         .unwrap_or(&config.memory_limit);
@@ -314,44 +407,146 @@ pub async fn docker_execute_job(
         args.push(format!("{}:{}:{}", host, mount.container_path, mode));
     }
 
-    // Image
-    args.push(image.to_string());
-
-    // Claude arguments
-    args.push("-p".into());
-    args.push(prompt.to_string());
-    args.push("--output-format".into());
-    args.push("stream-json".into());
-    args.push("--verbose".into()); // required by --output-format stream-json
-    args.push("--dangerously-skip-permissions".into());
-
-    if let Some(model) = &job.model {
-        args.push("--model".into());
-        args.push(model.clone());
+    // Inject credential env vars for tool authentication
+    for (key, value) in credential_env_vars {
+        args.push("-e".into());
+        args.push(format!("{}={}", key, value));
     }
 
-    // Default budget $10 so jobs hit the timeout before the turn limit
-    let budget = job.max_budget_usd.unwrap_or(1000.0);
-    args.push("--max-budget-usd".into());
-    args.push(budget.to_string());
+    // Check if any tools have auth scripts that need to run before claude
+    let auth_scripts: Vec<&str> = tools
+        .iter()
+        .filter_map(|t| t.auth_script.as_deref())
+        .filter(|s| !s.trim().is_empty())
+        .collect();
+    let has_auth_scripts = !auth_scripts.is_empty();
 
-    // Only restrict tools when the job explicitly specifies a tool list
-    if let Some(tools) = &job.allowed_tools {
-        if !tools.is_empty() {
-            args.push("--allowedTools".into());
-            args.push(tools.join(","));
+    if has_auth_scripts {
+        // Write a runner script to the workspace so the prompt is never
+        // embedded in a bash -c string (prevents shell injection).
+        let mut claude_cmd = vec![
+            "claude".to_string(),
+            "-p".into(),
+            prompt.to_string(),
+            "--output-format".into(),
+            "stream-json".into(),
+            "--verbose".into(),
+            "--dangerously-skip-permissions".into(),
+        ];
+        if let Some(model) = &job.model {
+            claude_cmd.push("--model".into());
+            claude_cmd.push(model.clone());
         }
-    }
+        let budget = job.max_budget_usd.unwrap_or(1000.0);
+        claude_cmd.push("--max-budget-usd".into());
+        claude_cmd.push(budget.to_string());
+        if let Some(allowed) = &job.allowed_tools {
+            if !allowed.is_empty() {
+                claude_cmd.push("--allowedTools".into());
+                claude_cmd.push(allowed.join(","));
+            }
+        }
+        if let Some(sp) = system_prompt {
+            claude_cmd.push("--append-system-prompt".into());
+            claude_cmd.push(sp.to_string());
+        }
 
-    // Append system prompt with metadata + completion instruction
-    if let Some(sp) = system_prompt {
-        args.push("--append-system-prompt".into());
-        args.push(sp.to_string());
+        // Write the runner script with proper quoting
+        let script_content = format!(
+            "#!/bin/bash\nexec {}",
+            claude_cmd
+                .iter()
+                .map(|a| shell_escape(a))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        let script_path = working_dir.join(".claw-run.sh");
+        std::fs::write(&script_path, &script_content)
+            .map_err(|e| format!("Failed to write runner script: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).ok();
+        }
+
+        // Combine auth scripts
+        let combined_auth = auth_scripts.join("\n");
+
+        // Override entrypoint to run auth scripts then the runner
+        args.push("--entrypoint".into());
+        args.push("/bin/bash".into());
+        args.push(image);
+        args.push("-c".into());
+        args.push(format!("set -e\n{}\nexec /workspace/.claw-run.sh", combined_auth));
+    } else {
+        // No auth scripts — use normal ENTRYPOINT ["claude"] with direct args
+        args.push(image);
+
+        // Claude arguments
+        args.push("-p".into());
+        args.push(prompt.to_string());
+        args.push("--output-format".into());
+        args.push("stream-json".into());
+        args.push("--verbose".into()); // required by --output-format stream-json
+        args.push("--dangerously-skip-permissions".into());
+
+        if let Some(model) = &job.model {
+            args.push("--model".into());
+            args.push(model.clone());
+        }
+
+        // Default budget
+        let budget = job.max_budget_usd.unwrap_or(1000.0);
+        args.push("--max-budget-usd".into());
+        args.push(budget.to_string());
+
+        // Only restrict tools when the job explicitly specifies a tool list
+        if let Some(allowed) = &job.allowed_tools {
+            if !allowed.is_empty() {
+                args.push("--allowedTools".into());
+                args.push(allowed.join(","));
+            }
+        }
+
+        // Append system prompt with metadata + completion instruction
+        if let Some(sp) = system_prompt {
+            args.push("--append-system-prompt".into());
+            args.push(sp.to_string());
+        }
     }
 
     let start = std::time::Instant::now();
 
-    tracing::debug!(args = ?args, "Docker run command");
+    // Log args but redact credential env vars (values after -e KEY=VALUE)
+    let redacted_args: Vec<String> = {
+        let mut out = Vec::new();
+        let mut skip_next = false;
+        for (i, arg) in args.iter().enumerate() {
+            if skip_next {
+                skip_next = false;
+                continue;
+            }
+            if arg == "-e" && i + 1 < args.len() {
+                let next = &args[i + 1];
+                if next.starts_with("HOME=") {
+                    out.push(arg.clone());
+                    out.push(next.clone());
+                } else {
+                    out.push(arg.clone());
+                    if let Some(eq_pos) = next.find('=') {
+                        out.push(format!("{}=***", &next[..eq_pos]));
+                    } else {
+                        out.push("***".into());
+                    }
+                }
+                skip_next = true;
+            } else {
+                out.push(arg.clone());
+            }
+        }
+        out
+    };
+    tracing::debug!(args = ?redacted_args, "Docker run command");
 
     // Run container attached (not detached) — stdout comes directly to us.
     // This avoids Node.js stdout buffering issues that occur in non-TTY mode
@@ -436,4 +631,17 @@ fn expand_tilde(path: &str) -> String {
         }
     }
     path.to_string()
+}
+
+/// Shell-escape a string for safe inclusion in a bash script.
+fn shell_escape(s: &str) -> String {
+    if s.is_empty() {
+        return "''".to_string();
+    }
+    // If it's safe (no special chars), return as-is
+    if s.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/' || c == ':' || c == '=') {
+        return s.to_string();
+    }
+    // Otherwise, wrap in single quotes, escaping any existing single quotes
+    format!("'{}'", s.replace('\'', "'\\''"))
 }

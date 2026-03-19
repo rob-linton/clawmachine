@@ -1,6 +1,8 @@
 pub mod jobs;
 pub mod status;
 pub mod skills;
+pub mod tools;
+pub mod credentials;
 pub mod crons;
 pub mod webhook;
 pub mod workspaces;
@@ -19,6 +21,8 @@ pub fn router() -> Router<AppState> {
         .merge(jobs::router())
         .merge(status::router())
         .merge(skills::router())
+        .merge(tools::router())
+        .merge(credentials::router())
         .merge(crons::router())
         .merge(webhook::router())
         .merge(workspaces::router())

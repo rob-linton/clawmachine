@@ -6,6 +6,8 @@ import 'screens/jobs_screen.dart';
 import 'screens/job_detail_screen.dart';
 import 'screens/submit_job_screen.dart';
 import 'screens/skills_screen.dart';
+import 'screens/tools_screen.dart';
+import 'screens/credentials_screen.dart';
 import 'screens/schedules_screen.dart';
 import 'screens/workspaces_screen.dart';
 import 'screens/pipelines_screen.dart';
@@ -73,6 +75,8 @@ final _router = GoRouter(
               WorkspaceDetailScreen(workspaceId: state.pathParameters['id']!),
         ),
         GoRoute(path: '/skills', builder: (_, __) => const SkillsScreen()),
+        GoRoute(path: '/tools', builder: (_, __) => const ToolsScreen()),
+        GoRoute(path: '/credentials', builder: (_, __) => const CredentialsScreen()),
         GoRoute(
             path: '/settings', builder: (_, __) => const SettingsScreen()),
       ],

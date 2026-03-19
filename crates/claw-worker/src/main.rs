@@ -287,6 +287,18 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     .await
                     .unwrap_or_default();
 
+                // 3b. Resolve tools (workspace defaults + job-specific, deduplicated)
+                let mut all_tool_ids = Vec::new();
+                if let Some(ref ws) = workspace {
+                    all_tool_ids.extend(ws.tool_ids.iter().cloned());
+                }
+                all_tool_ids.extend(job.tool_ids.iter().cloned());
+                let mut seen_tools = std::collections::HashSet::new();
+                all_tool_ids.retain(|id| seen_tools.insert(id.clone()));
+                let tools = claw_redis::resolve_tools(&pool, &all_tool_ids)
+                    .await
+                    .unwrap_or_default();
+
                 // 3b. Git snapshot: pre-job commit (before skills deployed)
                 // Only for legacy workspaces — new workspaces get fresh clones
                 if let Some(ref ws) = workspace {
@@ -312,8 +324,21 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     }
                 };
 
+                // 4b. Verify local tools are available (check-only, no installation)
+                if backend == executor::ExecutionBackend::Local && !tools.is_empty() {
+                    if let Err(e) = environment::ensure_local_tools(&tools).await {
+                        tracing::error!(job_id = %job_id, error = %e, "Local tool check failed");
+                        claw_redis::fail_job(&pool, job_id, &format!("Tool check failed: {e}")).await.ok();
+                        if let Some(ws_id) = job.workspace_id {
+                            claw_redis::release_workspace_lock(&pool, ws_id, job_id).await.ok();
+                        }
+                        environment::teardown_environment(&prepared_env).await;
+                        continue;
+                    }
+                }
+
                 // 5. Build prompt (user prompt passes through unmodified)
-                let built = prompt_builder::build_prompt(&job, &skills, workspace.as_ref());
+                let built = prompt_builder::build_prompt(&job, &skills, &tools, workspace.as_ref());
                 let system_prompt = built.system_prompt;
                 let mut job = job;
                 job.assembled_prompt = Some(built.prompt.clone());
@@ -379,6 +404,26 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     }
                 }
 
+                // 5b. Resolve credential env vars for tools
+                let mut credential_env_vars = std::collections::HashMap::new();
+                if let Some(ref ws) = workspace {
+                    for tool in &tools {
+                        if let Some(cred_id) = ws.credential_bindings.get(&tool.id) {
+                            match claw_redis::get_credential_values(&pool, cred_id).await {
+                                Ok(Some(values)) => {
+                                    credential_env_vars.extend(values);
+                                }
+                                Ok(None) => {
+                                    tracing::warn!(tool_id = %tool.id, credential_id = %cred_id, "Bound credential not found");
+                                }
+                                Err(e) => {
+                                    tracing::warn!(tool_id = %tool.id, credential_id = %cred_id, error = %e, "Failed to decrypt credential");
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // 6. Execute in prepared workspace
                 let result = executor::dispatch_execute(
                     &backend,
@@ -386,6 +431,8 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     &prepared_env.working_dir,
                     docker_config.as_ref(),
                     workspace.as_ref(),
+                    &tools,
+                    &credential_env_vars,
                     Some(&system_prompt),
                     log_tx,
                     cancel,

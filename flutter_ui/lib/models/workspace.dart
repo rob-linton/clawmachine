@@ -4,6 +4,8 @@ class Workspace {
   final String description;
   final String? path; // legacy only
   final List<String> skillIds;
+  final List<String> toolIds;
+  final Map<String, String> credentialBindings;
   final String? claudeMd;
   final String persistence; // "ephemeral", "persistent", "snapshot"
   final String? remoteUrl;
@@ -26,6 +28,8 @@ class Workspace {
     this.description = '',
     this.path,
     this.skillIds = const [],
+    this.toolIds = const [],
+    this.credentialBindings = const {},
     this.claudeMd,
     this.persistence = 'persistent',
     this.remoteUrl,
@@ -50,6 +54,10 @@ class Workspace {
         description: json['description'] ?? '',
         path: json['path'],
         skillIds: List<String>.from(json['skill_ids'] ?? []),
+        toolIds: List<String>.from(json['tool_ids'] ?? []),
+        credentialBindings: (json['credential_bindings'] as Map<String, dynamic>?)
+                ?.map((k, v) => MapEntry(k, v.toString())) ??
+            {},
         claudeMd: json['claude_md'],
         persistence: json['persistence'] ?? 'persistent',
         remoteUrl: json['remote_url'],
@@ -71,6 +79,8 @@ class Workspace {
         if (description.isNotEmpty) 'description': description,
         if (path != null && path!.isNotEmpty) 'path': path,
         if (skillIds.isNotEmpty) 'skill_ids': skillIds,
+        if (toolIds.isNotEmpty) 'tool_ids': toolIds,
+        if (credentialBindings.isNotEmpty) 'credential_bindings': credentialBindings,
         if (claudeMd != null) 'claude_md': claudeMd,
         if (persistence != 'persistent') 'persistence': persistence,
         if (remoteUrl != null && remoteUrl!.isNotEmpty) 'remote_url': remoteUrl,

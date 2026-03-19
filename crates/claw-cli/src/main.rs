@@ -131,6 +131,7 @@ async fn main() {
             let req = claw_models::CreateJobRequest {
                 prompt,
                 skill_ids: vec![],
+                tool_ids: vec![],
                 skill_tags: vec![],
                 working_dir: None,
                 model,

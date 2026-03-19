@@ -41,6 +41,7 @@ pub async fn check_and_advance(pool: &Pool, job: &Job, result_text: &str) {
         prompt,
         skill_ids: step.skill_ids.clone(),
         skill_tags: vec![],
+        tool_ids: step.tool_ids.clone(),
         working_dir: None,
         model: step.model.clone(),
         max_budget_usd: None,

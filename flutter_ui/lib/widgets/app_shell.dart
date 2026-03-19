@@ -69,6 +69,10 @@ class AppShell extends ConsumerWidget {
                   icon: Icon(Icons.folder_open), label: Text('Workspaces')),
               NavigationRailDestination(
                   icon: Icon(Icons.auto_fix_high), label: Text('Skills')),
+              NavigationRailDestination(
+                  icon: Icon(Icons.build_circle), label: Text('Tools')),
+              NavigationRailDestination(
+                  icon: Icon(Icons.vpn_key), label: Text('Credentials')),
             ],
             onDestinationSelected: (i) {
               switch (i) {
@@ -86,6 +90,10 @@ class AppShell extends ConsumerWidget {
                   context.go('/workspaces');
                 case 6:
                   context.go('/skills');
+                case 7:
+                  context.go('/tools');
+                case 8:
+                  context.go('/credentials');
               }
             },
           ),
@@ -103,6 +111,8 @@ class AppShell extends ConsumerWidget {
     if (location.startsWith('/schedules')) return 4;
     if (location.startsWith('/workspaces')) return 5;
     if (location.startsWith('/skills')) return 6;
+    if (location.startsWith('/tools')) return 7;
+    if (location.startsWith('/credentials')) return 8;
     if (location.startsWith('/settings')) return -1;
     return 0;
   }

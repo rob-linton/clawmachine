@@ -1,4 +1,4 @@
-use claw_models::{Job, Skill, Workspace};
+use claw_models::{Job, Skill, Tool, Workspace};
 
 pub struct BuiltPrompt {
     /// The user's prompt — passed through unmodified.
@@ -12,7 +12,7 @@ pub struct BuiltPrompt {
 
 /// Build the prompt. The user's prompt is passed through unmodified.
 /// Metadata and instructions go into a separate system prompt appendix.
-pub fn build_prompt(job: &Job, skills: &[Skill], workspace: Option<&Workspace>) -> BuiltPrompt {
+pub fn build_prompt(job: &Job, skills: &[Skill], tools: &[Tool], workspace: Option<&Workspace>) -> BuiltPrompt {
     // User prompt passes through exactly as written
     let prompt = job.prompt.clone();
 
@@ -41,6 +41,14 @@ pub fn build_prompt(job: &Job, skills: &[Skill], workspace: Option<&Workspace>) 
         system_parts.push(format!(
             "Skills deployed to .claude/skills/: {}.",
             skill_ids.join(", ")
+        ));
+    }
+
+    if !tools.is_empty() {
+        let tool_names: Vec<&str> = tools.iter().map(|t| t.name.as_str()).collect();
+        system_parts.push(format!(
+            "CLI tools installed and available: {}.",
+            tool_names.join(", ")
         ));
     }
 

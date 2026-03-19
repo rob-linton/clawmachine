@@ -2,8 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../main.dart';
 import '../models/skill.dart';
+import '../models/tool.dart';
 import '../models/workspace.dart';
 import '../widgets/skill_selector.dart';
+import '../widgets/tool_selector.dart';
 
 class TemplatesScreen extends ConsumerStatefulWidget {
   const TemplatesScreen({super.key});
@@ -61,8 +63,10 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
   Future<void> _showTemplateDialog({dynamic existing}) async {
     // Load skills and workspaces for selectors
     List<Skill> skills = [];
+    List<Tool> tools = [];
     List<Workspace> workspaces = [];
     try { skills = await ref.read(apiClientProvider).listSkills(); } catch (_) {}
+    try { tools = await ref.read(apiClientProvider).listTools(); } catch (_) {}
     try { workspaces = await ref.read(apiClientProvider).listWorkspaces(); } catch (_) {}
 
     final isEdit = existing != null;
@@ -80,6 +84,9 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
     double priority = (existing?['priority'] ?? 5).toDouble();
     final selectedSkills = <String>{
       ...List<String>.from(existing?['skill_ids'] ?? [])
+    };
+    final selectedToolIds = <String>{
+      ...List<String>.from(existing?['tool_ids'] ?? [])
     };
     String outputType = 'redis';
     final outputPathCtrl = TextEditingController();
@@ -156,6 +163,17 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
                     onChanged: (ids) => setDialogState(() {
                       selectedSkills.clear();
                       selectedSkills.addAll(ids);
+                    }),
+                  ),
+                  const SizedBox(height: 12),
+
+                  // CLI Tools
+                  ToolSelector(
+                    availableTools: tools,
+                    selectedIds: selectedToolIds,
+                    onChanged: (ids) => setDialogState(() {
+                      selectedToolIds.clear();
+                      selectedToolIds.addAll(ids);
                     }),
                   ),
                   const SizedBox(height: 12),
@@ -258,6 +276,7 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
                   if (model != null) 'model': model,
                   if (workspaceId != null) 'workspace_id': workspaceId,
                   if (selectedSkills.isNotEmpty) 'skill_ids': selectedSkills.toList(),
+                  if (selectedToolIds.isNotEmpty) 'tool_ids': selectedToolIds.toList(),
                   'priority': priority.round(),
                   if (int.tryParse(timeoutCtrl.text.trim()) != null)
                     'timeout_secs': int.parse(timeoutCtrl.text.trim()),

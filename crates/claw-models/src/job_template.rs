@@ -14,6 +14,8 @@ pub struct JobTemplate {
     pub prompt: String,
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub tool_ids: Vec<String>,
     pub workspace_id: Option<Uuid>,
     pub model: Option<String>,
     pub timeout_secs: Option<u64>,
@@ -40,6 +42,8 @@ pub struct CreateJobTemplateRequest {
     pub prompt: String,
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub tool_ids: Vec<String>,
     pub workspace_id: Option<Uuid>,
     pub model: Option<String>,
     pub timeout_secs: Option<u64>,

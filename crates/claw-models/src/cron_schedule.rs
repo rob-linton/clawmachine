@@ -41,6 +41,8 @@ pub struct CronSchedule {
     pub prompt: String,
     #[serde(default, deserialize_with = "vec_string_or_empty")]
     pub skill_ids: Vec<String>,
+    #[serde(default, deserialize_with = "vec_string_or_empty")]
+    pub tool_ids: Vec<String>,
     #[serde(default = "default_cron_working_dir")]
     pub working_dir: PathBuf,
     pub model: Option<String>,
@@ -75,6 +77,8 @@ pub struct CreateCronRequest {
     pub prompt: String,
     #[serde(default, deserialize_with = "vec_string_or_empty")]
     pub skill_ids: Vec<String>,
+    #[serde(default, deserialize_with = "vec_string_or_empty")]
+    pub tool_ids: Vec<String>,
     pub working_dir: Option<PathBuf>,
     pub model: Option<String>,
     pub max_budget_usd: Option<f64>,

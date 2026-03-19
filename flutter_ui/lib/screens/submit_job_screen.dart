@@ -4,8 +4,10 @@ import 'package:go_router/go_router.dart';
 import '../main.dart';
 import '../models/job.dart';
 import '../models/skill.dart';
+import '../models/tool.dart';
 import '../models/workspace.dart';
 import '../widgets/skill_selector.dart';
+import '../widgets/tool_selector.dart';
 
 class SubmitJobScreen extends ConsumerStatefulWidget {
   const SubmitJobScreen({super.key});
@@ -26,7 +28,9 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
   String? _model;
   double _priority = 5;
   final _selectedSkills = <String>{};
+  final _selectedToolIds = <String>{};
   List<Skill> _availableSkills = [];
+  List<Tool> _availableTools = [];
   List<Workspace> _availableWorkspaces = [];
   List<dynamic> _availableTemplates = [];
   List<Job> _recentJobs = [];
@@ -66,6 +70,10 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
       setState(() => _availableSkills = skills);
     } catch (_) {}
     try {
+      final tools = await api.listTools();
+      setState(() => _availableTools = tools);
+    } catch (_) {}
+    try {
       final workspaces = await api.listWorkspaces();
       setState(() => _availableWorkspaces = workspaces);
     } catch (_) {}
@@ -89,6 +97,9 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
       final skillIds = List<String>.from(template['skill_ids'] ?? []);
       _selectedSkills.clear();
       _selectedSkills.addAll(skillIds);
+      final toolIds = List<String>.from(template['tool_ids'] ?? []);
+      _selectedToolIds.clear();
+      _selectedToolIds.addAll(toolIds);
       if (template['timeout_secs'] != null) {
         _timeoutController.text = template['timeout_secs'].toString();
       }
@@ -188,6 +199,7 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
       final resp = await ref.read(apiClientProvider).submitJob(
             prompt: prompt,
             skillIds: _selectedSkills.toList(),
+            toolIds: _selectedToolIds.toList(),
             model: _model,
             priority: _priority.round(),
             workspaceId: _selectedWorkspaceId,
@@ -319,6 +331,17 @@ class _SubmitJobScreenState extends ConsumerState<SubmitJobScreen> {
                       child: Text('No skills imported yet. Go to Skills to import.',
                           style: TextStyle(color: Colors.grey[500], fontSize: 13)),
                     ),
+
+                  // CLI Tools
+                  ToolSelector(
+                    availableTools: _availableTools,
+                    selectedIds: _selectedToolIds,
+                    onChanged: (ids) => setState(() {
+                      _selectedToolIds.clear();
+                      _selectedToolIds.addAll(ids);
+                    }),
+                  ),
+                  const SizedBox(height: 24),
 
                   // Model + Priority row
                   Row(

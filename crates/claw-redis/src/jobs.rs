@@ -14,6 +14,8 @@ pub enum RedisError {
     Serde(#[from] serde_json::Error),
     #[error("Job not found: {0}")]
     NotFound(Uuid),
+    #[error("{0}")]
+    Other(String),
 }
 
 /// Submit a new job: store hash + push to pending queue.
@@ -29,6 +31,7 @@ pub async fn submit_job(pool: &Pool, req: &CreateJobRequest, source: JobSource) 
         prompt: req.prompt.clone(),
         skill_ids: req.skill_ids.clone(),
         skill_tags: req.skill_tags.clone(),
+        tool_ids: req.tool_ids.clone(),
         working_dir: req.working_dir.clone().unwrap_or_else(|| ".".into()),
         model: req.model.clone(),
         max_budget_usd: req.max_budget_usd,

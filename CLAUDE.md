@@ -231,6 +231,36 @@ POST   /api/v1/job-templates/{id}/run     — run template immediately as a new 
 
 Templates are reusable job definitions (prompt, skills, workspace, model, etc.) that crons and pipeline steps can reference via `template_id`.
 
+## Tool Provisioning Endpoints
+
+```
+POST   /api/v1/tools              — create CLI tool definition
+GET    /api/v1/tools              — list all tools
+GET    /api/v1/tools/{id}         — get tool details
+PUT    /api/v1/tools/{id}         — update tool
+DELETE /api/v1/tools/{id}         — delete tool
+```
+
+Tools are CLI programs (az, aws, gh, etc.) installed into Docker sandbox images on demand. Each tool defines `install_commands` (Debian shell), `check_command` (verify presence), optional `auth_script` (login before job), and `env_vars` (credentials needed). Jobs, templates, workspaces, crons, and pipeline steps can reference tools via `tool_ids`.
+
+**Docker mode**: Tools are baked into derived images (`claw-tools:{hash}`) cached by content hash. First job builds the image; subsequent jobs reuse it instantly.
+
+**Local mode**: Tools are check-only (`check_command`). The worker verifies the tool is present but does not attempt installation.
+
+**Auth scripts**: When tools have `auth_script`, the Docker entrypoint is overridden to run auth commands before `claude -p`. The prompt is written to a script file to prevent shell injection.
+
+## Credential Endpoints
+
+```
+POST   /api/v1/credentials           — create credential (with encrypted values)
+GET    /api/v1/credentials           — list credentials (values masked as "***set***")
+GET    /api/v1/credentials/{id}      — get credential metadata (values masked)
+PUT    /api/v1/credentials/{id}      — update credential values
+DELETE /api/v1/credentials/{id}      — delete credential
+```
+
+Credentials store encrypted key-value pairs (e.g., `AWS_ACCESS_KEY_ID`, `AZURE_CLIENT_SECRET`) used by tool auth scripts. Encryption uses AES-256-GCM with the key from `CLAW_SECRET_KEY` env var. Values are never returned in API responses. Credentials are bound to tools via `credential_bindings` on the workspace (maps tool_id → credential_id). At job time, the worker decrypts bound credentials and injects them as container env vars.
+
 ## Upload Endpoints
 
 ZIP file upload for bulk importing files into workspaces and skills:
@@ -269,6 +299,7 @@ Every phase must be validated end-to-end before proceeding. After writing code, 
 | `CLAW_DATA_DIR` | `~/.claw-data` | Host path for workspace data bind mount |
 | `CLAW_HOST_DATA_DIR` | `~/.claw-data` | Host path for Docker-in-Docker volume mapping (set automatically from CLAW_DATA_DIR) |
 | `CLAW_HOST_CLAUDE_HOME` | `~/.claude` | Host path for Claude credentials (Docker-in-Docker volume mapping) |
+| `CLAW_SECRET_KEY` | (unset) | Encryption key for tool credentials (32-byte hex, base64, or passphrase). Required for credential storage |
 
 Most new configuration is stored in Redis (`claw:config:*`) and managed from the Settings screen. Env vars are only used as bootstrap fallbacks.
 
@@ -299,6 +330,16 @@ These requirements were discovered through production testing and must not be re
 6. **Worker runs as root** for Docker socket access. The sandbox container runs as the authenticated user (uid from `~/.claude/` ownership). `--dangerously-skip-permissions` is rejected when running as root.
 
 7. **`git config --global safe.directory '*'`** required in worker image. Worker is root but bare repos are owned by claw user — git refuses operations without this.
+
+## Tool Redis Keys
+
+```
+claw:tool:{id}                     — JSON Tool object
+claw:tools:index                   — Set of all tool IDs
+claw:tool-image:{hash}             — Derived Docker image tracking (tag, tool_ids, timestamps)
+claw:credential:{id}               — JSON Credential metadata (Phase 2)
+claw:credential:{id}:values        — Encrypted credential values (Phase 2)
+```
 
 ## Workspace Redis Keys
 

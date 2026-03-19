@@ -1,4 +1,4 @@
-use claw_models::{Job, Skill, Workspace};
+use claw_models::{Job, Skill, Tool, Workspace};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -59,6 +59,31 @@ pub async fn prepare_environment(
         deployed_skill_dirs,
         pre_existing_skill_dirs,
     })
+}
+
+/// Verify that all required tools are available on the local host.
+/// Check-only: does NOT attempt installation (install_commands targets Docker/Debian).
+pub async fn ensure_local_tools(tools: &[Tool]) -> Result<(), String> {
+    for tool in tools {
+        let status = tokio::process::Command::new("bash")
+            .arg("-c")
+            .arg(&tool.check_command)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .map_err(|e| format!("Failed to run check_command for '{}': {}", tool.name, e))?;
+
+        if !status.success() {
+            return Err(format!(
+                "Tool '{}' not found on host (check_command '{}' failed). \
+                 Install it manually or use Docker execution backend.",
+                tool.name, tool.check_command
+            ));
+        }
+        tracing::debug!(tool_id = %tool.id, "Local tool check passed");
+    }
+    Ok(())
 }
 
 /// Harvest new skills after execution.
@@ -157,6 +182,12 @@ pub async fn teardown_environment(env: &PreparedEnvironment) {
 
     if let Some(marker) = &env.marker_file {
         tokio::fs::remove_file(marker).await.ok();
+    }
+
+    // Clean up auth runner script if it was created
+    let runner_script = env.working_dir.join(".claw-run.sh");
+    if runner_script.exists() {
+        tokio::fs::remove_file(&runner_script).await.ok();
     }
 
     if env.is_temp {

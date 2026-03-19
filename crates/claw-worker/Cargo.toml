@@ -20,3 +20,5 @@ tokio-util = { workspace = true }
 chrono.workspace = true
 dirs = "6"
 users = "0.11"
+sha2 = "0.10"
+tempfile = "3"

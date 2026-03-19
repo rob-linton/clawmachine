@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use uuid::Uuid;
 
@@ -29,6 +30,11 @@ pub struct Workspace {
     pub path: Option<PathBuf>,
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub tool_ids: Vec<String>,
+    /// Maps tool_id → credential_id for injecting credentials at job time.
+    #[serde(default)]
+    pub credential_bindings: HashMap<String, String>,
     pub claude_md: Option<String>,
     #[serde(default)]
     pub persistence: WorkspacePersistence,
@@ -69,6 +75,10 @@ pub struct CreateWorkspaceRequest {
     pub path: Option<PathBuf>,
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub tool_ids: Vec<String>,
+    #[serde(default)]
+    pub credential_bindings: HashMap<String, String>,
     pub claude_md: Option<String>,
     #[serde(default)]
     pub persistence: Option<WorkspacePersistence>,

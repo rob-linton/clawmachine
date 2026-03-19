@@ -299,6 +299,8 @@ async fn update_workspace(
         description: req.description.unwrap_or_default(),
         path: existing.path, // IMMUTABLE
         skill_ids: req.skill_ids,
+        tool_ids: req.tool_ids,
+        credential_bindings: req.credential_bindings,
         claude_md: req.claude_md,
         persistence: existing.persistence, // IMMUTABLE
         remote_url: req.remote_url.or(existing.remote_url),
@@ -1171,6 +1173,8 @@ struct ForkRequest {
     #[serde(default)]
     skill_ids: Option<Vec<String>>,
     #[serde(default)]
+    tool_ids: Option<Vec<String>>,
+    #[serde(default)]
     claude_md: Option<Option<String>>,
     #[serde(default)]
     network_mode: Option<String>,
@@ -1232,6 +1236,8 @@ async fn fork_workspace(
         description: req.description,
         path: None,
         skill_ids: req.skill_ids.unwrap_or_else(|| parent.skill_ids.clone()),
+        tool_ids: req.tool_ids.unwrap_or_else(|| parent.tool_ids.clone()),
+        credential_bindings: parent.credential_bindings.clone(),
         claude_md: req.claude_md.unwrap_or_else(|| parent.claude_md.clone()),
         persistence: Some(persistence),
         remote_url: None, // Don't inherit remote_url

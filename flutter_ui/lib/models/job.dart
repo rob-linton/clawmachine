@@ -4,6 +4,7 @@ class Job {
   final String prompt;
   final List<String> skillIds;
   final List<String> skillTags;
+  final List<String> toolIds;
   final String workingDir;
   final String? model;
   final double? maxBudgetUsd;
@@ -33,6 +34,7 @@ class Job {
     required this.prompt,
     this.skillIds = const [],
     this.skillTags = const [],
+    this.toolIds = const [],
     this.workingDir = '.',
     this.model,
     this.maxBudgetUsd,
@@ -63,6 +65,7 @@ class Job {
         prompt: json['prompt'] ?? '',
         skillIds: List<String>.from(json['skill_ids'] ?? []),
         skillTags: List<String>.from(json['skill_tags'] ?? []),
+        toolIds: List<String>.from(json['tool_ids'] ?? []),
         workingDir: json['working_dir'] ?? '.',
         model: json['model'],
         maxBudgetUsd: (json['max_budget_usd'] as num?)?.toDouble(),

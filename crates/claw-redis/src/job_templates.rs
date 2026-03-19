@@ -17,6 +17,7 @@ pub async fn create_job_template(pool: &Pool, req: &CreateJobTemplateRequest) ->
         description: req.description.clone(),
         prompt: req.prompt.clone(),
         skill_ids: req.skill_ids.clone(),
+        tool_ids: req.tool_ids.clone(),
         workspace_id: req.workspace_id,
         model: req.model.clone(),
         timeout_secs: req.timeout_secs,

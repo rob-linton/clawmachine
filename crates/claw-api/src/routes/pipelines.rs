@@ -118,6 +118,7 @@ async fn run_pipeline(
         prompt: step.prompt.clone(),
         skill_ids: step.skill_ids.clone(),
         skill_tags: vec![],
+        tool_ids: step.tool_ids.clone(),
         working_dir: None,
         model: step.model.clone(),
         max_budget_usd: None,

@@ -18,6 +18,7 @@ pub async fn create_cron(pool: &Pool, req: &CreateCronRequest) -> Result<CronSch
         enabled: req.enabled,
         prompt: req.prompt.clone(),
         skill_ids: req.skill_ids.clone(),
+        tool_ids: req.tool_ids.clone(),
         working_dir: req.working_dir.clone().unwrap_or_else(|| ".".into()),
         model: req.model.clone(),
         max_budget_usd: req.max_budget_usd,

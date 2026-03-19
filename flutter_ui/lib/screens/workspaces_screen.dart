@@ -8,10 +8,12 @@ import 'package:flutter_markdown/flutter_markdown.dart';
 import '../main.dart';
 import '../models/file_tree_node.dart';
 import '../models/skill.dart';
+import '../models/tool.dart';
 import '../models/workspace.dart';
 import '../services/file_upload.dart';
 import '../widgets/file_tree.dart';
 import '../widgets/skill_selector.dart';
+import '../widgets/tool_selector.dart';
 
 class WorkspacesScreen extends ConsumerStatefulWidget {
   const WorkspacesScreen({super.key});
@@ -82,11 +84,14 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
     final memoryLimitCtrl = TextEditingController(text: '4g');
     final cpuLimitCtrl = TextEditingController(text: '2.0');
     final selectedSkills = <String>{};
+    final selectedToolIds = <String>{};
     String persistence = 'persistent';
     bool networkEnabled = true;
     bool showLegacyPath = false;
     List<Skill> skills = [];
+    List<Tool> tools = [];
     try { skills = await ref.read(apiClientProvider).listSkills(); } catch (_) {}
+    try { tools = await ref.read(apiClientProvider).listTools(); } catch (_) {}
     // Source: which workspace to fork from (null = empty)
     Workspace? sourceWorkspace;
     List<dynamic> sourceBranches = [];
@@ -319,6 +324,16 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                     }),
                   ),
                   const SizedBox(height: 12),
+                  ToolSelector(
+                    availableTools: tools,
+                    selectedIds: selectedToolIds,
+                    label: 'Default CLI Tools',
+                    onChanged: (ids) => setDialogState(() {
+                      selectedToolIds.clear();
+                      selectedToolIds.addAll(ids);
+                    }),
+                  ),
+                  const SizedBox(height: 12),
                   TextField(
                     controller: claudeMdCtrl,
                     decoration: const InputDecoration(
@@ -386,6 +401,8 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                     'claude_md': claudeMdCtrl.text.trim(),
                   if (selectedSkills.isNotEmpty)
                     'skill_ids': selectedSkills.toList(),
+                  if (selectedToolIds.isNotEmpty)
+                    'tool_ids': selectedToolIds.toList(),
                   'network_mode': networkEnabled ? 'bridge' : 'none',
                   if (memoryLimitCtrl.text.trim().isNotEmpty)
                     'memory_limit': memoryLimitCtrl.text.trim(),
@@ -726,6 +743,7 @@ class _WorkspaceDetailScreenState
         'description': _descCtrl.text.trim(),
         'claude_md': _claudeMdCtrl.text.isNotEmpty ? _claudeMdCtrl.text : null,
         'skill_ids': _workspace?.skillIds ?? [],
+        'tool_ids': _workspace?.toolIds ?? [],
       });
       if (mounted) {
         ScaffoldMessenger.of(context)

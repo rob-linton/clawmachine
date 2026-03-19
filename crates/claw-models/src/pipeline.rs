@@ -24,6 +24,8 @@ pub struct PipelineStep {
     pub prompt: String,
     #[serde(default)]
     pub skill_ids: Vec<String>,
+    #[serde(default)]
+    pub tool_ids: Vec<String>,
     pub model: Option<String>,
     pub timeout_secs: Option<u64>,
 }

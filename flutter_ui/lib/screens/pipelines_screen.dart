@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../main.dart';
 import '../models/skill.dart';
+import '../models/tool.dart';
 import '../widgets/skill_selector.dart';
+import '../widgets/tool_selector.dart';
 
 class PipelinesScreen extends ConsumerStatefulWidget {
   const PipelinesScreen({super.key});
@@ -49,14 +51,17 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
     List<dynamic> templates = [];
     List<dynamic> workspaces = [];
     List<Skill> skills = [];
+    List<Tool> tools = [];
     try { templates = await ref.read(apiClientProvider).listJobTemplates(); } catch (_) {}
     try {
       final ws = await ref.read(apiClientProvider).listWorkspaces();
       workspaces = ws.map((w) => {'id': w.id, 'name': w.name}).toList();
     } catch (_) {}
     try { skills = await ref.read(apiClientProvider).listSkills(); } catch (_) {}
+    try { tools = await ref.read(apiClientProvider).listTools(); } catch (_) {}
 
     final stepSkillSets = <Set<String>>[];
+    final stepToolSets = <Set<String>>[];
 
     void addStep() {
       steps.add({
@@ -67,6 +72,7 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
       stepModels.add(null);
       stepTemplateIds.add(null);
       stepSkillSets.add(<String>{});
+      stepToolSets.add(<String>{});
     }
 
     addStep();
@@ -129,7 +135,7 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                                   IconButton(
                                     icon: const Icon(Icons.delete, size: 18),
                                     onPressed: () =>
-                                        setDialogState(() { steps.removeAt(i); stepModels.removeAt(i); stepTemplateIds.removeAt(i); stepSkillSets.removeAt(i); }),
+                                        setDialogState(() { steps.removeAt(i); stepModels.removeAt(i); stepTemplateIds.removeAt(i); stepSkillSets.removeAt(i); stepToolSets.removeAt(i); }),
                                   ),
                               ],
                             ),
@@ -212,6 +218,15 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                                 stepSkillSets[i] = ids;
                               }),
                             ),
+                            const SizedBox(height: 8),
+                            ToolSelector(
+                              availableTools: tools,
+                              selectedIds: stepToolSets[i],
+                              label: 'Step Tools',
+                              onChanged: (ids) => setDialogState(() {
+                                stepToolSets[i] = ids;
+                              }),
+                            ),
                           ],
                         ),
                       ),
@@ -266,6 +281,8 @@ class _PipelinesScreenState extends ConsumerState<PipelinesScreen> {
                                 'timeout_secs': int.tryParse(entry.value['timeout']!.text.trim()),
                               if (stepSkillSets[entry.key].isNotEmpty)
                                 'skill_ids': stepSkillSets[entry.key].toList(),
+                              if (stepToolSets[entry.key].isNotEmpty)
+                                'tool_ids': stepToolSets[entry.key].toList(),
                             })
                         .toList(),
                   });

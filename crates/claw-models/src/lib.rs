@@ -1,13 +1,17 @@
 pub mod job;
 pub mod skill;
+pub mod tool;
 pub mod events;
 pub mod cron_schedule;
 pub mod workspace;
 pub mod pipeline;
 pub mod job_template;
+pub mod credential;
 
 pub use job::*;
 pub use skill::*;
+pub use tool::*;
+pub use credential::*;
 pub use events::*;
 pub use cron_schedule::*;
 pub use workspace::*;
