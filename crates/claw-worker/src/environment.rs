@@ -268,6 +268,28 @@ async fn resolve_working_dir(job: &Job, workspace: Option<&Workspace>, pipeline_
                     .ok();
             }
 
+            // Fix ownership: worker runs as root but sandbox runs as the
+            // .claude dir owner (typically uid 1000). Chown the cloned
+            // workspace so the sandbox container can write to it.
+            if status.success() {
+                let claude_dir = dirs::home_dir()
+                    .unwrap_or_else(|| "/home/claw".into())
+                    .join(".claude");
+                if let Ok(meta) = std::fs::metadata(&claude_dir) {
+                    use std::os::unix::fs::MetadataExt;
+                    let uid = meta.uid();
+                    let gid = meta.gid();
+                    if uid != 0 {
+                        std::process::Command::new("chown")
+                            .args(["-R", &format!("{}:{}", uid, gid), &tmp_str])
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .status()
+                            .ok();
+                    }
+                }
+            }
+
             Ok::<_, std::io::Error>(status)
         })
         .await
