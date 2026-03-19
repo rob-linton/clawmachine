@@ -104,7 +104,7 @@ ENVEOF
 green "  .env written"
 
 # --- Write Caddyfile ---
-printf 'https://{$CLAW_HOST_IP}:443 {\n\ttls internal\n\treverse_proxy api:8080\n}\n\nhttp://{$CLAW_HOST_IP}:80 {\n\tredir https://{$CLAW_HOST_IP}{uri} permanent\n}\n' > Caddyfile
+printf 'https://{$CLAW_HOST_IP}:443 {\n\ttls internal\n\treverse_proxy api:8080\n}\n\nhttp://{$CLAW_HOST_IP}:80 {\n\treverse_proxy api:8080\n}\n' > Caddyfile
 green "  Caddyfile written"
 
 # --- Write docker-compose.yml ---
