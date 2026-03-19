@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:flutter_markdown/flutter_markdown.dart';
 import '../main.dart';
 import '../models/file_tree_node.dart';
 import '../models/skill.dart';
@@ -1712,9 +1713,12 @@ class _WorkspaceDetailScreenState
             width: 700,
             height: 500,
             child: showPreview
-                ? SingleChildScrollView(
-                    child: SelectableText(contentCtrl.text,
-                      style: const TextStyle(fontSize: 14, height: 1.5)),
+                ? Markdown(
+                    data: contentCtrl.text,
+                    selectable: true,
+                    onTapLink: (text, href, title) {
+                      if (href != null) launchUrl(Uri.parse(href));
+                    },
                   )
                 : TextField(
                     controller: contentCtrl,
