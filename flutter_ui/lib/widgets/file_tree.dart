@@ -10,6 +10,7 @@ class FileTree extends StatefulWidget {
   final String? selectedFolderPath;
   final void Function(String? folderPath) onFolderSelected;
   final void Function(String path)? onDownload;
+  final void Function(String folderPath)? onDownloadFolder;
 
   const FileTree({
     super.key,
@@ -21,6 +22,7 @@ class FileTree extends StatefulWidget {
     this.selectedFolderPath,
     required this.onFolderSelected,
     this.onDownload,
+    this.onDownloadFolder,
   });
 
   @override
@@ -164,6 +166,8 @@ class _FileTreeState extends State<FileTree> {
       itemBuilder: (_) => [
         const PopupMenuItem(value: 'new_file', child: Text('New File Here')),
         const PopupMenuItem(value: 'upload', child: Text('Upload File Here')),
+        if (widget.onDownloadFolder != null)
+          const PopupMenuItem(value: 'download_zip', child: Text('Download as ZIP')),
         const PopupMenuItem(
           value: 'delete',
           child: Text('Delete Folder', style: TextStyle(color: Colors.red)),
@@ -175,6 +179,8 @@ class _FileTreeState extends State<FileTree> {
             widget.onNewFileInFolder(node.fullPath);
           case 'upload':
             widget.onUploadToFolder(node.fullPath);
+          case 'download_zip':
+            widget.onDownloadFolder?.call(node.fullPath);
           case 'delete':
             widget.onDelete(node.fullPath, true);
         }

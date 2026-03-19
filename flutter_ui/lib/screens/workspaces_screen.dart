@@ -1053,6 +1053,7 @@ class _WorkspaceDetailScreenState
                       onUploadToFolder: (folder) => _uploadFileToFolder(folder),
                       onNewFileInFolder: (folder) => _showNewFileDialog(initialPath: folder),
                       onDownload: (path) => _downloadFile(path),
+                      onDownloadFolder: (folder) => _downloadFolder(folder),
                     ),
                   ),
                 ),
@@ -1296,6 +1297,12 @@ class _WorkspaceDetailScreenState
   void _downloadFile(String path) {
     final api = ref.read(apiClientProvider);
     final url = api.fileDownloadUrl(widget.workspaceId, path, download: true);
+    launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+  }
+
+  void _downloadFolder(String folderPath) {
+    final api = ref.read(apiClientProvider);
+    final url = api.workspaceDownloadUrl(widget.workspaceId, subpath: folderPath);
     launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
   }
 
