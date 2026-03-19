@@ -193,16 +193,29 @@ fn translate_to_host_path(container_path: &Path) -> String {
 
 /// Translate credential mount paths to host paths for Docker-in-Docker.
 fn translate_credential_host_path(host_path: &str) -> String {
-    // CLAW_HOST_CLAUDE_HOME overrides ~/.claude paths
+    let expanded = expand_tilde(host_path);
+
+    // CLAW_HOST_CLAUDE_HOME overrides ~/.claude and ~/.claude.json paths
     if let Ok(host_claude) = std::env::var("CLAW_HOST_CLAUDE_HOME") {
         let home = dirs::home_dir().unwrap_or_else(|| "/home/claw".into());
         let local_claude = home.join(".claude").to_string_lossy().to_string();
-        let expanded = expand_tilde(host_path);
+
+        // ~/.claude directory and contents
         if expanded == local_claude || expanded.starts_with(&format!("{}/", local_claude)) {
             return expanded.replace(&local_claude, &host_claude);
         }
+
+        // ~/.claude.json — derive host path from host claude home's parent dir
+        let local_claude_json = home.join(".claude.json").to_string_lossy().to_string();
+        if expanded == local_claude_json {
+            let host_parent = std::path::Path::new(&host_claude).parent()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| host_claude.clone());
+            return format!("{}/.claude.json", host_parent);
+        }
     }
-    expand_tilde(host_path)
+
+    expanded
 }
 
 /// Execute a job inside a Docker container.
@@ -264,7 +277,6 @@ pub async fn docker_execute_job(
     let mut args: Vec<String> = vec![
         "run".into(),
         "--rm".into(), // auto-remove on exit
-        "-i".into(), // keep stdin open (prevents Node.js from exiting immediately)
         "--name".into(),
         container_name.clone(),
         "--user".into(),
