@@ -63,12 +63,13 @@ async fn main() {
     // Crash recovery: clean up stale job/pipeline dirs from previous runs
     environment::crash_recovery().await;
 
-    // If Docker backend is configured, verify Docker is available and sandbox image exists
-    let backend_str = claw_redis::get_config(&pool, "execution_backend")
-        .await
-        .unwrap_or_else(|_| {
-            std::env::var("CLAW_EXECUTION_BACKEND").unwrap_or_else(|_| "docker".into())
-        });
+    // Execution backend: env var takes priority (set by docker-compose), then Redis config
+    let backend_str = match std::env::var("CLAW_EXECUTION_BACKEND") {
+        Ok(v) if !v.is_empty() => v,
+        _ => claw_redis::get_config(&pool, "execution_backend")
+            .await
+            .unwrap_or_else(|_| "docker".into()),
+    };
     if backend_str == "docker" {
         // Check Docker socket is accessible
         if let Err(e) = docker::check_docker_socket().await {
@@ -195,12 +196,14 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
             break;
         }
 
-        // Re-read execution backend config each iteration (so Settings changes take effect)
-        let backend_str = claw_redis::get_config(&pool, "execution_backend")
-            .await
-            .unwrap_or_else(|_| {
-                std::env::var("CLAW_EXECUTION_BACKEND").unwrap_or_else(|_| "local".into())
-            });
+        // Re-read execution backend each iteration. Env var (from compose) takes priority,
+        // then Redis config (from Settings screen), then default.
+        let backend_str = match std::env::var("CLAW_EXECUTION_BACKEND") {
+            Ok(v) if !v.is_empty() => v,
+            _ => claw_redis::get_config(&pool, "execution_backend")
+                .await
+                .unwrap_or_else(|_| "local".into()),
+        };
         let backend = executor::ExecutionBackend::from_config_str(&backend_str);
         let docker_config = if backend == executor::ExecutionBackend::Docker {
             let all_config = claw_redis::get_all_config(&pool).await.unwrap_or_default();
