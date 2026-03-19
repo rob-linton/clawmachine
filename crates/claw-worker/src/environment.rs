@@ -35,6 +35,11 @@ pub async fn prepare_environment(
     pipeline_checkouts: &PipelineCheckouts,
 ) -> Result<PreparedEnvironment, String> {
     let (working_dir, is_temp, is_pipeline_reuse) = resolve_working_dir(job, workspace, pipeline_checkouts).await?;
+
+    // Ensure workspace is writable by the sandbox user (not root).
+    // Worker runs as root but sandbox runs as the .claude dir owner.
+    ensure_workspace_ownership(&working_dir).await;
+
     let pre_existing_skill_dirs = snapshot_existing_skills(&working_dir).await;
     let (claude_md_backup, original_claude_md, marker_file) =
         inject_claude_md(job.id, &working_dir, workspace).await?;
@@ -198,6 +203,35 @@ pub async fn crash_recovery() {
 
 // --- Internal helpers ---
 
+/// Ensure workspace directory is owned by the sandbox user (not root).
+/// This is needed because the worker runs as root but the sandbox runs
+/// as the .claude dir owner (uid 1000). Without this, sandbox containers
+/// can't write to the workspace.
+async fn ensure_workspace_ownership(working_dir: &std::path::Path) {
+    if users::get_current_uid() != 0 {
+        return; // Not root, nothing to do
+    }
+    let claude_dir = dirs::home_dir()
+        .unwrap_or_else(|| "/home/claw".into())
+        .join(".claude");
+    if let Ok(meta) = std::fs::metadata(&claude_dir) {
+        use std::os::unix::fs::MetadataExt;
+        let uid = meta.uid();
+        let gid = meta.gid();
+        if uid != 0 {
+            let dir = working_dir.to_string_lossy().to_string();
+            tokio::task::spawn_blocking(move || {
+                std::process::Command::new("chown")
+                    .args(["-R", &format!("{}:{}", uid, gid), &dir])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .ok();
+            }).await.ok();
+        }
+    }
+}
+
 async fn resolve_working_dir(job: &Job, workspace: Option<&Workspace>, pipeline_checkouts: &PipelineCheckouts) -> Result<(PathBuf, bool, bool), String> {
     // Pipeline checkout reuse: if this job is part of a pipeline, check for existing checkout
     if let Some(run_id) = job.pipeline_run_id {
@@ -268,27 +302,8 @@ async fn resolve_working_dir(job: &Job, workspace: Option<&Workspace>, pipeline_
                     .ok();
             }
 
-            // Fix ownership: worker runs as root but sandbox runs as the
-            // .claude dir owner (typically uid 1000). Chown the cloned
-            // workspace so the sandbox container can write to it.
-            if status.success() {
-                let claude_dir = dirs::home_dir()
-                    .unwrap_or_else(|| "/home/claw".into())
-                    .join(".claude");
-                if let Ok(meta) = std::fs::metadata(&claude_dir) {
-                    use std::os::unix::fs::MetadataExt;
-                    let uid = meta.uid();
-                    let gid = meta.gid();
-                    if uid != 0 {
-                        std::process::Command::new("chown")
-                            .args(["-R", &format!("{}:{}", uid, gid), &tmp_str])
-                            .stdout(std::process::Stdio::null())
-                            .stderr(std::process::Stdio::null())
-                            .status()
-                            .ok();
-                    }
-                }
-            }
+            // Ownership is fixed centrally by ensure_workspace_ownership()
+            // after resolve_working_dir() returns.
 
             Ok::<_, std::io::Error>(status)
         })
