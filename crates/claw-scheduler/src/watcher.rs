@@ -34,9 +34,10 @@ pub async fn run(pool: Pool, dir: &str, shutdown: Arc<AtomicBool>) {
     })
     .expect("Failed to create file watcher");
 
-    watcher
-        .watch(Path::new(dir), RecursiveMode::NonRecursive)
-        .expect("Failed to watch directory");
+    if let Err(e) = watcher.watch(Path::new(dir), RecursiveMode::NonRecursive) {
+        tracing::warn!(error = %e, dir, "Failed to watch directory — file watcher disabled. Cron engine will still work.");
+        return;
+    }
 
     // Also scan for existing .job files on startup
     if let Ok(entries) = std::fs::read_dir(dir) {
