@@ -37,16 +37,8 @@ if ! docker info &>/dev/null 2>&1; then
 fi
 DC="$DOCKER compose"
 
-# Check Node.js (needed for Claude Code CLI install, but not if already installed)
-if ! command -v claude &>/dev/null; then
-  NODE_VERSION=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
-  if [ "$NODE_VERSION" -lt 18 ] 2>/dev/null; then
-    yellow "  Node.js 18+ required to install Claude Code CLI."
-    yellow "  Install Node.js 20 (https://nodejs.org/) and re-run."
-    yellow "  Or install Claude Code separately: npm install -g @anthropic-ai/claude-code"
-    exit 1
-  fi
-fi
+# Node.js check is only needed if Claude CLI needs to be installed on the host.
+# The worker Docker image has its own Claude CLI, so host install is optional.
 
 # --- Create install directory ---
 mkdir -p "$INSTALL_DIR"
@@ -214,43 +206,59 @@ volumes:
 COMPOSEEOF
 green "  docker-compose.yml written"
 
-# --- Authenticate Claude Code ---
+# --- Check Claude Code auth ---
 echo ""
 echo "==========================================="
-echo "  Step: Authenticate Claude Code"
+echo "  Step: Claude Code Authentication"
 echo "==========================================="
 echo ""
-echo "  The worker needs Claude Code logged in on this machine."
-echo "  On Linux, auth tokens are stored in ~/.claude/"
+echo "  The worker needs Claude Code authenticated on this machine."
+echo "  Auth tokens are stored in ~/.claude/ (mounted into containers)."
 echo ""
 
-if ! command -v claude &>/dev/null; then
-  yellow "  Installing Claude Code CLI..."
-  npm install -g @anthropic-ai/claude-code 2>&1 | tail -1
-fi
-
-if [ ! -d "$HOME/.claude" ] || [ ! -f "$HOME/.claude.json" ]; then
-  echo "  Claude Code not authenticated. Launching login..."
-  echo ""
-  read -p "  Press Enter to start Claude login..."
-  claude
-  echo ""
+# Find claude binary (could be on PATH, in npm global, or in VSCode extension)
+CLAUDE_BIN=""
+if command -v claude &>/dev/null; then
+  CLAUDE_BIN="claude"
 else
-  # Quick check if auth works
-  if claude --version &>/dev/null; then
-    green "  Claude Code authenticated ($(claude --version 2>/dev/null || echo 'installed'))"
-  else
-    yellow "  Claude Code installed but may need re-authentication."
-    read -p "  Press Enter to start Claude login (or Ctrl+C to skip)..."
-    claude
-  fi
+  # Check common locations
+  for loc in \
+    "$HOME/.vscode/extensions/"anthropic.claude-code-*/resources/native-binary/claude \
+    "$HOME/.vscode-server/extensions/"anthropic.claude-code-*/resources/native-binary/claude \
+    /usr/local/bin/claude /usr/bin/claude; do
+    if [ -x "$loc" ] 2>/dev/null; then
+      CLAUDE_BIN="$loc"
+      break
+    fi
+  done
 fi
 
 if [ -d "$HOME/.claude" ]; then
-  green "  ~/.claude/ exists — auth will be mounted into containers"
+  green "  ~/.claude/ exists — auth tokens found"
+  if [ -n "$CLAUDE_BIN" ]; then
+    green "  Claude CLI: $CLAUDE_BIN"
+  fi
 else
-  red "  WARNING: ~/.claude/ not found. Worker will fail."
-  red "  Run 'claude' manually to log in, then restart the worker."
+  yellow "  ~/.claude/ not found — Claude Code needs to be authenticated."
+  echo ""
+  if [ -n "$CLAUDE_BIN" ]; then
+    echo "  Found Claude at: $CLAUDE_BIN"
+    read -p "  Press Enter to launch Claude for login..."
+    "$CLAUDE_BIN"
+  else
+    echo "  Claude CLI not found on this machine."
+    echo "  Options to authenticate:"
+    echo "    1. Install Claude Code: npm install -g @anthropic-ai/claude-code && claude"
+    echo "    2. Use Claude Code in VS Code/Cursor (it creates ~/.claude/ automatically)"
+    echo "    3. Copy ~/.claude/ from another authenticated machine"
+    echo ""
+    read -p "  Press Enter once ~/.claude/ exists (or Ctrl+C to abort)..."
+  fi
+  echo ""
+  if [ ! -d "$HOME/.claude" ]; then
+    red "  WARNING: ~/.claude/ still not found. Worker auth will fail."
+    red "  The worker will start but jobs will fail until authenticated."
+  fi
 fi
 
 # --- Sandbox image ---
