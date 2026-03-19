@@ -134,9 +134,15 @@ async fn oauth_login(
 
     tracing::info!(request_id, "OAuth login request published");
 
-    // Return SSE stream subscribing to progress channel
-    let stream = oauth_login_stream(state.redis_url, request_id);
-    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+    // Return immediately with request_id. Client polls /auth/oauth-status for updates.
+    (
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({
+            "request_id": request_id,
+            "message": "OAuth login initiated. Check your email for a magic link.",
+        })),
+    )
+        .into_response()
 }
 
 fn oauth_login_stream(

@@ -150,21 +150,32 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     try {
       await ref.read(apiClientProvider).triggerOAuthLogin(
             email: email,
-            password: '', // Anthropic uses magic link, no password needed
+            password: '',
           );
-      // The login is async (SSE stream). For now, just show a message
-      // and refresh status after a delay.
-      setState(() => _oauthLoginMessage = 'Login request sent. Check worker logs for progress.');
-      // Wait a bit then refresh status
-      await Future.delayed(const Duration(seconds: 10));
-      final newStatus = await ref.read(apiClientProvider).getOAuthStatus()
-          .catchError((_) => <String, dynamic>{'status': 'unknown'});
+      setState(() => _oauthLoginMessage = 'Magic link sent! Check your email and click the login link.');
+
+      // Poll OAuth status every 5 seconds for up to 5 minutes
+      final api = ref.read(apiClientProvider);
+      for (int i = 0; i < 60; i++) {
+        await Future.delayed(const Duration(seconds: 5));
+        if (!mounted) break;
+        final status = await api.getOAuthStatus()
+            .catchError((_) => <String, dynamic>{'status': 'unknown'});
+        if (status['status'] == 'valid') {
+          setState(() {
+            _oauthStatus = status;
+            _oauthLoginInProgress = false;
+            _oauthLoginMessage = 'OAuth login successful!';
+          });
+          return;
+        }
+        // Update UI with latest status
+        setState(() => _oauthStatus = status);
+      }
+
       setState(() {
-        _oauthStatus = newStatus;
         _oauthLoginInProgress = false;
-        _oauthLoginMessage = newStatus['status'] == 'valid'
-            ? 'OAuth login successful!'
-            : 'Login may still be in progress. Refresh to check.';
+        _oauthLoginMessage = 'Timed out. Did you click the email link?';
       });
     } catch (e) {
       setState(() {
