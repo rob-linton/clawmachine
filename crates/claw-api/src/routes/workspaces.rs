@@ -141,9 +141,18 @@ async fn create_workspace(
                 let parent = claw_redis::get_workspace(&state.pool, parent_id).await.ok().flatten();
                 let is_snapshot = ws.persistence == WorkspacePersistence::Snapshot;
 
+                if parent.is_none() {
+                    tracing::warn!(parent_id = %parent_id, "Parent workspace not found, creating empty workspace instead");
+                    let ws_id = ws.id;
+                    let claude_md = ws.claude_md.clone();
+                    if let Err(e) = init_bare_repo(ws_id, claude_md.as_deref(), is_snapshot).await {
+                        tracing::warn!(error = %e, "Failed to init bare repo for orphaned fork");
+                    }
+                } else {
+
                 // Resolve the parent ref to a commit hash
                 let git_ref = ws.parent_ref.as_deref().unwrap_or("HEAD").to_string();
-                let parent_repo = bare_repo_path(&parent.as_ref().unwrap_or(&ws));
+                let parent_repo = bare_repo_path(parent.as_ref().unwrap());
                 let resolved = tokio::task::spawn_blocking({
                     let git_ref = git_ref.clone();
                     let parent_repo = parent_repo.clone();
@@ -177,6 +186,7 @@ async fn create_workspace(
                         }
                     }
                 }
+                } // end of parent.is_some() else block
             } else {
                 // New-style: create bare repo + checkout
                 let ws_id = ws.id;

@@ -887,7 +887,7 @@ class _WorkspaceDetailScreenState
                   TabBar(
                     isScrollable: true,
                     tabs: [
-                      const Tab(text: 'Timeline'),
+                      Tab(text: _eventsTotal > 0 ? 'Timeline ($_eventsTotal)' : 'Timeline'),
                       if (ws.persistence != 'ephemeral')
                         const Tab(text: 'Git Commits'),
                     ],
