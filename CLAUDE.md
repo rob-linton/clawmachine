@@ -277,3 +277,13 @@ Jobs execute inside sandbox containers (`claw-sandbox:latest`) by default. Each 
 **Per-workspace overrides**: `base_image`, `memory_limit`, `cpu_limit`, `network_mode` on the workspace override global Docker config.
 
 **Docker-in-Docker**: When the worker runs in a container, job dirs are at `~/.claw/jobs/{id}` (inside the shared bind mount). `CLAW_HOST_DATA_DIR` maps container paths to host paths for sandbox container volume mounts.
+
+## Workspace Redis Keys
+
+```
+claw:workspace:{uuid}              — JSON workspace object
+claw:workspaces:index              — Set of all workspace UUIDs
+claw:workspace:{uuid}:lock         — Exclusive lock (job_id string, TTL)
+claw:workspace:{uuid}:events       — List of JSON WorkspaceEvent entries (newest first, capped at 1000)
+claw:workspace:{uuid}:children     — Set of child workspace UUIDs (for lineage tracking)
+```

@@ -122,6 +122,35 @@ pub async fn ensure_image(image: &str) -> Result<(), String> {
     ))
 }
 
+/// Per-job image availability check with 60s cache.
+/// Avoids running `docker image inspect` on every single job.
+static IMAGE_CHECK_CACHE: std::sync::OnceLock<tokio::sync::Mutex<(String, std::time::Instant)>> =
+    std::sync::OnceLock::new();
+
+pub async fn check_image_cached(image: &str) -> Result<(), String> {
+    let cache = IMAGE_CHECK_CACHE.get_or_init(|| {
+        tokio::sync::Mutex::new((String::new(), std::time::Instant::now() - std::time::Duration::from_secs(120)))
+    });
+    let mut guard = cache.lock().await;
+    if guard.0 == image && guard.1.elapsed().as_secs() < 60 {
+        return Ok(()); // Cache hit
+    }
+    // Cache miss — do a quick check
+    let check = Command::new("docker")
+        .args(["image", "inspect", image])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .await;
+    match check {
+        Ok(status) if status.success() => {
+            *guard = (image.to_string(), std::time::Instant::now());
+            Ok(())
+        }
+        _ => Err(format!("Sandbox image '{}' not available. Build with: POST /api/v1/docker/images/build", image)),
+    }
+}
+
 /// Check that the Docker socket is accessible.
 pub async fn check_docker_socket() -> Result<(), String> {
     let output = Command::new("docker")

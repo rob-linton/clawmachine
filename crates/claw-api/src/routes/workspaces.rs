@@ -510,7 +510,11 @@ async fn write_file(
     }
 
     match tokio::fs::write(&resolved, &req.content).await {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Ok(()) => {
+            emit_event(&state.pool, id, WorkspaceEventType::FileModified, None,
+                &format!("File written: {}", file_path)).await;
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }
@@ -541,12 +545,20 @@ async fn delete_file(
 
     if resolved.is_dir() {
         match tokio::fs::remove_dir_all(&resolved).await {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Ok(()) => {
+                emit_event(&state.pool, id, WorkspaceEventType::FileModified, None,
+                    &format!("Folder deleted: {}", file_path)).await;
+                StatusCode::NO_CONTENT.into_response()
+            }
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
         }
     } else {
         match tokio::fs::remove_file(&resolved).await {
-            Ok(()) => StatusCode::NO_CONTENT.into_response(),
+            Ok(()) => {
+                emit_event(&state.pool, id, WorkspaceEventType::FileModified, None,
+                    &format!("File deleted: {}", file_path)).await;
+                StatusCode::NO_CONTENT.into_response()
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND.into_response(),
             Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
         }
@@ -820,7 +832,12 @@ async fn revert_commit(
     }).await.unwrap_or(Err("Task failed".into()));
 
     match result {
-        Ok(()) => Json(serde_json::json!({"reverted": hash})).into_response(),
+        Ok(()) => {
+            let short = if hash.len() >= 7 { &hash[..7] } else { &hash };
+            emit_event(&state.pool, id, WorkspaceEventType::Reverted, Some(&hash),
+                &format!("Reverted commit {}", short)).await;
+            Json(serde_json::json!({"reverted": hash})).into_response()
+        }
         Err(e) => (StatusCode::CONFLICT, Json(serde_json::json!({"error": format!("Revert failed: {e}")}))).into_response(),
     }
 }
@@ -880,7 +897,11 @@ async fn promote_snapshot(
     }).await.unwrap_or(Err("Task failed".into()));
 
     match result {
-        Ok(()) => Json(serde_json::json!({"promoted": query.git_ref, "tag": "claw/base"})).into_response(),
+        Ok(()) => {
+            emit_event(&state.pool, id, WorkspaceEventType::SnapshotPromoted, Some(&query.git_ref),
+                &format!("Promoted {} to claw/base", query.git_ref)).await;
+            Json(serde_json::json!({"promoted": query.git_ref, "tag": "claw/base"})).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("Promote failed: {e}")}))).into_response(),
     }
 }

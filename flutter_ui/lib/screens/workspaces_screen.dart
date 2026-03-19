@@ -77,11 +77,18 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
     final remoteUrlCtrl = TextEditingController();
     final baseImageCtrl = TextEditingController();
     final claudeMdCtrl = TextEditingController();
+    final memoryLimitCtrl = TextEditingController(text: '4g');
+    final cpuLimitCtrl = TextEditingController(text: '2.0');
     final selectedSkills = <String>{};
     String persistence = 'persistent';
+    bool networkEnabled = true;
     bool showLegacyPath = false;
     List<Skill> skills = [];
     try { skills = await ref.read(apiClientProvider).listSkills(); } catch (_) {}
+    // Source: which workspace to fork from (null = empty)
+    Workspace? sourceWorkspace;
+    List<dynamic> sourceBranches = [];
+    String? selectedBranch;
     String? errorText;
 
     final saved = await showDialog<bool>(
@@ -96,6 +103,84 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // Source selector: Empty or From Workspace
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Source', style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Semantics(
+                          label: 'Source workspace selector',
+                          child: DropdownButtonFormField<String?>(
+                            initialValue: sourceWorkspace?.id,
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              hintText: 'Empty (new workspace)',
+                            ),
+                            items: [
+                              const DropdownMenuItem<String?>(value: null, child: Text('Empty (new workspace)')),
+                              ..._workspaces.where((w) => !w.isLegacy).map((w) =>
+                                DropdownMenuItem(value: w.id, child: Text('From: ${w.name}'))),
+                            ],
+                            onChanged: (val) async {
+                              if (val == null) {
+                                setDialogState(() {
+                                  sourceWorkspace = null;
+                                  sourceBranches = [];
+                                  selectedBranch = null;
+                                });
+                              } else {
+                                final ws = _workspaces.firstWhere((w) => w.id == val);
+                                List<dynamic> branches = [];
+                                try {
+                                  branches = await ref.read(apiClientProvider).listWorkspaceBranches(val);
+                                } catch (_) {}
+                                setDialogState(() {
+                                  sourceWorkspace = ws;
+                                  sourceBranches = branches;
+                                  selectedBranch = null;
+                                  // Pre-fill from parent
+                                  if (nameCtrl.text.isEmpty) nameCtrl.text = '${ws.name} (fork)';
+                                  if (descCtrl.text.isEmpty) descCtrl.text = ws.description;
+                                  if (ws.claudeMd != null && claudeMdCtrl.text.isEmpty) claudeMdCtrl.text = ws.claudeMd!;
+                                  if (ws.memoryLimit != null) memoryLimitCtrl.text = ws.memoryLimit!;
+                                  if (ws.cpuLimit != null) cpuLimitCtrl.text = ws.cpuLimit.toString();
+                                  networkEnabled = ws.networkMode != 'none';
+                                });
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+                      if (sourceWorkspace != null && sourceBranches.isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        SizedBox(
+                          width: 180,
+                          child: DropdownButtonFormField<String?>(
+                            initialValue: selectedBranch,
+                            decoration: const InputDecoration(
+                              border: OutlineInputBorder(),
+                              contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              hintText: 'Latest (HEAD)',
+                            ),
+                            items: [
+                              const DropdownMenuItem<String?>(value: null, child: Text('Latest (HEAD)')),
+                              ...sourceBranches.map((b) {
+                                final name = b['name'] ?? '';
+                                return DropdownMenuItem(value: name as String, child: Text(name, overflow: TextOverflow.ellipsis));
+                              }),
+                            ],
+                            onChanged: (val) => setDialogState(() => selectedBranch = val),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 12),
                   TextField(
                     controller: nameCtrl,
                     decoration: const InputDecoration(labelText: 'Name'),
@@ -133,15 +218,87 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                             : 'Fresh clone from a base tag. Optionally promote results.',
                     style: TextStyle(fontSize: 12, color: Colors.grey[500]),
                   ),
-                  const SizedBox(height: 12),
-                  TextField(
-                    controller: remoteUrlCtrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Remote URL (optional)',
-                      helperText: 'Git repo to clone as workspace base (e.g. https://github.com/org/repo.git)',
-                    ),
+                  const SizedBox(height: 16),
+                  // Docker isolation section
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text('Docker Isolation', style: TextStyle(fontSize: 12, color: Colors.grey[400])),
+                  ),
+                  const SizedBox(height: 4),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Semantics(
+                          label: 'Network access ${networkEnabled ? "enabled" : "disabled"}',
+                          child: SwitchListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            title: const Text('Network access', style: TextStyle(fontSize: 13)),
+                            subtitle: Text(
+                              networkEnabled
+                                  ? 'Bridge mode — full network access'
+                                  : 'No network — Claude Code cannot call API',
+                              style: TextStyle(fontSize: 11, color: networkEnabled ? Colors.green : Colors.red),
+                            ),
+                            value: networkEnabled,
+                            onChanged: (v) {
+                              if (!v) {
+                                showDialog(
+                                  context: ctx,
+                                  builder: (c) => AlertDialog(
+                                    title: const Text('Warning'),
+                                    content: const Text('Claude Code requires network access to call the Anthropic API. Disabling network will cause ALL jobs to fail.\n\nOnly disable for custom non-Claude sandbox images.'),
+                                    actions: [
+                                      TextButton(onPressed: () => Navigator.pop(c), child: const Text('Keep enabled')),
+                                      TextButton(onPressed: () { setDialogState(() => networkEnabled = false); Navigator.pop(c); }, child: const Text('Disable anyway')),
+                                    ],
+                                  ),
+                                );
+                              } else {
+                                setDialogState(() => networkEnabled = true);
+                              }
+                            },
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: memoryLimitCtrl,
+                          decoration: const InputDecoration(
+                            labelText: 'Memory limit',
+                            helperText: 'e.g. 4g, 8g, 16g',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextField(
+                          controller: cpuLimitCtrl,
+                          decoration: const InputDecoration(
+                            labelText: 'CPU limit',
+                            helperText: 'e.g. 1.0, 2.0, 4.0',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                   const SizedBox(height: 12),
+                  if (sourceWorkspace == null) ...[
+                    TextField(
+                      controller: remoteUrlCtrl,
+                      decoration: const InputDecoration(
+                        labelText: 'Remote URL (optional)',
+                        helperText: 'Git repo to clone as workspace base (e.g. https://github.com/org/repo.git)',
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                  ],
                   TextField(
                     controller: baseImageCtrl,
                     decoration: const InputDecoration(
@@ -171,25 +328,27 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                   ),
                   const SizedBox(height: 8),
                   // Legacy path toggle
-                  InkWell(
-                    onTap: () => setDialogState(() => showLegacyPath = !showLegacyPath),
-                    child: Row(
-                      children: [
-                        Icon(showLegacyPath ? Icons.expand_less : Icons.expand_more, size: 16),
-                        const SizedBox(width: 4),
-                        Text('Legacy mode (explicit path)', style: TextStyle(fontSize: 12, color: Colors.grey[500])),
-                      ],
-                    ),
-                  ),
-                  if (showLegacyPath) ...[
-                    const SizedBox(height: 8),
-                    TextField(
-                      controller: pathCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Path',
-                        helperText: 'Sets a fixed disk path instead of using git repos.',
+                  if (sourceWorkspace == null) ...[
+                    InkWell(
+                      onTap: () => setDialogState(() => showLegacyPath = !showLegacyPath),
+                      child: Row(
+                        children: [
+                          Icon(showLegacyPath ? Icons.expand_less : Icons.expand_more, size: 16),
+                          const SizedBox(width: 4),
+                          Text('Legacy mode (explicit path)', style: TextStyle(fontSize: 12, color: Colors.grey[500])),
+                        ],
                       ),
                     ),
+                    if (showLegacyPath) ...[
+                      const SizedBox(height: 8),
+                      TextField(
+                        controller: pathCtrl,
+                        decoration: const InputDecoration(
+                          labelText: 'Path',
+                          helperText: 'Sets a fixed disk path instead of using git repos.',
+                        ),
+                      ),
+                    ],
                   ],
                   if (errorText != null) ...[
                     const SizedBox(height: 8),
@@ -209,6 +368,7 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                   setDialogState(() => errorText = 'Name is required');
                   return;
                 }
+                final cpuVal = double.tryParse(cpuLimitCtrl.text.trim());
                 final data = <String, dynamic>{
                   'name': nameCtrl.text.trim(),
                   if (descCtrl.text.trim().isNotEmpty)
@@ -224,6 +384,14 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                     'claude_md': claudeMdCtrl.text.trim(),
                   if (selectedSkills.isNotEmpty)
                     'skill_ids': selectedSkills.toList(),
+                  'network_mode': networkEnabled ? 'bridge' : 'none',
+                  if (memoryLimitCtrl.text.trim().isNotEmpty)
+                    'memory_limit': memoryLimitCtrl.text.trim(),
+                  if (cpuVal != null) 'cpu_limit': cpuVal,
+                  if (sourceWorkspace != null)
+                    'parent_workspace_id': sourceWorkspace!.id,
+                  if (selectedBranch != null)
+                    'parent_ref': selectedBranch,
                 };
                 try {
                   await ref.read(apiClientProvider).createWorkspace(data);
@@ -477,6 +645,7 @@ class _WorkspaceDetailScreenState
   List<dynamic> _commits = [];
   List<dynamic> _events = [];
   int _eventsTotal = 0;
+  List<dynamic> _branches = [];
   bool _loading = true;
   String? _selectedFolderPath;
   final _claudeMdCtrl = TextEditingController();
@@ -504,10 +673,14 @@ class _WorkspaceDetailScreenState
       } catch (_) {}
       List<dynamic> events = [];
       int eventsTotal = 0;
+      List<dynamic> branches = [];
       try {
         final evData = await api.listWorkspaceEvents(widget.workspaceId);
         events = evData['events'] as List? ?? [];
         eventsTotal = evData['total'] as int? ?? 0;
+      } catch (_) {}
+      try {
+        branches = await api.listWorkspaceBranches(widget.workspaceId);
       } catch (_) {}
       final expanded = FileTreeNode.collectExpanded(_treeRoots);
       final newRoots = FileTreeNode.buildTree(files);
@@ -521,6 +694,7 @@ class _WorkspaceDetailScreenState
         _commits = commits;
         _events = events;
         _eventsTotal = eventsTotal;
+        _branches = branches;
         _nameCtrl.text = ws.name;
         _descCtrl.text = ws.description;
         _claudeMdCtrl.text = ws.claudeMd ?? '';
@@ -881,7 +1055,7 @@ class _WorkspaceDetailScreenState
             Text('History', style: Theme.of(context).textTheme.titleMedium),
             const SizedBox(height: 8),
             DefaultTabController(
-              length: ws.persistence != 'ephemeral' ? 2 : 1,
+              length: ws.persistence == 'snapshot' ? 3 : ws.persistence != 'ephemeral' ? 2 : 1,
               child: Column(
                 children: [
                   TabBar(
@@ -890,6 +1064,8 @@ class _WorkspaceDetailScreenState
                       Tab(text: _eventsTotal > 0 ? 'Timeline ($_eventsTotal)' : 'Timeline'),
                       if (ws.persistence != 'ephemeral')
                         const Tab(text: 'Git Commits'),
+                      if (ws.persistence == 'snapshot')
+                        Tab(text: _branches.isNotEmpty ? 'Snapshots (${_branches.length})' : 'Snapshots'),
                     ],
                   ),
                   SizedBox(
@@ -959,6 +1135,48 @@ class _WorkspaceDetailScreenState
                                     );
                                   },
                                 ),
+                        // Tab 3: Snapshots (snapshot workspaces only)
+                        if (ws.persistence == 'snapshot')
+                          _branches.isEmpty
+                              ? const Center(child: Text('No snapshot branches yet. Run a job to create one.'))
+                              : ListView.builder(
+                                  itemCount: _branches.length,
+                                  itemBuilder: (context, i) {
+                                    final branch = _branches[i] as Map<String, dynamic>;
+                                    final name = branch['name'] ?? '';
+                                    final hash = branch['hash'] ?? '';
+                                    final date = branch['date'] ?? '';
+                                    final jobId = branch['job_id'];
+                                    return ListTile(
+                                      dense: true,
+                                      leading: const Icon(Icons.photo_camera, size: 18),
+                                      title: Semantics(
+                                        label: 'Branch $name',
+                                        child: Text(name, style: const TextStyle(fontSize: 13, fontFamily: 'monospace')),
+                                      ),
+                                      subtitle: Text('$hash — $date', style: const TextStyle(fontSize: 11)),
+                                      trailing: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          if (jobId != null)
+                                            IconButton(
+                                              icon: const Icon(Icons.open_in_new, size: 16),
+                                              tooltip: 'View job',
+                                              onPressed: () => context.go('/jobs/$jobId'),
+                                            ),
+                                          TextButton(
+                                            onPressed: () => _promoteSnapshot(name),
+                                            child: const Text('Promote'),
+                                          ),
+                                          TextButton(
+                                            onPressed: () => _forkFromBranch(ws, name),
+                                            child: const Text('Fork'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                  },
+                                ),
                       ],
                     ),
                   ),
@@ -995,6 +1213,74 @@ class _WorkspaceDetailScreenState
       case 'initialized': return Colors.teal;
       case 'forked': case 'child_forked': return Colors.purple;
       default: return Colors.grey;
+    }
+  }
+
+  Future<void> _promoteSnapshot(String branchRef) async {
+    try {
+      await ref.read(apiClientProvider).promoteSnapshot(widget.workspaceId, branchRef);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Promoted $branchRef to claw/base')),
+        );
+      }
+      _refresh();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Promote failed: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _forkFromBranch(Workspace parent, String branchRef) async {
+    final nameCtrl = TextEditingController(text: '${parent.name} ($branchRef)');
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Fork from Snapshot'),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Chip(
+                avatar: const Icon(Icons.photo_camera, size: 16),
+                label: Text('Branch: $branchRef'),
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: nameCtrl,
+                decoration: const InputDecoration(labelText: 'New workspace name', border: OutlineInputBorder()),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Fork')),
+        ],
+      ),
+    );
+    if (result != true) return;
+    try {
+      await ref.read(apiClientProvider).forkWorkspace(parent.id, {
+        'name': nameCtrl.text.trim(),
+        'ref': branchRef,
+        'persistence': 'persistent',
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Forked from $branchRef')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Fork failed: $e')),
+        );
+      }
     }
   }
 

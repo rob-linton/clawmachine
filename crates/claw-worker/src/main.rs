@@ -362,6 +362,20 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     claw_redis::append_workspace_event(&pool, ws_id, &event).await.ok();
                 }
 
+                // 5c. Per-job Docker image check (cached 60s) when backend can change at runtime
+                if backend == executor::ExecutionBackend::Docker {
+                    let image = docker_config.as_ref().map(|c| c.image.as_str()).unwrap_or("claw-sandbox:latest");
+                    if let Err(e) = docker::check_image_cached(image).await {
+                        tracing::error!(job_id = %job_id, error = %e, "Docker sandbox image not available");
+                        claw_redis::fail_job(&pool, job_id, &e).await.ok();
+                        if let Some(ws_id) = job.workspace_id {
+                            claw_redis::release_workspace_lock(&pool, ws_id, job_id).await.ok();
+                        }
+                        environment::teardown_environment(&prepared_env).await;
+                        continue;
+                    }
+                }
+
                 // 6. Execute in prepared workspace
                 let result = executor::dispatch_execute(
                     &backend,

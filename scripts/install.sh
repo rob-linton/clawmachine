@@ -69,6 +69,7 @@ CLAW_REDIS_PASSWORD=$(head -c 32 /dev/urandom | base64 | tr -d '/+=' | head -c 2
 echo ""
 
 # --- Write .env ---
+CLAW_DATA_DIR="/opt/claw/data"
 cat > .env <<ENVEOF
 CLAW_HOST_IP=$CLAW_HOST_IP
 CLAW_ADMIN_USER=$CLAW_ADMIN_USER
@@ -81,7 +82,28 @@ CLAW_CRON_INTERVAL=30
 RUST_LOG=info
 CLAUDE_HOME=$HOME/.claude
 CLAUDE_JSON=$HOME/.claude.json
+CLAW_DATA_DIR=$CLAW_DATA_DIR
+CLAW_EXECUTION_BACKEND=docker
 ENVEOF
+
+# Create data directory for workspace bind mount
+if [ ! -d "$CLAW_DATA_DIR" ]; then
+  echo "  Creating $CLAW_DATA_DIR..."
+  sudo mkdir -p "$CLAW_DATA_DIR"
+  sudo chown "$(id -u):$(id -g)" "$CLAW_DATA_DIR"
+fi
+
+# Migrate from named volume if it exists
+if $DOCKER volume inspect claw_data &>/dev/null 2>&1; then
+  VOLUME_PATH=$($DOCKER volume inspect claw_data --format '{{ .Mountpoint }}' 2>/dev/null || true)
+  if [ -n "$VOLUME_PATH" ] && [ -d "$VOLUME_PATH" ]; then
+    yellow "  Found existing claw_data volume at $VOLUME_PATH"
+    yellow "  Migrating data to $CLAW_DATA_DIR..."
+    sudo cp -a "$VOLUME_PATH/." "$CLAW_DATA_DIR/" 2>/dev/null || true
+    sudo chown -R "$(id -u):$(id -g)" "$CLAW_DATA_DIR"
+    green "  Data migrated. Old volume can be removed with: $DOCKER volume rm claw_data"
+  fi
+fi
 green "  .env written"
 
 # --- Write Caddyfile (use spaces not tabs — heredoc-safe) ---
@@ -126,7 +148,8 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - claw_data:/home/claw/.claw
+      - /var/run/docker.sock:/var/run/docker.sock
+      - \${CLAW_DATA_DIR:-/opt/claw/data}:/home/claw/.claw
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8080/api/v1/status"]
       interval: 10s
@@ -142,13 +165,16 @@ services:
       CLAW_WORKER_CONCURRENCY: "\${CLAW_WORKER_CONCURRENCY:-1}"
       RUST_LOG: "\${RUST_LOG:-info}"
       HOME: /home/claw
+      CLAW_HOST_DATA_DIR: "\${CLAW_DATA_DIR:-/opt/claw/data}"
+      CLAW_HOST_CLAUDE_HOME: "\${CLAUDE_HOME}"
     depends_on:
       redis:
         condition: service_healthy
     volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
       - \${CLAUDE_HOME}:/home/claw/.claude
       - \${CLAUDE_JSON}:/home/claw/.claude.json:ro
-      - claw_data:/home/claw/.claw
+      - \${CLAW_DATA_DIR:-/opt/claw/data}:/home/claw/.claw
     deploy:
       replicas: \${CLAW_WORKER_REPLICAS:-1}
 
@@ -181,7 +207,6 @@ services:
 
 volumes:
   redis_data:
-  claw_data:
   caddy_data:
   caddy_config:
 COMPOSEEOF
@@ -223,6 +248,26 @@ if [ -f "$HOME/.claude.json" ]; then
 else
   red "  WARNING: ~/.claude.json not found. Worker will fail."
   red "  Run 'claude' manually to log in, then restart the worker."
+fi
+
+# --- Build sandbox image ---
+echo ""
+echo "==========================================="
+echo "  Building Docker sandbox image..."
+echo "==========================================="
+echo ""
+# Try to pull pre-built sandbox image first, then build if unavailable
+if ! $DOCKER pull "$REPO/sandbox:latest" &>/dev/null; then
+  yellow "  Pre-built sandbox image not available, building locally..."
+  if [ -f "docker/Dockerfile.sandbox" ]; then
+    $DOCKER build -t claw-sandbox:latest -f docker/Dockerfile.sandbox . 2>&1 | tail -3
+    green "  Sandbox image built"
+  else
+    yellow "  No Dockerfile.sandbox found — sandbox image will need to be built via API"
+  fi
+else
+  $DOCKER tag "$REPO/sandbox:latest" claw-sandbox:latest
+  green "  Sandbox image ready"
 fi
 
 # --- Pull images and start ---
