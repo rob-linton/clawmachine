@@ -283,6 +283,9 @@ pub async fn docker_execute_job(
         uid_gid,
         "--workdir".into(),
         "/workspace".into(),
+        // Set HOME so Claude Code finds ~/.claude and ~/.claude.json
+        "-e".into(),
+        "HOME=/home/claw".into(),
         // Network mode
         "--network".into(),
         network.to_string(),
