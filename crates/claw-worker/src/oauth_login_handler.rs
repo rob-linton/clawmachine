@@ -161,51 +161,106 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
         .status()
         .await;
 
-    // Step 2: Start `claude auth login`
+    // Step 2: Start `claude auth login` as a BACKGROUND process
+    // It starts a callback server and blocks until the browser completes the OAuth flow.
+    // We read its stdout to get the OAuth URL, then run Puppeteer while it's still running.
     publish_progress(pool, &progress_channel, "authenticating", "Running claude auth login...").await;
 
-    let login_output = match tokio::process::Command::new("claude")
+    let mut login_proc = match tokio::process::Command::new("claude")
         .args(["auth", "login", "--email", &email])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .output()
-        .await
+        .spawn()
     {
-        Ok(o) => o,
+        Ok(p) => p,
         Err(e) => {
-            publish_progress(pool, &progress_channel, "error", &format!("Failed to run claude auth login: {e}")).await;
+            publish_progress(pool, &progress_channel, "error", &format!("Failed to spawn claude auth login: {e}")).await;
             cleanup_lock(pool).await;
             return;
         }
     };
 
-    let stdout = String::from_utf8_lossy(&login_output.stdout);
-    let stderr = String::from_utf8_lossy(&login_output.stderr);
-    let combined = format!("{}\n{}", stdout, stderr);
+    // Read stdout/stderr lines to find the OAuth URL (within 15 seconds)
+    let login_stdout = login_proc.stdout.take();
+    let login_stderr = login_proc.stderr.take();
 
-    // Parse OAuth URL from output
-    let oauth_url = combined
-        .lines()
-        .find(|line| line.contains("https://") && line.to_lowercase().contains("oauth"))
-        .or_else(|| combined.lines().find(|line| line.contains("https://")))
-        .map(|line| {
-            // Extract URL from the line
-            line.split_whitespace()
-                .find(|word| word.starts_with("https://"))
-                .unwrap_or(line.trim())
-                .to_string()
-        });
+    let mut oauth_url: Option<String> = None;
+
+    // Collect output from both stdout and stderr
+    let mut collected_lines = Vec::new();
+    if let Some(stdout) = login_stdout {
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        let mut reader = BufReader::new(stdout).lines();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            match tokio::time::timeout_at(deadline, reader.next_line()).await {
+                Ok(Ok(Some(line))) => {
+                    tracing::debug!(line = %line, "claude auth login output");
+                    collected_lines.push(line.clone());
+                    // Check if this line contains the OAuth URL
+                    if line.contains("https://") {
+                        let url = line
+                            .split_whitespace()
+                            .find(|w| w.starts_with("https://"))
+                            .unwrap_or(line.trim())
+                            .to_string();
+                        oauth_url = Some(url);
+                        break;
+                    }
+                }
+                Ok(Ok(None)) => break, // EOF
+                Ok(Err(e)) => {
+                    tracing::warn!(error = %e, "Error reading claude auth login stdout");
+                    break;
+                }
+                Err(_) => {
+                    tracing::warn!("Timeout waiting for OAuth URL from claude auth login");
+                    break;
+                }
+            }
+        }
+    }
+
+    // Also try stderr if we didn't find URL in stdout
+    if oauth_url.is_none() {
+        if let Some(stderr) = login_stderr {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stderr).lines();
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match tokio::time::timeout_at(deadline, reader.next_line()).await {
+                    Ok(Ok(Some(line))) => {
+                        tracing::debug!(line = %line, "claude auth login stderr");
+                        collected_lines.push(line.clone());
+                        if line.contains("https://") {
+                            let url = line
+                                .split_whitespace()
+                                .find(|w| w.starts_with("https://"))
+                                .unwrap_or(line.trim())
+                                .to_string();
+                            oauth_url = Some(url);
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+        }
+    }
 
     let oauth_url = match oauth_url {
         Some(url) => url,
         None => {
-            let msg = format!("Could not find OAuth URL in claude output. stdout: {}, stderr: {}", stdout.chars().take(200).collect::<String>(), stderr.chars().take(200).collect::<String>());
+            let collected = collected_lines.join("\n");
+            let msg = format!("Could not find OAuth URL in claude output: {}", collected.chars().take(300).collect::<String>());
             publish_progress(pool, &progress_channel, "error", &msg).await;
+            let _ = login_proc.kill().await;
             cleanup_lock(pool).await;
             return;
         }
     };
 
+    tracing::info!(oauth_url = %oauth_url, "Parsed OAuth URL from claude auth login");
     publish_progress(pool, &progress_channel, "navigating", "Got OAuth URL, launching browser...").await;
 
     // Step 3: Run Puppeteer script
@@ -218,6 +273,8 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
         .env("OAUTH_URL", &oauth_url)
         .env("OAUTH_EMAIL", &email)
         .env("OAUTH_PASSWORD", &password)
+        .env("NODE_PATH", "/usr/local/lib/node_modules")
+        .env("PUPPETEER_EXECUTABLE_PATH", std::env::var("PUPPETEER_EXECUTABLE_PATH").unwrap_or_else(|_| "/usr/bin/chromium".into()))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -284,6 +341,21 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
             return;
         }
     };
+
+    // Wait for claude auth login to finish (it should complete after OAuth callback)
+    // Give it 30 seconds, then kill it
+    match tokio::time::timeout(std::time::Duration::from_secs(30), login_proc.wait()).await {
+        Ok(Ok(status)) => {
+            tracing::info!(exit_code = ?status.code(), "claude auth login completed");
+        }
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "claude auth login wait error");
+        }
+        Err(_) => {
+            tracing::warn!("claude auth login didn't exit in 30s, killing");
+            let _ = login_proc.kill().await;
+        }
+    }
 
     if exit_status.success() {
         // Verify credentials file exists
