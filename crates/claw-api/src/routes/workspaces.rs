@@ -173,7 +173,7 @@ async fn create_workspace(
                 match fork_bare_repo(parent_id, ws.id, &resolved, is_snapshot).await {
                     Ok(()) => {
                         claw_redis::add_child_workspace(&state.pool, parent_id, ws.id).await.ok();
-                        if let Some(ref p) = parent {
+                        if parent.is_some() {
                             emit_event(&state.pool, parent_id, WorkspaceEventType::ChildForked, Some(&ws.id.to_string()),
                                 &format!("Forked to workspace '{}'", ws.name)).await;
                         }
@@ -870,6 +870,10 @@ async fn promote_snapshot(
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Promote not supported for legacy workspaces"}))).into_response();
     }
 
+    if let Err(e) = validate_git_ref(&query.git_ref) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response();
+    }
+
     let repo = bare_repo_path(&ws);
     let git_ref = query.git_ref.clone();
 
@@ -1020,6 +1024,9 @@ async fn fork_workspace(
 
     // Resolve the git ref to a commit hash
     let git_ref = req.git_ref.as_deref().unwrap_or("HEAD");
+    if let Err(e) = validate_git_ref(git_ref) {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response();
+    }
     let parent_repo = bare_repo_path(&parent);
 
     let ref_to_resolve = git_ref.to_string();
@@ -1262,6 +1269,24 @@ async fn list_events(
         })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
+}
+
+// --- Helpers ---
+
+/// Validate a git ref to prevent argument injection.
+/// Rejects refs starting with `-` (could be interpreted as flags) and
+/// refs containing characters that aren't valid in git ref names.
+fn validate_git_ref(git_ref: &str) -> Result<(), String> {
+    if git_ref.is_empty() {
+        return Err("Git ref cannot be empty".into());
+    }
+    if git_ref.starts_with('-') {
+        return Err("Git ref cannot start with '-'".into());
+    }
+    if git_ref.contains("..") || git_ref.contains(' ') || git_ref.contains('~') && git_ref.contains('{') {
+        return Err("Git ref contains invalid characters".into());
+    }
+    Ok(())
 }
 
 // --- Event emission helper ---
