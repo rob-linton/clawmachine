@@ -331,7 +331,7 @@ pub async fn docker_execute_job(
     }
 
     // Default budget $10 so jobs hit the timeout before the turn limit
-    let budget = job.max_budget_usd.unwrap_or(10.0);
+    let budget = job.max_budget_usd.unwrap_or(1000.0);
     args.push("--max-budget-usd".into());
     args.push(budget.to_string());
 

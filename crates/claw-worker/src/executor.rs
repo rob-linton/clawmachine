@@ -192,7 +192,7 @@ pub async fn local_execute_job(
     }
 
     // Default budget $10 so jobs hit the timeout before the turn limit
-    let budget = job.max_budget_usd.unwrap_or(10.0);
+    let budget = job.max_budget_usd.unwrap_or(1000.0);
     cmd.arg("--max-budget-usd").arg(budget.to_string());
 
     // Only restrict tools when the job explicitly specifies a tool list.
