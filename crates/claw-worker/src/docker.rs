@@ -331,6 +331,8 @@ pub async fn docker_execute_job(
 
     let start = std::time::Instant::now();
 
+    tracing::debug!(args = ?args, "Docker run command");
+
     // Start container
     let start_output = Command::new("docker")
         .args(&args)
@@ -413,12 +415,28 @@ pub async fn docker_execute_job(
         _ => -1,
     };
 
+    // Capture container stderr before cleanup (for error diagnosis)
+    if exit_code != 0 {
+        let stderr_output = Command::new("docker")
+            .args(["logs", "--tail", "20", &container_id])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await;
+        let stderr_text = stderr_output
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout);
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                format!("{}{}", stdout, stderr)
+            })
+            .unwrap_or_default();
+        tracing::error!(exit_code, stderr = %stderr_text.trim(), "Sandbox container failed");
+        cleanup_container(&container_id).await;
+        return Err(format!("claude exited with code {exit_code}: {}", stderr_text.trim().chars().take(500).collect::<String>()));
+    }
+
     // Clean up container
     cleanup_container(&container_id).await;
-
-    if exit_code != 0 {
-        return Err(format!("claude exited with code {exit_code} inside container"));
-    }
 
     let (result_text, cost_usd) = state.finalize();
 
