@@ -263,6 +263,7 @@ pub async fn docker_execute_job(
     let mut args: Vec<String> = vec![
         "run".into(),
         "-d".into(), // detached — we stream logs separately
+        "-t".into(), // allocate pseudo-TTY so Node.js flushes stdout
         "--name".into(),
         container_name.clone(),
         "--user".into(),
