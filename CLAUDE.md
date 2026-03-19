@@ -300,6 +300,7 @@ Every phase must be validated end-to-end before proceeding. After writing code, 
 | `CLAW_HOST_DATA_DIR` | `~/.claw-data` | Host path for Docker-in-Docker volume mapping (set automatically from CLAW_DATA_DIR) |
 | `CLAW_HOST_CLAUDE_HOME` | `~/.claude` | Host path for Claude credentials (Docker-in-Docker volume mapping) |
 | `CLAW_SECRET_KEY` | (unset) | Encryption key for tool credentials (32-byte hex, base64, or passphrase). Required for credential storage |
+| `ANTHROPIC_API_KEY` | (unset) | Anthropic API key. If set, bypasses OAuth entirely. Also settable via Settings UI (Redis config `anthropic_api_key` takes priority over env var) |
 
 Most new configuration is stored in Redis (`claw:config:*`) and managed from the Settings screen. Env vars are only used as bootstrap fallbacks.
 

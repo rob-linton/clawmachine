@@ -38,17 +38,18 @@ pub async fn dispatch_execute(
     workspace: Option<&Workspace>,
     tools: &[Tool],
     credential_env_vars: &std::collections::HashMap<String, String>,
+    anthropic_api_key: Option<&str>,
     system_prompt: Option<&str>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
     match backend {
         ExecutionBackend::Local => {
-            local_execute_job(job, working_dir, system_prompt, log_tx, cancel).await
+            local_execute_job(job, working_dir, anthropic_api_key, system_prompt, log_tx, cancel).await
         }
         ExecutionBackend::Docker => {
             let config = docker_config.ok_or("Docker config not available")?;
-            docker::docker_execute_job(job, working_dir, config, workspace, tools, credential_env_vars, system_prompt, log_tx, cancel)
+            docker::docker_execute_job(job, working_dir, config, workspace, tools, credential_env_vars, anthropic_api_key, system_prompt, log_tx, cancel)
                 .await
         }
     }
@@ -174,6 +175,7 @@ impl StreamState {
 pub async fn local_execute_job(
     job: &Job,
     working_dir: &std::path::Path,
+    anthropic_api_key: Option<&str>,
     system_prompt: Option<&str>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
@@ -208,6 +210,11 @@ pub async fn local_execute_job(
     // Append system prompt with metadata + completion instruction
     if let Some(sp) = system_prompt {
         cmd.arg("--append-system-prompt").arg(sp);
+    }
+
+    // Set Anthropic API key if available (bypasses OAuth)
+    if let Some(key) = anthropic_api_key {
+        cmd.env("ANTHROPIC_API_KEY", key);
     }
 
     cmd.current_dir(working_dir);

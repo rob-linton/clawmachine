@@ -3,6 +3,7 @@ mod environment;
 mod executor;
 mod pipeline_runner;
 mod prompt_builder;
+mod token_refresh;
 
 use claw_models::WorkspacePersistence;
 use deadpool_redis::{redis, Pool};
@@ -105,6 +106,20 @@ async fn main() {
         std::process::id()
     );
 
+    // Startup OAuth token check
+    {
+        let api_key = claw_redis::get_config(&pool, "anthropic_api_key")
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty()));
+        match token_refresh::ensure_token_fresh(api_key.as_deref()).await {
+            Ok(true) => tracing::info!("OAuth token refreshed at startup"),
+            Ok(false) => {}
+            Err(e) => tracing::error!(error = %e, "Startup token refresh failed"),
+        }
+    }
+
     tracing::info!(worker_id, concurrency, "claw-worker starting");
 
     let mut handles = Vec::new();
@@ -136,6 +151,15 @@ async fn main() {
         let shutdown = shutdown.clone();
         handles.push(tokio::spawn(async move {
             reaper_loop(pool, shutdown).await;
+        }));
+    }
+
+    // Spawn token refresh task (hourly OAuth token refresh)
+    {
+        let pool = pool.clone();
+        let shutdown = shutdown.clone();
+        handles.push(tokio::spawn(async move {
+            token_refresh_loop(pool, shutdown).await;
         }));
     }
 
@@ -183,6 +207,26 @@ async fn reaper_loop(pool: Pool, shutdown: Arc<AtomicBool>) {
     }
 }
 
+async fn token_refresh_loop(pool: Pool, shutdown: Arc<AtomicBool>) {
+    let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+    loop {
+        interval.tick().await;
+        if shutdown.load(Ordering::Relaxed) {
+            break;
+        }
+        let api_key = claw_redis::get_config(&pool, "anthropic_api_key")
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty()));
+        match token_refresh::ensure_token_fresh(api_key.as_deref()).await {
+            Ok(true) => tracing::info!("OAuth token refreshed proactively"),
+            Ok(false) => {}
+            Err(e) => tracing::error!(error = %e, "Periodic token refresh failed"),
+        }
+    }
+}
+
 async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
     tracing::info!(task_id, "Worker task started");
 
@@ -205,6 +249,14 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                 .unwrap_or_else(|_| "local".into()),
         };
         let backend = executor::ExecutionBackend::from_config_str(&backend_str);
+
+        // Resolve Anthropic API key: Redis config (Settings UI) > env var
+        let anthropic_api_key = claw_redis::get_config(&pool, "anthropic_api_key")
+            .await
+            .ok()
+            .filter(|s| !s.is_empty())
+            .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok().filter(|s| !s.is_empty()));
+
         let docker_config = if backend == executor::ExecutionBackend::Docker {
             let all_config = claw_redis::get_all_config(&pool).await.unwrap_or_default();
             Some(docker::DockerConfig::from_config(&all_config))
@@ -221,6 +273,11 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     prompt_len = job.prompt.len(),
                     "Job claimed, executing"
                 );
+
+                // Pre-job OAuth token check
+                if let Err(e) = token_refresh::ensure_token_fresh(anthropic_api_key.as_deref()).await {
+                    tracing::warn!(job_id = %job_id, error = %e, "Token refresh failed — job may fail if expired");
+                }
 
                 // 1. Resolve workspace (if workspace_id set)
                 let workspace = if let Some(ws_id) = job.workspace_id {
@@ -433,6 +490,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     workspace.as_ref(),
                     &tools,
                     &credential_env_vars,
+                    anthropic_api_key.as_deref(),
                     Some(&system_prompt),
                     log_tx,
                     cancel,

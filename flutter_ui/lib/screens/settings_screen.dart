@@ -165,6 +165,45 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           ]),
           const SizedBox(height: 16),
 
+          // Claude Authentication
+          _buildSection('Claude Authentication', Icons.vpn_key, [
+            _buildEditableRow(
+              'Anthropic API Key',
+              _config['anthropic_api_key'] == '***set***'
+                  ? '' // Don't show the redacted placeholder
+                  : (_config['anthropic_api_key'] ?? ''),
+              (val) => _setConfig('anthropic_api_key', val),
+              helperText: 'sk-ant-... If set, bypasses OAuth. Leave empty for OAuth.',
+              obscureText: true,
+            ),
+            const SizedBox(height: 8),
+            Semantics(
+              label: _config['anthropic_api_key'] == '***set***'
+                  ? 'Authentication mode: API Key'
+                  : 'Authentication mode: OAuth',
+              child: Chip(
+                avatar: Icon(
+                  _config['anthropic_api_key'] == '***set***'
+                      ? Icons.key
+                      : Icons.account_circle,
+                  size: 16,
+                ),
+                label: Text(
+                  _config['anthropic_api_key'] == '***set***'
+                      ? 'Using: API Key'
+                      : 'Using: OAuth (auto-refresh)',
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'API keys bypass OAuth entirely (no token refresh needed). '
+              'OAuth uses your Claude subscription. Set via Settings or ANTHROPIC_API_KEY env var.',
+              style: TextStyle(color: Colors.grey[400], fontSize: 12),
+            ),
+          ]),
+          const SizedBox(height: 16),
+
           // Docker / Sandbox Image
           _buildSection('Sandbox Image', Icons.inventory_2, [
             _buildEditableRow(
@@ -354,6 +393,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     String currentValue,
     Function(String) onSave, {
     String? helperText,
+    bool obscureText = false,
   }) {
     return Row(
       children: [
@@ -361,6 +401,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           width: 300,
           child: TextFormField(
             initialValue: currentValue,
+            obscureText: obscureText,
             decoration: InputDecoration(
               labelText: label,
               helperText: helperText,

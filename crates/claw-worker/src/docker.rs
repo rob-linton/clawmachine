@@ -314,6 +314,7 @@ pub async fn docker_execute_job(
     workspace: Option<&Workspace>,
     tools: &[Tool],
     credential_env_vars: &std::collections::HashMap<String, String>,
+    anthropic_api_key: Option<&str>,
     system_prompt: Option<&str>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
@@ -411,6 +412,12 @@ pub async fn docker_execute_job(
     for (key, value) in credential_env_vars {
         args.push("-e".into());
         args.push(format!("{}={}", key, value));
+    }
+
+    // Inject Anthropic API key if available (bypasses OAuth inside container)
+    if let Some(key) = anthropic_api_key {
+        args.push("-e".into());
+        args.push(format!("ANTHROPIC_API_KEY={}", key));
     }
 
     // Check if any tools have auth scripts that need to run before claude

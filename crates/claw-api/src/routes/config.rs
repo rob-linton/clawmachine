@@ -15,9 +15,23 @@ pub fn router() -> Router<AppState> {
         .route("/config/{key}", get(get_one).put(set_one))
 }
 
+/// Config keys whose values must be redacted in GET responses.
+const SENSITIVE_CONFIG_KEYS: &[&str] = &["anthropic_api_key"];
+
+fn redact_sensitive(mut config: HashMap<String, String>) -> HashMap<String, String> {
+    for key in SENSITIVE_CONFIG_KEYS {
+        if let Some(val) = config.get_mut(*key) {
+            if !val.is_empty() {
+                *val = "***set***".to_string();
+            }
+        }
+    }
+    config
+}
+
 async fn get_all(State(state): State<AppState>) -> impl IntoResponse {
     match claw_redis::get_all_config(&state.pool).await {
-        Ok(config) => Json(config).into_response(),
+        Ok(config) => Json(redact_sensitive(config)).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
@@ -31,7 +45,14 @@ async fn get_one(
     Path(key): Path<String>,
 ) -> impl IntoResponse {
     match claw_redis::get_config(&state.pool, &key).await {
-        Ok(val) => Json(serde_json::json!({"key": key, "value": val})).into_response(),
+        Ok(val) => {
+            let display_val = if SENSITIVE_CONFIG_KEYS.contains(&key.as_str()) && !val.is_empty() {
+                "***set***".to_string()
+            } else {
+                val
+            };
+            Json(serde_json::json!({"key": key, "value": display_val})).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": e.to_string()})),
