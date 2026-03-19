@@ -8,7 +8,7 @@ ClaudeCodeClaw is a job queue orchestrator for Claude Code. It wraps `claude -p`
 
 **Stack**: Rust (Axum) backend, Flutter (Riverpod) frontend, Redis (queue + state + streams), Docker Compose deployment.
 
-**Auth**: Claude Code uses OAuth — workers inherit the host user's logged-in session (`~/.claude/`). No API key needed.
+**Auth**: Claude Code uses OAuth — workers inherit the host user's logged-in session (`~/.claude/`). No API key needed. See "Claude Code OAuth Token Lifecycle" section for critical token refresh requirements.
 
 ## Current State
 
@@ -330,6 +330,27 @@ These requirements were discovered through production testing and must not be re
 6. **Worker runs as root** for Docker socket access. The sandbox container runs as the authenticated user (uid from `~/.claude/` ownership). `--dangerously-skip-permissions` is rejected when running as root.
 
 7. **`git config --global safe.directory '*'`** required in worker image. Worker is root but bare repos are owned by claw user — git refuses operations without this.
+
+### Claude Code OAuth Token Lifecycle (critical)
+
+Claude Code authenticates via OAuth with two tokens stored in `~/.claude/.credentials.json` under the `claudeAiOauth` key:
+
+- **Access token** (`accessToken`): Short-lived (~24h). Sent as bearer token to the Anthropic API. Stored with `expiresAt` (epoch ms).
+- **Refresh token** (`refreshToken`): Long-lived (~3 months). Used to obtain new access tokens. **Single-use** — each refresh returns a new refresh token that must be saved.
+
+**Token refresh endpoint**: `POST https://console.anthropic.com/v1/oauth/token` with `Content-Type: application/json`:
+```json
+{"grant_type": "refresh_token", "refresh_token": "<token>", "client_id": "9d1c250a-e61b-44d9-88ed-5944d1962f5e"}
+```
+Returns `{access_token, refresh_token, expires_in, token_type}`. The new `refresh_token` MUST be saved — the old one is invalidated.
+
+**Critical issues discovered in production**:
+
+1. **Claude Code `-p` mode does NOT auto-refresh expired tokens.** When the access token expires, `claude -p` returns a 401 error and exits with code 1 instead of using the refresh token. This means jobs will fail silently after ~24h if nothing refreshes the token.
+
+2. **Refresh tokens are single-use.** If a refresh is attempted but the new tokens aren't saved (e.g., process crash mid-refresh), the refresh token is consumed and the credential file becomes permanently invalid. The user must re-authenticate interactively (`claude login`).
+
+3. **The worker must proactively refresh tokens before they expire.** The worker (or a scheduled task) should check `expiresAt` and refresh the token when it's within ~1h of expiry. The refresh must be atomic: read credentials → call refresh endpoint → write new tokens in one operation with file locking.
 
 ## Tool Redis Keys
 
