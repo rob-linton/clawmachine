@@ -66,6 +66,10 @@ echo ""
 # --- Data directory ---
 # Use home dir to avoid permission issues (no sudo needed)
 CLAW_DATA_DIR="$HOME/.claw-data"
+# Clean stale job dirs that may be owned by root (from Docker sandbox containers)
+if [ -d "$CLAW_DATA_DIR/jobs" ]; then
+  $DOCKER run --rm -v "$CLAW_DATA_DIR:/data" alpine rm -rf /data/jobs 2>/dev/null || true
+fi
 mkdir -p "$CLAW_DATA_DIR"
 green "  Data directory: $CLAW_DATA_DIR"
 
@@ -325,7 +329,9 @@ $DC --env-file "$ENV_FILE" exec -T api curl -sf \
 
 # --- Extract CA cert ---
 echo ""
-$DC --env-file "$ENV_FILE" cp caddy:/data/caddy/pki/authorities/local/root.crt "$INSTALL_DIR/claw-ca.crt" 2>&1 | grep -v "Copying\|Copied" || true
+$DC --env-file "$ENV_FILE" cp caddy:/data/caddy/pki/authorities/local/root.crt "/tmp/claw-ca.crt" 2>/dev/null && \
+  cp /tmp/claw-ca.crt "$INSTALL_DIR/claw-ca.crt" 2>/dev/null && \
+  rm /tmp/claw-ca.crt 2>/dev/null || true
 
 echo ""
 echo "==========================================="
