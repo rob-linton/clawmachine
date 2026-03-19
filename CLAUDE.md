@@ -157,12 +157,16 @@ Auth uses session cookies (`claw_session`) for the UI and bearer tokens (`CLAW_A
 
 ```
 GET    /api/v1/workspaces/{id}/files              — list all files (up to depth 10, max 2000 entries, .git excluded)
-GET    /api/v1/workspaces/{id}/files/{*path}      — read file content as text
+GET    /api/v1/workspaces/{id}/files/{*path}      — read file content as JSON {path, content}
+GET    /api/v1/workspaces/{id}/files/{*path}?raw=true    — serve raw file bytes (inline, correct Content-Type)
+GET    /api/v1/workspaces/{id}/files/{*path}?download=true — download file (Content-Disposition: attachment)
 PUT    /api/v1/workspaces/{id}/files/{*path}      — write file (body: {content: string})
 DELETE /api/v1/workspaces/{id}/files/{*path}      — delete file or folder (recursive for dirs)
+GET    /api/v1/workspaces/{id}/download           — download entire workspace as ZIP (excludes .git/.claw, 500MB limit)
+GET    /api/v1/workspaces/{id}/download?path=dir/ — download subdirectory as ZIP
 ```
 
-All file paths are validated server-side to prevent path traversal. Deleting a folder removes it and all contents recursively.
+All file paths are validated server-side to prevent path traversal. Deleting a folder removes it and all contents recursively. Raw/download mode serves binary files with MIME types based on file extension.
 
 ## Workspace History & Fork Endpoints
 
