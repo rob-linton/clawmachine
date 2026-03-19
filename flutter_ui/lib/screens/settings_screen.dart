@@ -104,9 +104,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       return;
     }
 
-    // Show password dialog
-    final passwordCtrl = TextEditingController();
-    final password = await showDialog<String>(
+    // Confirm login — Anthropic uses magic link (no password needed)
+    final confirmed = await showDialog<bool>(
       barrierDismissible: false,
       context: context,
       builder: (ctx) => AlertDialog(
@@ -120,37 +119,28 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Logging in as: $email'),
+              Text('Login as: $email'),
               const SizedBox(height: 12),
-              TextField(
-                controller: passwordCtrl,
-                obscureText: true,
-                autofocus: true,
-                decoration: const InputDecoration(
-                  labelText: 'Anthropic Password',
-                  border: OutlineInputBorder(),
-                ),
-                onSubmitted: (_) => Navigator.pop(ctx, passwordCtrl.text),
-              ),
-              const SizedBox(height: 8),
               Text(
-                'Password is encrypted in transit and never stored.',
-                style: TextStyle(color: Colors.grey[500], fontSize: 12),
+                'Anthropic will send a magic link to your email. '
+                'Click the link in your email to complete the OAuth login.',
+                style: TextStyle(color: Colors.grey[500], fontSize: 13),
               ),
             ],
           ),
         ),
         actions: [
           TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
           FilledButton(
-              onPressed: () => Navigator.pop(ctx, passwordCtrl.text),
-              child: const Text('Login')),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Send Login Email')),
         ],
       ),
     );
 
-    if (password == null || password.isEmpty) return;
+    if (confirmed != true) return;
 
     setState(() {
       _oauthLoginInProgress = true;
@@ -160,7 +150,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     try {
       await ref.read(apiClientProvider).triggerOAuthLogin(
             email: email,
-            password: password,
+            password: '', // Anthropic uses magic link, no password needed
           );
       // The login is async (SSE stream). For now, just show a message
       // and refresh status after a delay.
