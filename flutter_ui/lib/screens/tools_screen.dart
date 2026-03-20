@@ -1,7 +1,10 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:web/web.dart' as web;
 import '../main.dart';
 import '../models/tool.dart';
+import '../services/file_upload.dart';
 
 class ToolsScreen extends ConsumerStatefulWidget {
   const ToolsScreen({super.key});
@@ -62,6 +65,125 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
     }
   }
 
+  void _exportTool(Tool tool) {
+    final url = ref.read(apiClientProvider).toolDownloadUrl(tool.id);
+    final anchor = web.document.createElement('a') as web.HTMLAnchorElement;
+    anchor.href = url;
+    anchor.download = '${tool.id}.zip';
+    anchor.click();
+  }
+
+  Future<void> _importToolZip() async {
+    final PickedFile file;
+    try {
+      final picked = await pickFile(accept: '.zip');
+      if (picked == null) return;
+      file = picked;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('File picker error: $e')));
+      }
+      return;
+    }
+
+    if (!file.name.endsWith('.zip')) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Please select a .zip file')));
+      }
+      return;
+    }
+
+    final bytes = file.bytes;
+
+    final idCtrl = TextEditingController();
+    final nameCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
+    final tagsCtrl = TextEditingController();
+    String? errorText;
+
+    final saved = await showDialog<bool>(
+      barrierDismissible: false,
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) => AlertDialog(
+          title: Text('Import ${file.name}'),
+          content: SizedBox(
+            width: 500,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text('${(bytes.length / 1024).toStringAsFixed(1)} KB',
+                      style: const TextStyle(color: Colors.grey)),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: idCtrl,
+                    decoration: const InputDecoration(labelText: 'Tool ID'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: nameCtrl,
+                    decoration: const InputDecoration(labelText: 'Name'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: descCtrl,
+                    decoration: const InputDecoration(labelText: 'Description'),
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: tagsCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'Tags (comma-separated)',
+                    ),
+                  ),
+                  if (errorText != null) ...[
+                    const SizedBox(height: 8),
+                    Text(errorText!, style: const TextStyle(color: Colors.red)),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+              onPressed: () async {
+                if (idCtrl.text.trim().isEmpty || nameCtrl.text.trim().isEmpty) {
+                  setDialogState(() => errorText = 'ID and Name are required');
+                  return;
+                }
+                try {
+                  final tags = tagsCtrl.text
+                      .split(',')
+                      .map((t) => t.trim())
+                      .where((t) => t.isNotEmpty)
+                      .toList();
+                  await ref.read(apiClientProvider).uploadToolZip(
+                    Uint8List.fromList(bytes),
+                    id: idCtrl.text.trim(),
+                    name: nameCtrl.text.trim(),
+                    description: descCtrl.text.trim(),
+                    tags: tags,
+                  );
+                  if (ctx.mounted) Navigator.pop(ctx, true);
+                } catch (e) {
+                  setDialogState(() => errorText = 'Failed: $e');
+                }
+              },
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (saved == true) _refresh();
+  }
+
   Future<void> _showCreateEditDialog({Tool? existing}) async {
     final idCtrl = TextEditingController(text: existing?.id ?? '');
     final nameCtrl = TextEditingController(text: existing?.name ?? '');
@@ -74,6 +196,8 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
         TextEditingController(text: existing?.tags.join(', ') ?? '');
     final envVarsCtrl = TextEditingController(
         text: existing?.envVars.map((e) => '${e.key}: ${e.description}').join('\n') ?? '');
+    final versionCtrl = TextEditingController(text: existing?.version ?? '');
+    final authorCtrl = TextEditingController(text: existing?.author ?? '');
 
     final isEdit = existing != null;
 
@@ -110,6 +234,20 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
                   controller: descCtrl,
                   decoration: const InputDecoration(
                       labelText: 'Description', border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: versionCtrl,
+                  decoration: const InputDecoration(
+                      labelText: 'Version (e.g., 1.0.0)',
+                      border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: authorCtrl,
+                  decoration: const InputDecoration(
+                      labelText: 'Author',
+                      border: OutlineInputBorder()),
                 ),
                 const SizedBox(height: 12),
                 TextField(
@@ -197,6 +335,8 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
                     ? null
                     : authCtrl.text.trim(),
                 tags: tags,
+                version: versionCtrl.text.trim(),
+                author: authorCtrl.text.trim(),
               );
 
               try {
@@ -249,6 +389,12 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
                     onPressed: _refresh, icon: const Icon(Icons.refresh)),
                 const SizedBox(width: 8),
                 FilledButton.icon(
+                  onPressed: _importToolZip,
+                  icon: const Icon(Icons.archive),
+                  label: const Text('Import Tool (ZIP)'),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
                   onPressed: () => _showCreateEditDialog(),
                   icon: const Icon(Icons.add),
                   label: const Text('Add Tool'),
@@ -271,7 +417,7 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
                           gridDelegate:
                               const SliverGridDelegateWithMaxCrossAxisExtent(
                             maxCrossAxisExtent: 400,
-                            mainAxisExtent: 200,
+                            mainAxisExtent: 220,
                             crossAxisSpacing: 16,
                             mainAxisSpacing: 16,
                           ),
@@ -283,6 +429,7 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
                               onEdit: () =>
                                   _showCreateEditDialog(existing: tool),
                               onDelete: () => _delete(tool.id),
+                              onExport: () => _exportTool(tool),
                             );
                           },
                         ),
@@ -298,9 +445,13 @@ class _ToolCard extends StatelessWidget {
   final Tool tool;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onExport;
 
   const _ToolCard(
-      {required this.tool, required this.onEdit, required this.onDelete});
+      {required this.tool,
+      required this.onEdit,
+      required this.onDelete,
+      required this.onExport});
 
   @override
   Widget build(BuildContext context) {
@@ -330,10 +481,13 @@ class _ToolCard extends StatelessWidget {
                     itemBuilder: (_) => [
                       const PopupMenuItem(value: 'edit', child: Text('Edit')),
                       const PopupMenuItem(
+                          value: 'export', child: Text('Export')),
+                      const PopupMenuItem(
                           value: 'delete', child: Text('Delete')),
                     ],
                     onSelected: (v) {
                       if (v == 'edit') onEdit();
+                      if (v == 'export') onExport();
                       if (v == 'delete') onDelete();
                     },
                   ),
@@ -348,6 +502,22 @@ class _ToolCard extends StatelessWidget {
                         fontFamily: 'monospace',
                         color: Colors.grey[500])),
               ),
+              if (tool.version.isNotEmpty || tool.author.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Semantics(
+                  label: [
+                    if (tool.version.isNotEmpty) 'v${tool.version}',
+                    if (tool.author.isNotEmpty) 'by ${tool.author}',
+                  ].join(' '),
+                  child: Text(
+                    [
+                      if (tool.version.isNotEmpty) 'v${tool.version}',
+                      if (tool.author.isNotEmpty) 'by ${tool.author}',
+                    ].join(' '),
+                    style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                  ),
+                ),
+              ],
               if (tool.description.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Text(tool.description,

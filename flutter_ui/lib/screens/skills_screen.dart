@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:web/web.dart' as web;
 import '../main.dart';
 import '../models/skill.dart';
 import '../services/file_upload.dart';
@@ -58,6 +59,14 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
             .showSnackBar(SnackBar(content: Text('Delete failed: $e')));
       }
     }
+  }
+
+  void _exportSkill(Skill skill) {
+    final url = ref.read(apiClientProvider).skillDownloadUrl(skill.id);
+    final anchor = web.document.createElement('a') as web.HTMLAnchorElement;
+    anchor.href = url;
+    anchor.download = '${skill.id}.zip';
+    anchor.click();
   }
 
   Future<void> _importSkillZip() async {
@@ -186,6 +195,10 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
               children: [
                 _infoRow('ID', skill.id),
                 _infoRow('Description', skill.description),
+                if (skill.version.isNotEmpty)
+                  _infoRow('Version', skill.version),
+                if (skill.author.isNotEmpty)
+                  _infoRow('Author', skill.author),
                 if (skill.tags.isNotEmpty)
                   _infoRow('Tags', skill.tags.join(', ')),
                 if (skill.files.isNotEmpty)
@@ -295,12 +308,34 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                                           .textTheme
                                           .titleMedium)),
                                 ),
-                                IconButton(
-                                  icon: const Icon(Icons.delete, size: 18),
-                                  onPressed: () => _delete(skill.id),
+                                PopupMenuButton<String>(
+                                  itemBuilder: (_) => [
+                                    const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                                    const PopupMenuItem(value: 'export', child: Text('Export')),
+                                    const PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                  ],
+                                  onSelected: (v) {
+                                    if (v == 'edit') _showSkillDetail(skill);
+                                    if (v == 'export') _exportSkill(skill);
+                                    if (v == 'delete') _delete(skill.id);
+                                  },
                                 ),
                               ],
                             ),
+                            if (skill.version.isNotEmpty || skill.author.isNotEmpty)
+                              Semantics(
+                                label: [
+                                  if (skill.version.isNotEmpty) 'v${skill.version}',
+                                  if (skill.author.isNotEmpty) 'by ${skill.author}',
+                                ].join(' '),
+                                child: Text(
+                                  [
+                                    if (skill.version.isNotEmpty) 'v${skill.version}',
+                                    if (skill.author.isNotEmpty) 'by ${skill.author}',
+                                  ].join(' '),
+                                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                ),
+                              ),
                             if (skill.files.isNotEmpty)
                               Text('${skill.files.length} files',
                                   style: const TextStyle(fontSize: 11, color: Colors.grey)),

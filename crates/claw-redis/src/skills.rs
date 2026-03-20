@@ -127,6 +127,10 @@ pub fn new_skill(
         description: description.to_string(),
         tags,
         files,
+        version: String::new(),
+        author: String::new(),
+        license: None,
+        source_url: None,
         created_at: now,
         updated_at: now,
     }

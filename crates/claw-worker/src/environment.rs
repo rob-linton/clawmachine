@@ -124,6 +124,10 @@ pub async fn harvest_skills(env: &PreparedEnvironment) -> HarvestedSkills {
                         description: description.unwrap_or_default(),
                         tags: vec!["harvested".into()],
                         files,
+                        version: String::new(),
+                        author: String::new(),
+                        license: None,
+                        source_url: None,
                         created_at: chrono::Utc::now(),
                         updated_at: chrono::Utc::now(),
                     });

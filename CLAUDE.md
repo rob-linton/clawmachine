@@ -277,14 +277,19 @@ Credentials store encrypted key-value pairs (e.g., `AWS_ACCESS_KEY_ID`, `AZURE_C
 
 ## Upload Endpoints
 
-ZIP file upload for bulk importing files into workspaces and skills:
+ZIP file upload/download for workspaces, skills, and tools:
 
 ```
 POST /api/v1/workspaces/{id}/upload   — multipart: file=<zip>, [path=<prefix>]
-POST /api/v1/skills/upload            — multipart: file=<zip>, id, name, skill_type, [description], [tags]
+POST /api/v1/skills/upload            — multipart: file=<zip>, id, name, [description], [tags]
+GET  /api/v1/skills/{id}/download     — export skill as ZIP (SKILL.md + manifest.json + bundled files)
+POST /api/v1/tools/upload             — multipart: file=<zip>, id, name, [description], [tags]
+GET  /api/v1/tools/{id}/download      — export tool as ZIP (TOOL.json + manifest.json)
 ```
 
-Both endpoints auto-strip common root directory prefixes from zip entries (e.g. `my-skill/SKILL.md` → `SKILL.md`). Limits: 100MB zip, 10MB per file, 5000 max entries, zip bomb protection via cumulative size tracking.
+Upload endpoints auto-strip common root directory prefixes from zip entries (e.g. `my-skill/SKILL.md` → `SKILL.md`). Limits: 100MB zip, 10MB per file, 5000 max entries, zip bomb protection via cumulative size tracking.
+
+Skill and tool ZIPs include a `manifest.json` with package metadata (format, id, name, version, author, license, description, tags). On import, manifest values auto-populate; form fields override. See `Documents/SKILL-FORMAT.md` and `Documents/TOOL-FORMAT.md` for full package specifications.
 
 ## Self-Testing Rule
 

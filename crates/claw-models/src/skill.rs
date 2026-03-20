@@ -17,6 +17,14 @@ pub struct Skill {
     /// Bundled files: keys are relative paths (e.g. "scripts/run.sh"), values are text content.
     #[serde(default)]
     pub files: HashMap<String, String>,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub license: Option<String>,
+    #[serde(default)]
+    pub source_url: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

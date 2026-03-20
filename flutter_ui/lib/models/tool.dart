@@ -27,6 +27,10 @@ class Tool {
   final String checkCommand;
   final List<ToolEnvVar> envVars;
   final String? authScript;
+  final String version;
+  final String author;
+  final String? license;
+  final String? sourceUrl;
 
   Tool({
     required this.id,
@@ -37,6 +41,10 @@ class Tool {
     required this.checkCommand,
     this.envVars = const [],
     this.authScript,
+    this.version = '',
+    this.author = '',
+    this.license,
+    this.sourceUrl,
   });
 
   factory Tool.fromJson(Map<String, dynamic> json) => Tool(
@@ -51,6 +59,10 @@ class Tool {
                 .toList() ??
             [],
         authScript: json['auth_script'],
+        version: json['version'] ?? '',
+        author: json['author'] ?? '',
+        license: json['license'],
+        sourceUrl: json['source_url'],
       );
 
   Map<String, dynamic> toJson() => {
@@ -62,5 +74,9 @@ class Tool {
         'check_command': checkCommand,
         'env_vars': envVars.map((e) => e.toJson()).toList(),
         if (authScript != null) 'auth_script': authScript,
+        'version': version,
+        'author': author,
+        if (license != null) 'license': license,
+        if (sourceUrl != null) 'source_url': sourceUrl,
       };
 }

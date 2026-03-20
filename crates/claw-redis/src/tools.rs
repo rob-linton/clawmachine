@@ -123,6 +123,10 @@ pub fn new_tool(
         check_command: check_command.to_string(),
         env_vars: Vec::new(),
         auth_script: None,
+        version: String::new(),
+        author: String::new(),
+        license: None,
+        source_url: None,
         created_at: now,
         updated_at: now,
     }

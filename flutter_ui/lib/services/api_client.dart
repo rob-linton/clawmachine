@@ -377,6 +377,25 @@ class ApiClient {
     return Skill.fromJson(resp.data);
   }
 
+  /// Build a URL for skill ZIP download
+  String skillDownloadUrl(String id) => '$_baseUrl/api/v1/skills/$id/download';
+
+  /// Build a URL for tool ZIP download
+  String toolDownloadUrl(String id) => '$_baseUrl/api/v1/tools/$id/download';
+
+  Future<Tool> uploadToolZip(Uint8List zipBytes, {
+    required String id, required String name,
+    String description = '', List<String> tags = const [],
+  }) async {
+    final formData = FormData.fromMap({
+      'file': MultipartFile.fromBytes(zipBytes, filename: 'tool.zip'),
+      'id': id, 'name': name,
+      'description': description, 'tags': tags.join(','),
+    });
+    final resp = await _dio.post('/tools/upload', data: formData);
+    return Tool.fromJson(resp.data);
+  }
+
   // System Config
   Future<Map<String, dynamic>> getConfig() async {
     final resp = await _dio.get('/config');

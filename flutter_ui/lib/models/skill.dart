@@ -5,6 +5,10 @@ class Skill {
   final String description;
   final List<String> tags;
   final Map<String, String> files;
+  final String version;
+  final String author;
+  final String? license;
+  final String? sourceUrl;
 
   Skill({
     required this.id,
@@ -13,6 +17,10 @@ class Skill {
     this.description = '',
     this.tags = const [],
     this.files = const {},
+    this.version = '',
+    this.author = '',
+    this.license,
+    this.sourceUrl,
   });
 
   factory Skill.fromJson(Map<String, dynamic> json) => Skill(
@@ -24,6 +32,10 @@ class Skill {
         files: (json['files'] as Map<String, dynamic>?)
                 ?.map((k, v) => MapEntry(k, v.toString())) ??
             {},
+        version: json['version'] ?? '',
+        author: json['author'] ?? '',
+        license: json['license'],
+        sourceUrl: json['source_url'],
       );
 
   Map<String, dynamic> toJson() => {
@@ -33,5 +45,9 @@ class Skill {
         'description': description,
         'tags': tags,
         'files': files,
+        'version': version,
+        'author': author,
+        if (license != null) 'license': license,
+        if (sourceUrl != null) 'source_url': sourceUrl,
       };
 }
