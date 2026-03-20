@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../main.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -344,12 +346,44 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
                       ),
                       const SizedBox(height: 8),
-                      SelectableText(
-                        _oauthStatus['oauth_url'].toString(),
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontFamily: 'monospace',
-                            color: Colors.blue[300]),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: InkWell(
+                              onTap: () => launchUrl(
+                                Uri.parse(_oauthStatus['oauth_url'].toString()),
+                                mode: LaunchMode.externalApplication,
+                              ),
+                              child: Text(
+                                _oauthStatus['oauth_url'].toString(),
+                                style: TextStyle(
+                                    fontSize: 11,
+                                    fontFamily: 'monospace',
+                                    color: Colors.blue[300],
+                                    decoration: TextDecoration.underline),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            icon: const Icon(Icons.copy, size: 18),
+                            tooltip: 'Copy URL',
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(
+                                  text: _oauthStatus['oauth_url'].toString()));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                  const SnackBar(content: Text('URL copied to clipboard')));
+                            },
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.open_in_new, size: 18),
+                            tooltip: 'Open in browser',
+                            onPressed: () => launchUrl(
+                              Uri.parse(_oauthStatus['oauth_url'].toString()),
+                              mode: LaunchMode.externalApplication,
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 8),
                       Text(
