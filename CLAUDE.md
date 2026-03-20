@@ -367,11 +367,9 @@ Returns `{access_token, refresh_token, expires_in, token_type}`. The new `refres
 ## OAuth Redis Keys
 
 ```
-claw:worker:oauth_status               — JSON: {status, expires_at, refresh_token_age_days} (written by worker)
+claw:worker:oauth_status               — JSON: {status, expires_at, refresh_token_age_days, oauth_url?} (written by worker)
 claw:oauth-login:active                — Lock key (SETNX with 600s TTL, prevents concurrent logins)
 claw:oauth-login:request               — Pub/sub channel: login requests from API to worker
-claw:oauth-login:progress:{request_id} — Pub/sub channel: progress events from worker to API (SSE)
-claw:oauth-login:mfa:{request_id}      — Pub/sub channel: MFA code from API to worker
 ```
 
 ## Tool Redis Keys
