@@ -13,6 +13,31 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/auth/oauth-status", get(oauth_status))
         .route("/auth/oauth-login", post(oauth_login))
+        .route("/auth/oauth-code", post(oauth_code))
+}
+
+#[derive(Deserialize)]
+struct OAuthCodeRequest {
+    code: String,
+}
+
+/// POST /auth/oauth-code — submit the authentication code from the browser to claude auth login.
+async fn oauth_code(
+    State(state): State<AppState>,
+    Json(req): Json<OAuthCodeRequest>,
+) -> impl IntoResponse {
+    use redis::AsyncCommands;
+    let mut conn = match state.pool.get().await {
+        Ok(c) => c,
+        Err(e) => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("{e}")}))).into_response();
+        }
+    };
+    if let Err(e) = conn.publish::<_, _, ()>("claw:oauth-login:code", &req.code).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("{e}")}))).into_response();
+    }
+    tracing::info!("OAuth authentication code submitted");
+    (StatusCode::OK, Json(serde_json::json!({"status": "submitted"}))).into_response()
 }
 
 /// GET /auth/oauth-status — returns current OAuth token status from Redis.

@@ -149,6 +149,17 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
+  Future<void> _submitAuthCode(String code) async {
+    if (code.trim().isEmpty) return;
+    try {
+      final api = ref.read(apiClientProvider);
+      await api.submitOAuthCode(code: code.trim());
+      setState(() => _oauthLoginMessage = 'Code submitted. Waiting for authentication...');
+    } catch (e) {
+      setState(() => _oauthLoginMessage = 'Error submitting code: $e');
+    }
+  }
+
   Future<void> _pullImage() async {
     setState(() {
       _dockerLoading = true;
@@ -385,10 +396,25 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           ),
                         ],
                       ),
+                      const SizedBox(height: 12),
+                      Text('After logging in, paste the Authentication Code here:',
+                          style: TextStyle(fontSize: 12, color: Colors.grey[400])),
                       const SizedBox(height: 8),
-                      Text(
-                        'Complete the login in your browser. This page will update automatically.',
-                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: 400,
+                            child: TextField(
+                              decoration: const InputDecoration(
+                                hintText: 'Paste authentication code here',
+                                isDense: true,
+                                border: OutlineInputBorder(),
+                              ),
+                              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+                              onSubmitted: (code) => _submitAuthCode(code),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),

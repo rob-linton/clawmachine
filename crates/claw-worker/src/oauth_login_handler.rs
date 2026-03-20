@@ -134,6 +134,7 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
     // Spawn claude auth login
     let mut login_proc = match tokio::process::Command::new("claude")
         .args(["auth", "login", "--email", &email])
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -146,6 +147,9 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
             return;
         }
     };
+
+    // Keep stdin for writing the auth code later
+    let mut login_stdin = login_proc.stdin.take();
 
     // Read stdout to find the OAuth URL
     let login_stdout = login_proc.stdout.take();
@@ -190,51 +194,41 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
     // Write URL to status so the UI can display it
     write_status(pool, "login_in_progress", Some(&oauth_url)).await;
 
-    // Poll for credentials file (up to 10 minutes)
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(600);
+    // Wait for auth code from UI (user pastes the code from the browser) OR credentials to appear
+    let code_channel = format!("claw:oauth-login:code");
+    let code_future = wait_for_code(&code_channel);
 
-    loop {
-        // Check if claude auth login exited (got the callback)
-        match login_proc.try_wait() {
-            Ok(Some(status)) => {
-                tracing::info!(exit_code = ?status.code(), "claude auth login completed");
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                break;
-            }
-            Ok(None) => {} // Still running
-            Err(e) => {
-                tracing::warn!(error = %e, "Error checking claude auth login");
-                break;
-            }
-        }
-
-        // Check if credentials appeared
-        if creds_path.exists() {
-            if let Ok(content) = tokio::fs::read_to_string(&creds_path).await {
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let expires_at = creds
-                        .get("claudeAiOauth")
-                        .and_then(|o| o.get("expiresAt"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    if expires_at > now_ms {
-                        tracing::info!("OAuth credentials obtained successfully");
-                        break;
-                    }
+    tokio::select! {
+        // Auth code received from UI
+        code_opt = code_future => {
+            if let Some(code) = code_opt {
+                tracing::info!("Authentication code received from UI, writing to claude auth login stdin");
+                if let Some(ref mut stdin) = login_stdin {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = stdin.write_all(format!("{}\n", code).as_bytes()).await;
+                    let _ = stdin.flush().await;
                 }
+                // Wait for claude auth login to process the code (up to 30s)
+                match tokio::time::timeout(std::time::Duration::from_secs(30), login_proc.wait()).await {
+                    Ok(Ok(status)) => {
+                        tracing::info!(exit_code = ?status.code(), "claude auth login completed after code");
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    }
+                    _ => tracing::warn!("claude auth login didn't complete after code submission"),
+                }
+            } else {
+                tracing::warn!("Auth code wait returned None");
             }
         }
-
-        if tokio::time::Instant::now() > deadline {
-            tracing::warn!("OAuth login timed out after 10 minutes");
-            break;
+        // claude auth login exited on its own
+        status = login_proc.wait() => {
+            tracing::info!(exit_code = ?status.ok().and_then(|s| s.code()), "claude auth login exited");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        // Timeout
+        _ = tokio::time::sleep(std::time::Duration::from_secs(600)) => {
+            tracing::warn!("OAuth login timed out after 10 minutes");
+        }
     }
 
     // Kill claude auth login if still running
@@ -284,6 +278,27 @@ async fn write_status(pool: &Pool, status: &str, oauth_url: Option<&str>) {
             .set::<_, _, ()>("claw:worker:oauth_status", json.to_string())
             .await;
     }
+}
+
+async fn wait_for_code(channel: &str) -> Option<String> {
+    let redis_url = std::env::var("CLAW_REDIS_URL")
+        .unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+    let client = redis::Client::open(redis_url.as_str()).ok()?;
+    let mut pubsub = client.get_async_pubsub().await.ok()?;
+    pubsub.subscribe(channel).await.ok()?;
+    use futures::StreamExt;
+    let mut stream = pubsub.on_message();
+    let result = match tokio::time::timeout(
+        std::time::Duration::from_secs(600),
+        stream.next(),
+    )
+    .await
+    {
+        Ok(Some(msg)) => msg.get_payload::<String>().ok(),
+        _ => None,
+    };
+    drop(stream);
+    result
 }
 
 async fn cleanup_lock(pool: &Pool) {
