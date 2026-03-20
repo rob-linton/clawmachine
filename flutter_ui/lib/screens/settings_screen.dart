@@ -19,7 +19,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   String? _dockerActionResult;
   bool _oauthLoginInProgress = false;
   String? _oauthLoginMessage;
-  String? _lastOAuthRequestId;
 
   @override
   void initState() {
@@ -77,6 +76,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       label = 'OAuth: valid (${hours}h)';
       color = Colors.green;
       icon = Icons.check_circle;
+    } else if (status == 'login_in_progress') {
+      label = 'OAuth: logging in...';
+      color = Colors.orange;
+      icon = Icons.hourglass_top;
     } else if (status == 'expired') {
       label = 'OAuth: expired';
       color = Colors.red;
@@ -105,144 +108,36 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       return;
     }
 
-    // Confirm login — Anthropic uses magic link (no password needed)
-    final confirmed = await showDialog<bool>(
-      barrierDismissible: false,
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Semantics(
-          header: true,
-          label: 'OAuth Login',
-          child: const Text('OAuth Login'),
-        ),
-        content: SizedBox(
-          width: 400,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Login as: $email'),
-              const SizedBox(height: 12),
-              Text(
-                'Anthropic will send a magic link to your email. '
-                'Click the link in your email to complete the OAuth login.',
-                style: TextStyle(color: Colors.grey[500], fontSize: 13),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx, false),
-              child: const Text('Cancel')),
-          FilledButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('Send Login Email')),
-        ],
-      ),
-    );
-
-    if (confirmed != true) return;
-
     setState(() {
       _oauthLoginInProgress = true;
       _oauthLoginMessage = 'Starting OAuth login...';
     });
 
     try {
-      final requestId = await ref.read(apiClientProvider).triggerOAuthLogin(
-            email: email,
-            password: '',
-          );
-      _lastOAuthRequestId = requestId;
-      setState(() => _oauthLoginMessage = 'Magic link sent! Check your email for a verification code.');
+      await ref.read(apiClientProvider).triggerOAuthLogin(email: email);
+      setState(() => _oauthLoginMessage = 'Waiting for login URL...');
 
-      // Show verification code dialog
-      if (!mounted) return;
-      final codeCtrl = TextEditingController();
-      final code = await showDialog<String>(
-        barrierDismissible: false,
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: Semantics(
-            header: true,
-            label: 'Enter Verification Code',
-            child: const Text('Enter Verification Code'),
-          ),
-          content: SizedBox(
-            width: 400,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('Check your email ($email) for a verification code from Anthropic.'),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: codeCtrl,
-                  autofocus: true,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(
-                    labelText: 'Verification Code',
-                    hintText: '123456',
-                    border: OutlineInputBorder(),
-                  ),
-                  onSubmitted: (_) => Navigator.pop(ctx, codeCtrl.text),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-                onPressed: () => Navigator.pop(ctx),
-                child: const Text('Cancel')),
-            FilledButton(
-                onPressed: () => Navigator.pop(ctx, codeCtrl.text),
-                child: const Text('Submit Code')),
-          ],
-        ),
-      );
-
-      if (code == null || code.isEmpty) {
-        setState(() {
-          _oauthLoginInProgress = false;
-          _oauthLoginMessage = 'Login cancelled.';
-        });
-        return;
-      }
-
-      // Submit verification code
-      setState(() => _oauthLoginMessage = 'Submitting verification code...');
+      // Poll OAuth status every 3s — wait for URL then for success (up to 10 min)
       final api = ref.read(apiClientProvider);
-
-      // Get request_id from the login response (stored in a variable we need to extract)
-      // For now, use the MFA endpoint which takes request_id
-      // We need to know the request_id — let's poll for it or derive it
-      // Actually, the triggerOAuthLogin response should give us the request_id
-      // But we already called it above. Let me re-read the last known request_id from the OAuth status
-      // Simpler: just submit the code as MFA with a placeholder request_id
-      // The worker will pick it up from whatever active login is running
-      await api.submitOAuthMfa(requestId: _lastOAuthRequestId ?? '', code: code);
-
-      setState(() => _oauthLoginMessage = 'Code submitted. Waiting for authentication...');
-
-      // Poll OAuth status for up to 30 seconds
-      for (int i = 0; i < 6; i++) {
-        await Future.delayed(const Duration(seconds: 5));
+      for (int i = 0; i < 200; i++) {
+        await Future.delayed(const Duration(seconds: 3));
         if (!mounted) break;
         final status = await api.getOAuthStatus()
             .catchError((_) => <String, dynamic>{'status': 'unknown'});
+        setState(() => _oauthStatus = status);
+
         if (status['status'] == 'valid') {
           setState(() {
-            _oauthStatus = status;
             _oauthLoginInProgress = false;
             _oauthLoginMessage = 'OAuth login successful!';
           });
           return;
         }
-        setState(() => _oauthStatus = status);
       }
 
       setState(() {
         _oauthLoginInProgress = false;
-        _oauthLoginMessage = 'Login may still be processing. Refresh to check.';
+        _oauthLoginMessage = 'Login timed out. Try again.';
       });
     } catch (e) {
       setState(() {
@@ -432,6 +327,40 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                 ],
               ],
             ),
+            // Show OAuth URL when login is in progress
+            if (_oauthStatus['status'] == 'login_in_progress' &&
+                _oauthStatus['oauth_url'] != null) ...[
+              const SizedBox(height: 12),
+              Card(
+                color: Colors.orange.withValues(alpha: 0.1),
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Semantics(
+                        label: 'Open this link to complete OAuth login',
+                        child: const Text('Open this link in your browser to log in:',
+                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+                      ),
+                      const SizedBox(height: 8),
+                      SelectableText(
+                        _oauthStatus['oauth_url'].toString(),
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                            color: Colors.blue[300]),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Complete the login in your browser. This page will update automatically.',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 4),
             Text(
               'OAuth uses your Claude subscription (Max plan). '

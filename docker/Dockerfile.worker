@@ -38,20 +38,10 @@ RUN curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-27.
 ARG CLAUDE_CODE_VERSION=latest
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
-# Install Chromium + puppeteer-core for automated OAuth login flow
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends chromium && \
-    rm -rf /var/lib/apt/lists/*
-RUN npm install -g puppeteer-core
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
-
 # Create claw user for job UID/GID matching, but run worker as root
 # so it can access the Docker socket for spawning sandbox containers
 RUN useradd -m -s /bin/bash claw
 COPY --from=builder /build/target/release/claw-worker /usr/local/bin/
-
-# Bundle OAuth login script
-COPY scripts/oauth-login.js /app/scripts/oauth-login.js
 
 ENV HOME=/home/claw
 # Allow git to operate on repos owned by other users (claw user creates repos,
