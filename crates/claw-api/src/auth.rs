@@ -66,7 +66,6 @@ fn is_exempt_path(path: &str) -> bool {
     if path == "/api/v1/auth/oauth-status" {
         return true;
     }
-    // oauth-login requires authentication (handled by normal auth flow)
     // Health check
     if path == "/api/v1/status" {
         return true;

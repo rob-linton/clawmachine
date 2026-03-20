@@ -1,8 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:url_launcher/url_launcher.dart';
 import '../main.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -19,8 +17,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _loading = true;
   bool _dockerLoading = false;
   String? _dockerActionResult;
-  bool _oauthLoginInProgress = false;
-  String? _oauthLoginMessage;
 
   @override
   void initState() {
@@ -78,10 +74,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       label = 'OAuth: valid (${hours}h)';
       color = Colors.green;
       icon = Icons.check_circle;
-    } else if (status == 'login_in_progress') {
-      label = 'OAuth: logging in...';
-      color = Colors.orange;
-      icon = Icons.hourglass_top;
     } else if (status == 'expired') {
       label = 'OAuth: expired';
       color = Colors.red;
@@ -100,53 +92,6 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         backgroundColor: color.withValues(alpha: 0.1),
       ),
     );
-  }
-
-  Future<void> _startOAuthLogin() async {
-    final email = _config['anthropic_email'] ?? '';
-    if (email.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Enter an Anthropic email first')));
-      return;
-    }
-
-    setState(() {
-      _oauthLoginInProgress = true;
-      _oauthLoginMessage = 'Starting OAuth login...';
-    });
-
-    try {
-      await ref.read(apiClientProvider).triggerOAuthLogin(email: email);
-      setState(() => _oauthLoginMessage = 'Waiting for login URL...');
-
-      // Poll OAuth status every 3s — wait for URL then for success (up to 10 min)
-      final api = ref.read(apiClientProvider);
-      for (int i = 0; i < 200; i++) {
-        await Future.delayed(const Duration(seconds: 3));
-        if (!mounted) break;
-        final status = await api.getOAuthStatus()
-            .catchError((_) => <String, dynamic>{'status': 'unknown'});
-        setState(() => _oauthStatus = status);
-
-        if (status['status'] == 'valid') {
-          setState(() {
-            _oauthLoginInProgress = false;
-            _oauthLoginMessage = 'OAuth login successful!';
-          });
-          return;
-        }
-      }
-
-      setState(() {
-        _oauthLoginInProgress = false;
-        _oauthLoginMessage = 'Login timed out. Try again.';
-      });
-    } catch (e) {
-      setState(() {
-        _oauthLoginInProgress = false;
-        _oauthLoginMessage = 'Error: $e';
-      });
-    }
   }
 
   Future<void> _pullImage() async {
@@ -285,120 +230,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                   ? ''
                   : (_config['anthropic_api_key'] ?? ''),
               (val) => _setConfig('anthropic_api_key', val),
-              helperText: 'sk-ant-... Fallback when OAuth unavailable.',
+              helperText: 'sk-ant-... Enter an API key for billed API access.',
               obscureText: true,
             ),
             const SizedBox(height: 12),
-
-            // OAuth Login section
-            _buildEditableRow(
-              'Anthropic Email',
-              _config['anthropic_email'] ?? '',
-              (val) => _setConfig('anthropic_email', val),
-              helperText: 'Email for automated OAuth login',
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                FilledButton.icon(
-                  onPressed: _oauthLoginInProgress ? null : _startOAuthLogin,
-                  icon: _oauthLoginInProgress
-                      ? const SizedBox(
-                          width: 16,
-                          height: 16,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                      : const Icon(Icons.login),
-                  label: Text(_oauthLoginInProgress ? 'Logging in...' : 'Login with OAuth'),
-                ),
-                if (_oauthLoginMessage != null) ...[
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Semantics(
-                      label: _oauthLoginMessage!,
-                      child: Text(
-                        _oauthLoginMessage!,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: _oauthLoginMessage!.contains('Error')
-                              ? Colors.red
-                              : Colors.green,
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-            // Show OAuth URL when login is in progress
-            if (_oauthStatus['status'] == 'login_in_progress' &&
-                _oauthStatus['oauth_url'] != null) ...[
-              const SizedBox(height: 12),
-              Card(
-                color: Colors.orange.withValues(alpha: 0.1),
-                child: Padding(
-                  padding: const EdgeInsets.all(12),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Semantics(
-                        label: 'Open this link to complete OAuth login',
-                        child: const Text('Open this link in your browser to log in:',
-                            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-                      ),
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: InkWell(
-                              onTap: () => launchUrl(
-                                Uri.parse(_oauthStatus['oauth_url'].toString()),
-                                mode: LaunchMode.externalApplication,
-                              ),
-                              child: Text(
-                                _oauthStatus['oauth_url'].toString(),
-                                style: TextStyle(
-                                    fontSize: 11,
-                                    fontFamily: 'monospace',
-                                    color: Colors.blue[300],
-                                    decoration: TextDecoration.underline),
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 8),
-                          IconButton(
-                            icon: const Icon(Icons.copy, size: 18),
-                            tooltip: 'Copy URL',
-                            onPressed: () {
-                              Clipboard.setData(ClipboardData(
-                                  text: _oauthStatus['oauth_url'].toString()));
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                  const SnackBar(content: Text('URL copied to clipboard')));
-                            },
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.open_in_new, size: 18),
-                            tooltip: 'Open in browser',
-                            onPressed: () => launchUrl(
-                              Uri.parse(_oauthStatus['oauth_url'].toString()),
-                              mode: LaunchMode.externalApplication,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Complete the login in your browser. This page will update automatically when done.',
-                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-            const SizedBox(height: 4),
             Text(
-              'OAuth uses your Claude subscription (Max plan). '
-              'API key is billed separately. OAuth is preferred when available.',
+              'Option 1: Run "claude auth login" on the server host to use your '
+              'Claude subscription (Max plan). The worker auto-refreshes the token.\n'
+              'Option 2: Enter an API key above for billed API access (no login needed).\n'
+              'OAuth is preferred when available — API key is used as fallback.',
               style: TextStyle(color: Colors.grey[400], fontSize: 12),
             ),
           ]),

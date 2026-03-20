@@ -252,13 +252,16 @@ Tools are CLI programs (az, aws, gh, etc.) installed into Docker sandbox images 
 ## OAuth Login Endpoints
 
 ```
-GET    /api/v1/auth/oauth-status      — current OAuth token status (valid/expired/missing/login_in_progress + expiry + oauth_url)
-POST   /api/v1/auth/oauth-login       — trigger OAuth login (requires email). Worker runs `claude auth login`, returns URL for user to open in their browser.
+GET    /api/v1/auth/oauth-status      — current OAuth token status (valid/expired/missing + expiry)
 ```
 
-The login flow is user-driven: the worker runs `claude auth login` which provides an OAuth URL. The Settings UI displays the URL as a clickable link. The user opens it in their own browser, completes Anthropic's login (magic link + verification), and `claude auth login` receives the token automatically via polling.
+**Two authentication methods** (OAuth preferred when available):
 
-**Auth preference order**: OAuth > API key. When valid OAuth tokens exist, the worker does NOT pass `ANTHROPIC_API_KEY` to Claude Code processes, ensuring the subscription (Max plan) is used. API key is only used as fallback when OAuth is unavailable.
+1. **OAuth (subscription)**: Run `claude auth login` interactively on the server host. The worker auto-refreshes the token every ~24h. Uses the Claude subscription (Max plan) — no per-API-call billing.
+
+2. **API Key (billed)**: Set `ANTHROPIC_API_KEY` via Settings UI or `.env`. Used as fallback when OAuth is unavailable. Billed per API call.
+
+**Auth preference order**: OAuth > API key. When valid OAuth tokens exist, the worker does NOT pass `ANTHROPIC_API_KEY` to Claude Code processes.
 
 ## Credential Endpoints
 

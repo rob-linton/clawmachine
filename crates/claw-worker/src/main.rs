@@ -1,7 +1,6 @@
 mod docker;
 mod environment;
 mod executor;
-mod oauth_login_handler;
 mod pipeline_runner;
 mod prompt_builder;
 mod token_refresh;
@@ -162,15 +161,6 @@ async fn main() {
         let shutdown = shutdown.clone();
         handles.push(tokio::spawn(async move {
             token_refresh_loop(pool, shutdown).await;
-        }));
-    }
-
-    // Spawn OAuth login handler
-    {
-        let pool = pool.clone();
-        let shutdown = shutdown.clone();
-        handles.push(tokio::spawn(async move {
-            oauth_login_handler::oauth_login_loop(pool, shutdown).await;
         }));
     }
 
