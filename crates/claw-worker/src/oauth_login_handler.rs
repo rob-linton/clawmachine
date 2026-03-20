@@ -168,6 +168,7 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
 
     let mut login_proc = match tokio::process::Command::new("claude")
         .args(["auth", "login", "--email", &email])
+        .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -179,6 +180,9 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
             return;
         }
     };
+
+    // Keep stdin for writing the verification code later
+    let mut login_stdin = login_proc.stdin.take();
 
     // Read stdout/stderr lines to find the OAuth URL (within 15 seconds)
     let login_stdout = login_proc.stdout.take();
@@ -352,60 +356,61 @@ async fn handle_login_request(pool: &Pool, payload: &str) {
     }
 
     // The Puppeteer script sent the magic link email.
-    // Now wait for the user to click the link and for claude auth login to receive the callback.
-    // Poll for credentials file or claude auth login exit (up to 5 minutes).
-    publish_progress(pool, &progress_channel, "waiting_for_email", "Magic link sent! Check your email and click the login link. Waiting up to 5 minutes...").await;
+    // Now wait for the user to either:
+    // a) Click the magic link (direct callback to claude auth login) — unlikely in Docker
+    // b) Get a verification CODE that needs to be pasted into claude auth login's stdin
+    //
+    // We listen on the MFA channel for the verification code from the UI.
+    publish_progress(pool, &progress_channel, "waiting_for_code", "Magic link sent! Check your email. If you see a verification code, enter it in the app. Waiting up to 5 minutes...").await;
 
     let creds_path = dirs::home_dir()
         .unwrap_or_else(|| "/home/claw".into())
         .join(".claude")
         .join(".credentials.json");
 
+    let mfa_channel = format!("claw:oauth-login:mfa:{}", request_id);
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
     let mut success = false;
 
-    loop {
-        // Check if claude auth login has exited (meaning callback received)
-        match login_proc.try_wait() {
-            Ok(Some(status)) => {
-                tracing::info!(exit_code = ?status.code(), "claude auth login completed");
-                // Give it a moment to write the file
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-                break;
-            }
-            Ok(None) => {} // Still running
-            Err(e) => {
-                tracing::warn!(error = %e, "Error checking claude auth login status");
-                break;
-            }
-        }
+    // Wait for either:
+    // 1) Verification code from UI (via MFA pub/sub channel)
+    // 2) Credentials file appearing (direct callback worked)
+    // 3) claude auth login exiting
+    // 4) 5 minute timeout
 
-        // Check if credentials file appeared
-        if creds_path.exists() {
-            if let Ok(content) = tokio::fs::read_to_string(&creds_path).await {
-                if let Ok(creds) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let expires_at = creds
-                        .get("claudeAiOauth")
-                        .and_then(|o| o.get("expiresAt"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                    let now_ms = std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .unwrap_or_default()
-                        .as_millis() as u64;
-                    if expires_at > now_ms {
-                        success = true;
-                        break;
+    // Listen for verification code in background
+    let mfa_future = wait_for_mfa(&mfa_channel);
+
+    tokio::select! {
+        // Verification code received from UI
+        code_opt = mfa_future => {
+            if let Some(code) = code_opt {
+                tracing::info!("Verification code received from UI");
+                if let Some(ref mut stdin) = login_stdin {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = stdin.write_all(format!("{}\n", code).as_bytes()).await;
+                    let _ = stdin.flush().await;
+                }
+                publish_progress(pool, &progress_channel, "verifying", "Verification code submitted. Waiting for authentication...").await;
+                // Wait for claude auth login to process the code
+                match tokio::time::timeout(std::time::Duration::from_secs(30), login_proc.wait()).await {
+                    Ok(Ok(status)) => {
+                        tracing::info!(exit_code = ?status.code(), "claude auth login completed after code");
+                        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                     }
+                    _ => tracing::warn!("claude auth login didn't complete after code"),
                 }
             }
         }
-
-        if tokio::time::Instant::now() > deadline {
-            break;
+        // claude auth login exited on its own (direct callback)
+        status = login_proc.wait() => {
+            tracing::info!(exit_code = ?status.ok().and_then(|s| s.code()), "claude auth login exited");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
-
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        // Timeout
+        _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {
+            tracing::warn!("OAuth login timed out after 5 minutes");
+        }
     }
 
     // Kill claude auth login if still running

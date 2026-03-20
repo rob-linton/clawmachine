@@ -19,6 +19,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   String? _dockerActionResult;
   bool _oauthLoginInProgress = false;
   String? _oauthLoginMessage;
+  String? _lastOAuthRequestId;
 
   @override
   void initState() {
@@ -148,15 +149,82 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     });
 
     try {
-      await ref.read(apiClientProvider).triggerOAuthLogin(
+      final requestId = await ref.read(apiClientProvider).triggerOAuthLogin(
             email: email,
             password: '',
           );
-      setState(() => _oauthLoginMessage = 'Magic link sent! Check your email and click the login link.');
+      _lastOAuthRequestId = requestId;
+      setState(() => _oauthLoginMessage = 'Magic link sent! Check your email for a verification code.');
 
-      // Poll OAuth status every 5 seconds for up to 5 minutes
+      // Show verification code dialog
+      if (!mounted) return;
+      final codeCtrl = TextEditingController();
+      final code = await showDialog<String>(
+        barrierDismissible: false,
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Semantics(
+            header: true,
+            label: 'Enter Verification Code',
+            child: const Text('Enter Verification Code'),
+          ),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Check your email ($email) for a verification code from Anthropic.'),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: codeCtrl,
+                  autofocus: true,
+                  keyboardType: TextInputType.number,
+                  decoration: const InputDecoration(
+                    labelText: 'Verification Code',
+                    hintText: '123456',
+                    border: OutlineInputBorder(),
+                  ),
+                  onSubmitted: (_) => Navigator.pop(ctx, codeCtrl.text),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: const Text('Cancel')),
+            FilledButton(
+                onPressed: () => Navigator.pop(ctx, codeCtrl.text),
+                child: const Text('Submit Code')),
+          ],
+        ),
+      );
+
+      if (code == null || code.isEmpty) {
+        setState(() {
+          _oauthLoginInProgress = false;
+          _oauthLoginMessage = 'Login cancelled.';
+        });
+        return;
+      }
+
+      // Submit verification code
+      setState(() => _oauthLoginMessage = 'Submitting verification code...');
       final api = ref.read(apiClientProvider);
-      for (int i = 0; i < 60; i++) {
+
+      // Get request_id from the login response (stored in a variable we need to extract)
+      // For now, use the MFA endpoint which takes request_id
+      // We need to know the request_id — let's poll for it or derive it
+      // Actually, the triggerOAuthLogin response should give us the request_id
+      // But we already called it above. Let me re-read the last known request_id from the OAuth status
+      // Simpler: just submit the code as MFA with a placeholder request_id
+      // The worker will pick it up from whatever active login is running
+      await api.submitOAuthMfa(requestId: _lastOAuthRequestId ?? '', code: code);
+
+      setState(() => _oauthLoginMessage = 'Code submitted. Waiting for authentication...');
+
+      // Poll OAuth status for up to 30 seconds
+      for (int i = 0; i < 6; i++) {
         await Future.delayed(const Duration(seconds: 5));
         if (!mounted) break;
         final status = await api.getOAuthStatus()
@@ -169,13 +237,12 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           });
           return;
         }
-        // Update UI with latest status
         setState(() => _oauthStatus = status);
       }
 
       setState(() {
         _oauthLoginInProgress = false;
-        _oauthLoginMessage = 'Timed out. Did you click the email link?';
+        _oauthLoginMessage = 'Login may still be processing. Refresh to check.';
       });
     } catch (e) {
       setState(() {

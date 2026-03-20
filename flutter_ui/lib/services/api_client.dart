@@ -455,14 +455,15 @@ class ApiClient {
     return Map<String, dynamic>.from(resp.data);
   }
 
-  Future<void> triggerOAuthLogin({
+  Future<String?> triggerOAuthLogin({
     required String email,
     required String password,
   }) async {
-    await _dio.post('/auth/oauth-login', data: {
+    final resp = await _dio.post('/auth/oauth-login', data: {
       'email': email,
       'password': password,
     });
+    return resp.data?['request_id']?.toString();
   }
 
   Future<void> submitOAuthMfa({
