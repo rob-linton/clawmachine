@@ -61,6 +61,12 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
+                Image.network(
+                  'clawmachine_logo.png',
+                  height: 120,
+                  filterQuality: FilterQuality.none,
+                ),
+                const SizedBox(height: 16),
                 Text('Claw Machine',
                     style: Theme.of(context)
                         .textTheme

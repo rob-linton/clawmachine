@@ -1,11 +1,11 @@
 {
-    "name": "claw_ui",
-    "short_name": "claw_ui",
+    "name": "Claw Machine",
+    "short_name": "Claw Machine",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#1a1a2e",
+    "theme_color": "#1a1a2e",
+    "description": "Job queue orchestrator for Claude Code",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
