@@ -414,16 +414,31 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                                           style: const TextStyle(fontSize: 11, color: Colors.grey),
                                         ),
                                       ),
-                                    if (!skill.enabled)
-                                      Semantics(
-                                        label: 'Disabled',
-                                        child: Chip(
-                                          label: const Text('Disabled', style: TextStyle(fontSize: 10)),
-                                          backgroundColor: Colors.red.shade900,
-                                          visualDensity: VisualDensity.compact,
-                                          padding: EdgeInsets.zero,
-                                        ),
-                                      ),
+                                    Wrap(
+                                      spacing: 6,
+                                      children: [
+                                        if (skill.sourceUrl != null && skill.sourceUrl!.isNotEmpty)
+                                          Semantics(
+                                            label: 'From catalog',
+                                            child: Chip(
+                                              avatar: const Icon(Icons.cloud_done, size: 14),
+                                              label: const Text('Catalog', style: TextStyle(fontSize: 10)),
+                                              visualDensity: VisualDensity.compact,
+                                              padding: EdgeInsets.zero,
+                                            ),
+                                          ),
+                                        if (!skill.enabled)
+                                          Semantics(
+                                            label: 'Disabled',
+                                            child: Chip(
+                                              label: const Text('Disabled', style: TextStyle(fontSize: 10)),
+                                              backgroundColor: Colors.red.shade900,
+                                              visualDensity: VisualDensity.compact,
+                                              padding: EdgeInsets.zero,
+                                            ),
+                                          ),
+                                      ],
+                                    ),
                                     if (skill.files.isNotEmpty)
                                       Text('${skill.files.length} files',
                                           style: const TextStyle(fontSize: 11, color: Colors.grey)),

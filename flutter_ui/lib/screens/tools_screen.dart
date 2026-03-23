@@ -729,16 +729,31 @@ class _ToolCard extends StatelessWidget {
                   ),
                 ),
               ],
-              if (!tool.enabled)
-                Semantics(
-                  label: 'Disabled',
-                  child: Chip(
-                    label: const Text('Disabled', style: TextStyle(fontSize: 10)),
-                    backgroundColor: Colors.red.shade900,
-                    visualDensity: VisualDensity.compact,
-                    padding: EdgeInsets.zero,
-                  ),
-                ),
+              Wrap(
+                spacing: 6,
+                children: [
+                  if (tool.sourceUrl != null && tool.sourceUrl!.isNotEmpty)
+                    Semantics(
+                      label: 'From catalog',
+                      child: Chip(
+                        avatar: const Icon(Icons.cloud_done, size: 14),
+                        label: const Text('Catalog', style: TextStyle(fontSize: 10)),
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                      ),
+                    ),
+                  if (!tool.enabled)
+                    Semantics(
+                      label: 'Disabled',
+                      child: Chip(
+                        label: const Text('Disabled', style: TextStyle(fontSize: 10)),
+                        backgroundColor: Colors.red.shade900,
+                        visualDensity: VisualDensity.compact,
+                        padding: EdgeInsets.zero,
+                      ),
+                    ),
+                ],
+              ),
               if (tool.description.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Text(tool.description,
