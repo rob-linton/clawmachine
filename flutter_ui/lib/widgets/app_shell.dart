@@ -25,11 +25,12 @@ class AppShell extends ConsumerWidget {
                   Image.network('clawmachine_logo.png',
                       height: 40, filterQuality: FilterQuality.none),
                   const SizedBox(height: 4),
-                  Text('Claw Machine',
+                  Text('Claw\nMachine',
+                      textAlign: TextAlign.center,
                       style: Theme.of(context)
                           .textTheme
-                          .labelSmall
-                          ?.copyWith(fontWeight: FontWeight.bold)),
+                          .titleSmall
+                          ?.copyWith(fontWeight: FontWeight.bold, height: 1.2)),
                 ],
               ),
             ),
