@@ -28,6 +28,8 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
   Future<void> _refresh() async {
     setState(() => _loading = true);
     try {
+      // Sync from catalog before loading
+      try { await ref.read(apiClientProvider).syncCatalog(); } catch (_) {}
       final tools = await ref.read(apiClientProvider).listTools();
       // Fetch catalog recommended items
       List<Map<String, dynamic>> recommended = [];

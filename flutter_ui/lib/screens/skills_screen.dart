@@ -28,6 +28,8 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
   Future<void> _refresh() async {
     setState(() => _loading = true);
     try {
+      // Sync from catalog before loading
+      try { await ref.read(apiClientProvider).syncCatalog(); } catch (_) {}
       final skills = await ref.read(apiClientProvider).listSkills();
       // Fetch catalog recommended items
       List<Map<String, dynamic>> recommended = [];
