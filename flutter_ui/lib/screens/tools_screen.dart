@@ -677,7 +677,14 @@ class _ToolCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  const Icon(Icons.build_circle, size: 20),
+                  Semantics(
+                    label: tool.sourceUrl != null && tool.sourceUrl!.isNotEmpty ? 'Catalog tool' : 'Tool',
+                    child: Icon(
+                      tool.sourceUrl != null && tool.sourceUrl!.isNotEmpty ? Icons.cloud_done : Icons.build_circle,
+                      size: 20,
+                      color: tool.sourceUrl != null && tool.sourceUrl!.isNotEmpty ? Colors.blue[300] : null,
+                    ),
+                  ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Semantics(
@@ -729,31 +736,16 @@ class _ToolCard extends StatelessWidget {
                   ),
                 ),
               ],
-              Wrap(
-                spacing: 6,
-                children: [
-                  if (tool.sourceUrl != null && tool.sourceUrl!.isNotEmpty)
-                    Semantics(
-                      label: 'From catalog',
-                      child: Chip(
-                        avatar: const Icon(Icons.cloud_done, size: 14),
-                        label: const Text('Catalog', style: TextStyle(fontSize: 10)),
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                      ),
-                    ),
-                  if (!tool.enabled)
-                    Semantics(
-                      label: 'Disabled',
-                      child: Chip(
-                        label: const Text('Disabled', style: TextStyle(fontSize: 10)),
-                        backgroundColor: Colors.red.shade900,
-                        visualDensity: VisualDensity.compact,
-                        padding: EdgeInsets.zero,
-                      ),
-                    ),
-                ],
-              ),
+              if (!tool.enabled)
+                Semantics(
+                  label: 'Disabled',
+                  child: Chip(
+                    label: const Text('Disabled', style: TextStyle(fontSize: 10)),
+                    backgroundColor: Colors.red.shade900,
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                  ),
+                ),
               if (tool.description.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Text(tool.description,

@@ -380,6 +380,15 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                                   children: [
                                     Row(
                                       children: [
+                                        Semantics(
+                                          label: skill.sourceUrl != null && skill.sourceUrl!.isNotEmpty ? 'Catalog skill' : 'Skill',
+                                          child: Icon(
+                                            skill.sourceUrl != null && skill.sourceUrl!.isNotEmpty ? Icons.cloud_done : Icons.auto_awesome,
+                                            size: 20,
+                                            color: skill.sourceUrl != null && skill.sourceUrl!.isNotEmpty ? Colors.blue[300] : null,
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
                                         Expanded(
                                           child: Semantics(label: 'Skill ${skill.name}', child: Text(skill.name,
                                               style: Theme.of(context)
@@ -414,31 +423,16 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                                           style: const TextStyle(fontSize: 11, color: Colors.grey),
                                         ),
                                       ),
-                                    Wrap(
-                                      spacing: 6,
-                                      children: [
-                                        if (skill.sourceUrl != null && skill.sourceUrl!.isNotEmpty)
-                                          Semantics(
-                                            label: 'From catalog',
-                                            child: Chip(
-                                              avatar: const Icon(Icons.cloud_done, size: 14),
-                                              label: const Text('Catalog', style: TextStyle(fontSize: 10)),
-                                              visualDensity: VisualDensity.compact,
-                                              padding: EdgeInsets.zero,
-                                            ),
-                                          ),
-                                        if (!skill.enabled)
-                                          Semantics(
-                                            label: 'Disabled',
-                                            child: Chip(
-                                              label: const Text('Disabled', style: TextStyle(fontSize: 10)),
-                                              backgroundColor: Colors.red.shade900,
-                                              visualDensity: VisualDensity.compact,
-                                              padding: EdgeInsets.zero,
-                                            ),
-                                          ),
-                                      ],
-                                    ),
+                                    if (!skill.enabled)
+                                      Semantics(
+                                        label: 'Disabled',
+                                        child: Chip(
+                                          label: const Text('Disabled', style: TextStyle(fontSize: 10)),
+                                          backgroundColor: Colors.red.shade900,
+                                          visualDensity: VisualDensity.compact,
+                                          padding: EdgeInsets.zero,
+                                        ),
+                                      ),
                                     if (skill.files.isNotEmpty)
                                       Text('${skill.files.length} files',
                                           style: const TextStyle(fontSize: 11, color: Colors.grey)),
