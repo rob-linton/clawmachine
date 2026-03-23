@@ -141,6 +141,7 @@ class _ClawAppState extends ConsumerState<ClawApp> {
         useMaterial3: true,
       ),
       routerConfig: _router,
+      builder: (context, child) => SelectionArea(child: child ?? const SizedBox.shrink()),
     );
   }
 }

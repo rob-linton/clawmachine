@@ -504,11 +504,9 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
             child: SingleChildScrollView(
               controller: _logScrollController,
               padding: const EdgeInsets.all(12),
-              child: SelectionArea(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: entries,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: entries,
               ),
             ),
           ),
