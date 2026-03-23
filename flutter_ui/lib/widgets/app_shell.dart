@@ -19,12 +19,19 @@ class AppShell extends ConsumerWidget {
             selectedIndex: idx >= 0 ? idx : null,
             labelType: NavigationRailLabelType.all,
             leading: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 16),
-              child: Text('Claw',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge
-                      ?.copyWith(fontWeight: FontWeight.bold)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Column(
+                children: [
+                  Image.network('clawmachine_logo.png',
+                      height: 40, filterQuality: FilterQuality.none),
+                  const SizedBox(height: 4),
+                  Text('Claw Machine',
+                      style: Theme.of(context)
+                          .textTheme
+                          .labelSmall
+                          ?.copyWith(fontWeight: FontWeight.bold)),
+                ],
+              ),
             ),
             trailing: Expanded(
               child: Column(
