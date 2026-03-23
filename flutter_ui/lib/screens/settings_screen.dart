@@ -17,6 +17,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool _loading = true;
   bool _dockerLoading = false;
   String? _dockerActionResult;
+  bool _catalogSyncing = false;
+  String? _catalogSyncResult;
 
   @override
   void initState() {
@@ -134,6 +136,33 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       setState(() {
         _dockerLoading = false;
         _dockerActionResult = 'Build failed: $e';
+      });
+    }
+  }
+
+  Future<void> _syncCatalog() async {
+    setState(() {
+      _catalogSyncing = true;
+      _catalogSyncResult = null;
+    });
+    try {
+      final result = await ref.read(apiClientProvider).syncCatalog();
+      final installed = result['skills_installed'] ?? 0;
+      final updated = result['skills_updated'] ?? 0;
+      final skipped = result['skills_skipped'] ?? 0;
+      final tInstalled = result['tools_installed'] ?? 0;
+      final tUpdated = result['tools_updated'] ?? 0;
+      final tSkipped = result['tools_skipped'] ?? 0;
+      setState(() {
+        _catalogSyncing = false;
+        _catalogSyncResult =
+            'Synced: $installed skills installed, $updated updated, $skipped skipped; '
+            '$tInstalled tools installed, $tUpdated updated, $tSkipped skipped';
+      });
+    } catch (e) {
+      setState(() {
+        _catalogSyncing = false;
+        _catalogSyncResult = 'Sync failed: $e';
       });
     }
   }
@@ -354,10 +383,43 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               (val) => _setConfig('catalog_url', val),
               helperText: 'URL to curated skill/tool catalog (JSON)',
             ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Semantics(
+                  label: 'Sync Catalog button',
+                  child: FilledButton.icon(
+                    onPressed: _catalogSyncing ? null : _syncCatalog,
+                    icon: const Icon(Icons.sync),
+                    label: const Text('Sync Catalog'),
+                  ),
+                ),
+                if (_catalogSyncing) ...[
+                  const SizedBox(width: 12),
+                  const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)),
+                ],
+              ],
+            ),
+            if (_catalogSyncResult != null) ...[
+              const SizedBox(height: 8),
+              Semantics(
+                label: _catalogSyncResult!,
+                child: Text(
+                  _catalogSyncResult!,
+                  style: TextStyle(
+                    color: _catalogSyncResult!.contains('failed') || _catalogSyncResult!.contains('Failed')
+                        ? Colors.red
+                        : Colors.green,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 8),
             Text(
               'Point to a JSON file listing recommended skills and tools. '
-              'The catalog appears as "Recommended" on the Skills and Tools screens.',
+              'The catalog appears as "Recommended" on the Skills and Tools screens. '
+              'Sync installs new items and updates existing ones from the catalog repo.',
               style: TextStyle(color: Colors.grey[400], fontSize: 12),
             ),
           ]),

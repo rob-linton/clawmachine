@@ -514,4 +514,10 @@ class ApiClient {
     return Map<String, dynamic>.from(resp.data);
   }
 
+  // Catalog sync
+  Future<Map<String, dynamic>> syncCatalog() async {
+    final resp = await _dio.post('/catalog/sync');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
 }

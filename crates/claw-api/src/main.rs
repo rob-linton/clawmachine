@@ -53,6 +53,9 @@ async fn main() {
     // Build CORS layer
     let cors = build_cors_layer();
 
+    // Clone pool for background task before state is moved
+    let sync_pool = state.pool.clone();
+
     // Build API routes with state first
     let api = Router::new()
         .nest("/api/v1", routes::router())
@@ -66,6 +69,15 @@ async fn main() {
                 .fallback(ServeFile::new(format!("{static_dir}/index.html"))),
         )
         .layer(cors);
+
+    // Background catalog sync (10s after startup)
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        match routes::catalog::do_sync(&sync_pool).await {
+            Ok(summary) => tracing::info!(?summary, "Catalog auto-sync complete"),
+            Err(e) => tracing::warn!(error = %e, "Catalog auto-sync failed (non-fatal)"),
+        }
+    });
 
     let addr = format!("0.0.0.0:{port}");
     tracing::info!("claw-api listening on {addr}");
