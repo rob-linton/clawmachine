@@ -425,12 +425,14 @@ Images are hosted at `ghcr.io/rob-linton/clawmachine/{api,worker,scheduler,sandb
 # Login to ghcr.io (uses gh CLI token)
 gh auth token | docker login ghcr.io -u rob-linton --password-stdin
 
-# Build and push individual images
+# Build and push individual images — ALWAYS include --platform linux/amd64
 docker buildx build --platform linux/amd64 --target api -t ghcr.io/rob-linton/clawmachine/api:latest --push -f docker/Dockerfile.backend .
 docker buildx build --platform linux/amd64 --target scheduler -t ghcr.io/rob-linton/clawmachine/scheduler:latest --push -f docker/Dockerfile.backend .
 docker buildx build --platform linux/amd64 -t ghcr.io/rob-linton/clawmachine/worker:latest --push -f docker/Dockerfile.worker .
 docker buildx build --platform linux/amd64 -t ghcr.io/rob-linton/clawmachine/sandbox:latest --push -f docker/Dockerfile.sandbox .
 ```
+
+**CRITICAL: `--platform linux/amd64` is mandatory on every build.** The dev machine is ARM (Apple Silicon) but the server is x86_64. Omitting the platform flag pushes an ARM image that crashes with `exec format error` on the server.
 
 **Deploy to server** (after pushing images):
 ```bash
