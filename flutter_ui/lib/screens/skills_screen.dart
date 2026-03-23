@@ -328,6 +328,9 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
               Semantics(header: true, label: 'Skills', child: Text('Skills',
                   style: Theme.of(context).textTheme.headlineMedium)),
               const Spacer(),
+              IconButton(
+                  onPressed: _refresh, icon: const Icon(Icons.refresh)),
+              const SizedBox(width: 8),
               FilledButton.icon(
                 onPressed: _installFromUrl,
                 icon: const Icon(Icons.link),
@@ -339,9 +342,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                 icon: const Icon(Icons.archive),
                 label: const Text('Import Skill (ZIP)'),
               ),
-              const SizedBox(width: 8),
-              IconButton(
-                  onPressed: _refresh, icon: const Icon(Icons.refresh)),
             ],
           ),
           const SizedBox(height: 16),

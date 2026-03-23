@@ -407,3 +407,13 @@ claw:workspace:{uuid}:lock         — Exclusive lock (job_id string, TTL)
 claw:workspace:{uuid}:events       — List of JSON WorkspaceEvent entries (newest first, capped at 1000)
 claw:workspace:{uuid}:children     — Set of child workspace UUIDs (for lineage tracking)
 ```
+
+## Production Server
+
+The claw-server runs at `10.0.0.10`, accessible via `ssh claw-server`. Caddy reverse-proxies ports 80/443 to the API on :8080, so use `http://10.0.0.10` (not `:8080`) for API calls.
+
+**Deployment directory**: `~/claw/` contains `docker-compose.yml`, `Caddyfile`, `.env`, and `flutter-web/`.
+
+**API authentication**: No `CLAW_API_TOKEN` is set. Use session auth — login via `/api/v1/auth/login` with credentials from `~/claw/.env` (`CLAW_ADMIN_USER`/`CLAW_ADMIN_PASSWORD`), then pass the `claw_session` cookie.
+
+**Catalog skills/tools**: Managed via `claw-catalog/` in this repo. Skills and tools installed from the catalog get `source_url` set, which shows a cloud icon in the UI. To replace a locally-created skill/tool with the catalog version, delete it from Redis first (via API or UI), then let the catalog sync reinstall it.
