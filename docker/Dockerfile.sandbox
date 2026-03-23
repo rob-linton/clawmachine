@@ -1,5 +1,5 @@
 # ============================================
-# Sandbox image for ClaudeCodeClaw job execution
+# Sandbox image for Claw Machine job execution
 # Contains Claude Code CLI + common tools
 # Run with: --user $(id -u):$(id -g)
 # ============================================

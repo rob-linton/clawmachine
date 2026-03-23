@@ -109,6 +109,8 @@ green "  Caddyfile written"
 
 # --- Write docker-compose.yml ---
 cat > docker-compose.yml <<COMPOSEEOF
+name: claw
+
 services:
   redis:
     image: redis:7-alpine

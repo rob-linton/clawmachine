@@ -1,5 +1,5 @@
 [Unit]
-Description=ClaudeCodeClaw Job Queue Orchestrator
+Description=Claw Machine Job Queue Orchestrator
 After=docker.service
 Requires=docker.service
 
@@ -7,10 +7,10 @@ Requires=docker.service
 Type=simple
 User=claw
 Group=claw
-WorkingDirectory=/opt/claudecodeclaw
-EnvironmentFile=/opt/claudecodeclaw/.env
-ExecStart=/usr/bin/docker compose -f /opt/claudecodeclaw/docker/docker-compose.yml --env-file /opt/claudecodeclaw/.env up
-ExecStop=/usr/bin/docker compose -f /opt/claudecodeclaw/docker/docker-compose.yml --env-file /opt/claudecodeclaw/.env down
+WorkingDirectory=/opt/clawmachine
+EnvironmentFile=/opt/clawmachine/.env
+ExecStart=/usr/bin/docker compose -f /opt/clawmachine/docker/docker-compose.yml --env-file /opt/clawmachine/.env up
+ExecStop=/usr/bin/docker compose -f /opt/clawmachine/docker/docker-compose.yml --env-file /opt/clawmachine/.env down
 Restart=always
 RestartSec=10
 
