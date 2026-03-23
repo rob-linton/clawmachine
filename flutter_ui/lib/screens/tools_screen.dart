@@ -722,22 +722,6 @@ class _ToolCard extends StatelessWidget {
                         fontFamily: 'monospace',
                         color: Colors.grey[500])),
               ),
-              if (tool.version.isNotEmpty || tool.author.isNotEmpty) ...[
-                const SizedBox(height: 2),
-                Semantics(
-                  label: [
-                    if (tool.version.isNotEmpty) 'v${tool.version}',
-                    if (tool.author.isNotEmpty) 'by ${tool.author}',
-                  ].join(' '),
-                  child: Text(
-                    [
-                      if (tool.version.isNotEmpty) 'v${tool.version}',
-                      if (tool.author.isNotEmpty) 'by ${tool.author}',
-                    ].join(' '),
-                    style: TextStyle(fontSize: 11, color: Colors.grey[500]),
-                  ),
-                ),
-              ],
               if (!tool.enabled)
                 Semantics(
                   label: 'Disabled',

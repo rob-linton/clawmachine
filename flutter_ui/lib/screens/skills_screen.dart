@@ -411,20 +411,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                                         ),
                                       ],
                                     ),
-                                    if (skill.version.isNotEmpty || skill.author.isNotEmpty)
-                                      Semantics(
-                                        label: [
-                                          if (skill.version.isNotEmpty) 'v${skill.version}',
-                                          if (skill.author.isNotEmpty) 'by ${skill.author}',
-                                        ].join(' '),
-                                        child: Text(
-                                          [
-                                            if (skill.version.isNotEmpty) 'v${skill.version}',
-                                            if (skill.author.isNotEmpty) 'by ${skill.author}',
-                                          ].join(' '),
-                                          style: const TextStyle(fontSize: 11, color: Colors.grey),
-                                        ),
-                                      ),
                                     if (!skill.enabled)
                                       Semantics(
                                         label: 'Disabled',
