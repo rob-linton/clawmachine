@@ -598,10 +598,25 @@ class _ToolDetailScreenState extends ConsumerState<ToolDetailScreen> {
                           .map((ev) => DataRow(cells: [
                                 DataCell(Semantics(
                                   label: 'Env var ${ev.key}',
-                                  child: Text(ev.key,
-                                      style: const TextStyle(
-                                          fontFamily: 'monospace',
-                                          fontSize: 13)),
+                                  child: InkWell(
+                                    onTap: () {
+                                      web.window.navigator.clipboard.writeText(ev.key);
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        SnackBar(content: Text('Copied ${ev.key}'), duration: const Duration(seconds: 1)),
+                                      );
+                                    },
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Text(ev.key,
+                                            style: const TextStyle(
+                                                fontFamily: 'monospace',
+                                                fontSize: 13)),
+                                        const SizedBox(width: 4),
+                                        Icon(Icons.copy, size: 14, color: Colors.grey[500]),
+                                      ],
+                                    ),
+                                  ),
                                 )),
                                 DataCell(Semantics(
                                   label: ev.description,
