@@ -234,11 +234,15 @@ Templates are reusable job definitions (prompt, skills, workspace, model, etc.) 
 ## Tool Provisioning Endpoints
 
 ```
-POST   /api/v1/tools              — create CLI tool definition
-GET    /api/v1/tools              — list all tools
-GET    /api/v1/tools/{id}         — get tool details
-PUT    /api/v1/tools/{id}         — update tool
-DELETE /api/v1/tools/{id}         — delete tool
+POST   /api/v1/tools                        — create CLI tool definition
+GET    /api/v1/tools                        — list all tools
+GET    /api/v1/tools/{id}                   — get tool details
+PUT    /api/v1/tools/{id}                   — update tool
+DELETE /api/v1/tools/{id}                   — delete tool
+POST   /api/v1/tools/install-from-url       — install tool from git repo or ZIP URL
+POST   /api/v1/tools/{id}/update-from-source — re-fetch tool from source_url
+POST   /api/v1/skills/install-from-url      — install skill from git repo or ZIP URL
+POST   /api/v1/skills/{id}/update-from-source — re-fetch skill from source_url
 ```
 
 Tools are CLI programs (az, aws, gh, etc.) installed into Docker sandbox images on demand. Each tool defines `install_commands` (Debian shell), `check_command` (verify presence), optional `auth_script` (login before job), and `env_vars` (credentials needed). Jobs, templates, workspaces, crons, and pipeline steps can reference tools via `tool_ids`.

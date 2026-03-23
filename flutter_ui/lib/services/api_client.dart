@@ -364,6 +364,46 @@ class ApiClient {
     return Map<String, dynamic>.from(resp.data);
   }
 
+  // Install from URL
+  Future<Skill> installSkillFromUrl({required String url, String? path}) async {
+    final resp = await _dio.post('/skills/install-from-url', data: {
+      'url': url,
+      if (path != null) 'path': path,
+    });
+    return Skill.fromJson(resp.data);
+  }
+
+  Future<Tool> installToolFromUrl({required String url, String? path}) async {
+    final resp = await _dio.post('/tools/install-from-url', data: {
+      'url': url,
+      if (path != null) 'path': path,
+    });
+    return Tool.fromJson(resp.data);
+  }
+
+  Future<Skill> updateSkillFromSource(String id) async {
+    final resp = await _dio.post('/skills/$id/update-from-source');
+    return Skill.fromJson(resp.data);
+  }
+
+  Future<Tool> updateToolFromSource(String id) async {
+    final resp = await _dio.post('/tools/$id/update-from-source');
+    return Tool.fromJson(resp.data);
+  }
+
+  // Catalog
+  Future<Map<String, dynamic>> fetchCatalog() async {
+    final configResp = await _dio.get('/config/catalog_url');
+    final rawValue = configResp.data['value'] ?? configResp.data['catalog_url'] ?? '';
+    final catalogUrl = rawValue is String ? rawValue : rawValue.toString();
+    if (catalogUrl.isEmpty) {
+      return {'skills': [], 'tools': []};
+    }
+    // Fetch the catalog directly (it's a public JSON file)
+    final resp = await Dio().get(catalogUrl);
+    return Map<String, dynamic>.from(resp.data);
+  }
+
   Future<Skill> uploadSkillZip(Uint8List zipBytes, {
     required String id, required String name,
     String description = '', List<String> tags = const [],

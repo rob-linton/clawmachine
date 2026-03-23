@@ -5,6 +5,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use serde::Deserialize;
+use std::collections::HashMap;
 use std::io::Write;
 
 use crate::AppState;
@@ -14,8 +16,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/tools", post(create_tool).get(list_tools))
         .route("/tools/upload", post(upload_tool_zip).layer(DefaultBodyLimit::max(104_857_600)))
+        .route("/tools/install-from-url", post(install_tool_from_url))
         .route("/tools/{id}", get(get_tool).put(update_tool).delete(delete_tool))
         .route("/tools/{id}/download", get(download_tool))
+        .route("/tools/{id}/update-from-source", post(update_tool_from_source))
 }
 
 async fn create_tool(
@@ -283,6 +287,270 @@ async fn upload_tool_zip(
 
     match result {
         Ok(t) => (StatusCode::CREATED, Json(t)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+// --- Install from URL ---
+
+#[derive(Deserialize)]
+struct InstallFromUrlRequest {
+    url: String,
+    #[serde(default)]
+    path: Option<String>,
+}
+
+/// Fetch tool files from a URL (git repo or ZIP), parse manifest + TOOL.json, upsert to Redis.
+async fn fetch_tool_from_url(url: &str, subpath: Option<&str>) -> Result<(HashMap<String, String>, Option<serde_json::Value>), String> {
+    if !url.starts_with("https://") {
+        return Err("URL must start with https:// (SSRF prevention)".into());
+    }
+
+    let is_git = url.contains(".git")
+        || url.contains("github.com")
+        || url.contains("gitlab.com");
+    let is_zip = url.ends_with(".zip");
+
+    if is_zip {
+        let resp = reqwest::get(url).await.map_err(|e| format!("Download failed: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("Download failed: HTTP {}", resp.status()));
+        }
+        if let Some(cl) = resp.content_length() {
+            if cl > 100 * 1024 * 1024 {
+                return Err("ZIP file too large (max 100MB)".into());
+            }
+        }
+        let bytes = resp.bytes().await.map_err(|e| format!("Download read failed: {e}"))?;
+        let limits = ExtractLimits {
+            max_total_size: 50 * 1024 * 1024,
+            ..Default::default()
+        };
+        let files = upload_utils::extract_zip_to_map(&bytes, &limits)?;
+        let manifest: Option<serde_json::Value> = files.get("manifest.json")
+            .and_then(|s| serde_json::from_str(s).ok());
+        Ok((files, manifest))
+    } else if is_git {
+        let temp_dir = tempfile::tempdir().map_err(|e| format!("Failed to create temp dir: {e}"))?;
+        let temp_path = temp_dir.path();
+
+        let output = tokio::process::Command::new("git")
+            .args(["clone", "--depth", "1", "--single-branch", url, &temp_path.to_string_lossy()])
+            .output()
+            .await
+            .map_err(|e| format!("git clone failed: {e}"))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if url.contains("github.com") && !url.contains(".git") {
+                let zip_url = format!("{}/archive/refs/heads/main.zip", url.trim_end_matches('/'));
+                return Box::pin(fetch_tool_from_url(&zip_url, subpath)).await;
+            }
+            return Err(format!("git clone failed: {stderr}"));
+        }
+
+        let base_dir = if let Some(sp) = subpath {
+            temp_path.join(sp)
+        } else {
+            temp_path.to_path_buf()
+        };
+
+        if !base_dir.exists() {
+            return Err(format!("Path '{}' not found in repository", subpath.unwrap_or("")));
+        }
+
+        let mut files = HashMap::new();
+        read_dir_recursive(&base_dir, &base_dir, &mut files).await?;
+
+        let manifest: Option<serde_json::Value> = files.get("manifest.json")
+            .and_then(|s| serde_json::from_str(s).ok());
+
+        Ok((files, manifest))
+    } else {
+        Err("URL must be a git repository (github.com/gitlab.com) or a .zip file".into())
+    }
+}
+
+/// Recursively read all text files from a directory into a HashMap.
+async fn read_dir_recursive(
+    base: &std::path::Path,
+    dir: &std::path::Path,
+    files: &mut HashMap<String, String>,
+) -> Result<(), String> {
+    let mut entries = tokio::fs::read_dir(dir).await.map_err(|e| format!("Read dir failed: {e}"))?;
+    while let Some(entry) = entries.next_entry().await.map_err(|e| format!("Read entry failed: {e}"))? {
+        let path = entry.path();
+        let file_type = entry.file_type().await.map_err(|e| format!("File type failed: {e}"))?;
+        if file_type.is_dir() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if name == ".git" || name == "node_modules" || name == ".claw" {
+                continue;
+            }
+            Box::pin(read_dir_recursive(base, &path, files)).await?;
+        } else if file_type.is_file() {
+            let rel = path.strip_prefix(base).map_err(|e| format!("Strip prefix failed: {e}"))?;
+            let rel_str = rel.to_string_lossy().to_string();
+            if rel_str.starts_with('.') || rel_str.contains("/.") {
+                continue;
+            }
+            let metadata = tokio::fs::metadata(&path).await.map_err(|e| format!("Metadata failed: {e}"))?;
+            if metadata.len() > 10 * 1024 * 1024 {
+                continue;
+            }
+            if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                files.insert(rel_str, content);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build a tool from fetched files + manifest, with source_url set.
+fn build_tool_from_fetched(
+    mut files: HashMap<String, String>,
+    manifest: Option<serde_json::Value>,
+    source_url: &str,
+) -> Result<claw_models::Tool, String> {
+    // Parse TOOL.json for tool-specific fields
+    let tool_json: Option<serde_json::Value> = files.remove("TOOL.json")
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    // Remove manifest.json from bundled files
+    files.remove("manifest.json");
+
+    let id = manifest.as_ref()
+        .and_then(|m| m.get("id")).and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| "manifest.json must contain an 'id' field".to_string())?;
+
+    let name = manifest.as_ref()
+        .and_then(|m| m.get("name")).and_then(|v| v.as_str())
+        .unwrap_or(&id).to_string();
+
+    let description = manifest.as_ref()
+        .and_then(|m| m.get("description")).and_then(|v| v.as_str())
+        .unwrap_or("").to_string();
+
+    let tags: Vec<String> = manifest.as_ref()
+        .and_then(|m| m.get("tags"))
+        .and_then(|t| serde_json::from_value::<Vec<String>>(t.clone()).ok())
+        .unwrap_or_default();
+
+    // Extract install_commands and check_command from TOOL.json
+    let install_commands = tool_json.as_ref()
+        .and_then(|t| t.get("install_commands"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let check_command = tool_json.as_ref()
+        .and_then(|t| t.get("check_command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let mut tool = claw_redis::new_tool(&id, &name, &install_commands, &check_command);
+    tool.description = description;
+    tool.tags = tags;
+
+    // Apply TOOL.json fields
+    if let Some(ref tj) = tool_json {
+        if let Some(env_vars) = tj.get("env_vars") {
+            if let Ok(vars) = serde_json::from_value::<Vec<claw_models::ToolEnvVar>>(env_vars.clone()) {
+                tool.env_vars = vars;
+            }
+        }
+        if let Some(auth) = tj.get("auth_script").and_then(|v| v.as_str()) {
+            tool.auth_script = Some(auth.to_string());
+        }
+    }
+
+    // Apply manifest metadata
+    if let Some(ref m) = manifest {
+        if let Some(v) = m.get("version").and_then(|v| v.as_str()) {
+            tool.version = v.to_string();
+        }
+        if let Some(v) = m.get("author").and_then(|v| v.as_str()) {
+            tool.author = v.to_string();
+        }
+        if let Some(v) = m.get("license").and_then(|v| v.as_str()) {
+            tool.license = Some(v.to_string());
+        }
+    }
+
+    tool.source_url = Some(source_url.to_string());
+
+    Ok(tool)
+}
+
+async fn install_tool_from_url(
+    State(state): State<AppState>,
+    Json(req): Json<InstallFromUrlRequest>,
+) -> impl IntoResponse {
+    let (files, manifest) = match fetch_tool_from_url(&req.url, req.path.as_deref()).await {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+
+    let tool = match build_tool_from_fetched(files, manifest, &req.url) {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+
+    // Upsert
+    let result = match claw_redis::get_tool(&state.pool, &tool.id).await {
+        Ok(Some(existing)) => {
+            let mut updated = tool;
+            updated.created_at = existing.created_at;
+            match claw_redis::update_tool(&state.pool, &updated).await {
+                Ok(()) => Ok(updated),
+                Err(e) => Err(e),
+            }
+        }
+        _ => {
+            match claw_redis::create_tool(&state.pool, &tool).await {
+                Ok(()) => Ok(tool),
+                Err(e) => Err(e),
+            }
+        }
+    };
+
+    match result {
+        Ok(t) => (StatusCode::CREATED, Json(t)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_tool_from_source(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let existing = match claw_redis::get_tool(&state.pool, &id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    let source_url = match &existing.source_url {
+        Some(url) if !url.is_empty() => url.clone(),
+        _ => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "No source URL set for this tool"}))).into_response(),
+    };
+
+    let (files, manifest) = match fetch_tool_from_url(&source_url, None).await {
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+
+    let mut tool = match build_tool_from_fetched(files, manifest, &source_url) {
+        Ok(t) => t,
+        Err(e) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": e}))).into_response(),
+    };
+
+    // Preserve created_at and ID
+    tool.id = existing.id;
+    tool.created_at = existing.created_at;
+
+    match claw_redis::update_tool(&state.pool, &tool).await {
+        Ok(()) => Json(tool).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }

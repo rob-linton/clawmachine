@@ -80,6 +80,26 @@ class _ToolDetailScreenState extends ConsumerState<ToolDetailScreen> {
     anchor.click();
   }
 
+  Future<void> _updateFromSource() async {
+    final tool = _tool;
+    if (tool == null || tool.sourceUrl == null) return;
+    try {
+      setState(() => _loading = true);
+      await ref.read(apiClientProvider).updateToolFromSource(tool.id);
+      _refresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Tool updated from source')));
+      }
+    } catch (e) {
+      setState(() => _loading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Update failed: $e')));
+      }
+    }
+  }
+
   Future<void> _deleteTool() async {
     final confirm = await showDialog<bool>(
       barrierDismissible: false,
@@ -333,6 +353,18 @@ class _ToolDetailScreenState extends ConsumerState<ToolDetailScreen> {
                     ),
                   ),
                 const SizedBox(width: 16),
+                if (tool.sourceUrl != null && tool.sourceUrl!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: OutlinedButton.icon(
+                      onPressed: _updateFromSource,
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: Semantics(
+                        label: 'Update from Source',
+                        child: const Text('Update from Source'),
+                      ),
+                    ),
+                  ),
                 FilledButton.icon(
                   onPressed: _showEditDialog,
                   icon: const Icon(Icons.edit, size: 18),

@@ -78,6 +78,26 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
     anchor.click();
   }
 
+  Future<void> _updateFromSource() async {
+    final skill = _skill;
+    if (skill == null || skill.sourceUrl == null) return;
+    try {
+      setState(() => _loading = true);
+      await ref.read(apiClientProvider).updateSkillFromSource(skill.id);
+      _refresh();
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Skill updated from source')));
+      }
+    } catch (e) {
+      setState(() => _loading = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Update failed: $e')));
+      }
+    }
+  }
+
   Future<void> _deleteSkill() async {
     final confirm = await showDialog<bool>(
       barrierDismissible: false,
@@ -307,6 +327,18 @@ class _SkillDetailScreenState extends ConsumerState<SkillDetailScreen> {
                     ),
                   ),
                 const SizedBox(width: 16),
+                if (skill.sourceUrl != null && skill.sourceUrl!.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: OutlinedButton.icon(
+                      onPressed: _updateFromSource,
+                      icon: const Icon(Icons.refresh, size: 18),
+                      label: Semantics(
+                        label: 'Update from Source',
+                        child: const Text('Update from Source'),
+                      ),
+                    ),
+                  ),
                 FilledButton.icon(
                   onPressed: _showEditDialog,
                   icon: const Icon(Icons.edit, size: 18),

@@ -346,6 +346,23 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           _buildCredentialMountsSection(),
           const SizedBox(height: 16),
 
+          // Catalog
+          _buildSection('Catalog', Icons.storefront, [
+            _buildEditableRow(
+              'Catalog URL',
+              _config['catalog_url'] ?? '',
+              (val) => _setConfig('catalog_url', val),
+              helperText: 'URL to curated skill/tool catalog (JSON)',
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Point to a JSON file listing recommended skills and tools. '
+              'The catalog appears as "Recommended" on the Skills and Tools screens.',
+              style: TextStyle(color: Colors.grey[400], fontSize: 12),
+            ),
+          ]),
+          const SizedBox(height: 16),
+
           // About
           _buildSection('About', Icons.info_outline, [
             Semantics(
