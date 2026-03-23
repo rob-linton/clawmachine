@@ -517,22 +517,30 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
           label: 'Workspace ${ws.name}',
           child: Row(
             children: [
-              Text(ws.name, style: const TextStyle(fontWeight: FontWeight.bold)),
-              const SizedBox(width: 8),
-              Semantics(
-                label: 'Mode ${ws.persistence}',
-                child: Chip(
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  visualDensity: VisualDensity.compact,
-                  avatar: Icon(_persistenceIcon(ws.persistence), size: 14, color: _persistenceColor(ws.persistence)),
-                  label: Text(ws.persistence, style: const TextStyle(fontSize: 11)),
-                  padding: EdgeInsets.zero,
+              Expanded(
+                child: Row(
+                  children: [
+                    Text(ws.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    if (ws.remoteUrl != null && ws.remoteUrl!.isNotEmpty) ...[
+                      const SizedBox(width: 4),
+                      Tooltip(message: ws.remoteUrl!, child: const Icon(Icons.cloud, size: 16, color: Colors.grey)),
+                    ],
+                  ],
                 ),
               ),
-              if (ws.remoteUrl != null && ws.remoteUrl!.isNotEmpty) ...[
-                const SizedBox(width: 4),
-                Tooltip(message: ws.remoteUrl!, child: const Icon(Icons.cloud, size: 16, color: Colors.grey)),
-              ],
+              SizedBox(
+                width: 110,
+                child: Semantics(
+                  label: 'Mode ${ws.persistence}',
+                  child: Chip(
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                    avatar: Icon(_persistenceIcon(ws.persistence), size: 14, color: _persistenceColor(ws.persistence)),
+                    label: Text(ws.persistence, style: const TextStyle(fontSize: 11)),
+                    padding: EdgeInsets.zero,
+                  ),
+                ),
+              ),
             ],
           ),
         ),
