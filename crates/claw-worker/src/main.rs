@@ -352,6 +352,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                 let skills = claw_redis::resolve_skills(&pool, &all_skill_ids, &job.skill_tags)
                     .await
                     .unwrap_or_default();
+                let skills: Vec<_> = skills.into_iter().filter(|s| s.enabled).collect();
 
                 // 3b. Resolve tools (workspace defaults + job-specific, deduplicated)
                 let mut all_tool_ids = Vec::new();
@@ -364,6 +365,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                 let tools = claw_redis::resolve_tools(&pool, &all_tool_ids)
                     .await
                     .unwrap_or_default();
+                let tools: Vec<_> = tools.into_iter().filter(|t| t.enabled).collect();
 
                 // 3b. Git snapshot: pre-job commit (before skills deployed)
                 // Only for legacy workspaces — new workspaces get fresh clones

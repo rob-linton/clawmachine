@@ -9,6 +9,9 @@ class Skill {
   final String author;
   final String? license;
   final String? sourceUrl;
+  final bool enabled;
+  final String? createdAt;
+  final String? updatedAt;
 
   Skill({
     required this.id,
@@ -21,6 +24,9 @@ class Skill {
     this.author = '',
     this.license,
     this.sourceUrl,
+    this.enabled = true,
+    this.createdAt,
+    this.updatedAt,
   });
 
   factory Skill.fromJson(Map<String, dynamic> json) => Skill(
@@ -36,6 +42,9 @@ class Skill {
         author: json['author'] ?? '',
         license: json['license'],
         sourceUrl: json['source_url'],
+        enabled: json['enabled'] ?? true,
+        createdAt: json['created_at'],
+        updatedAt: json['updated_at'],
       );
 
   Map<String, dynamic> toJson() => {
@@ -49,5 +58,6 @@ class Skill {
         'author': author,
         if (license != null) 'license': license,
         if (sourceUrl != null) 'source_url': sourceUrl,
+        'enabled': enabled,
       };
 }

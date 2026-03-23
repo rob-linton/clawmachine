@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:web/web.dart' as web;
 import '../main.dart';
 import '../models/skill.dart';
@@ -180,75 +181,6 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
     if (saved == true) _refresh();
   }
 
-  void _showSkillDetail(Skill skill) {
-    showDialog(
-      barrierDismissible: false,
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(skill.name),
-        content: SizedBox(
-          width: 600,
-          child: SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _infoRow('ID', skill.id),
-                _infoRow('Description', skill.description),
-                if (skill.version.isNotEmpty)
-                  _infoRow('Version', skill.version),
-                if (skill.author.isNotEmpty)
-                  _infoRow('Author', skill.author),
-                if (skill.tags.isNotEmpty)
-                  _infoRow('Tags', skill.tags.join(', ')),
-                if (skill.files.isNotEmpty)
-                  _infoRow('Files', skill.files.keys.join(', ')),
-                const SizedBox(height: 16),
-                const Text('SKILL.md:',
-                    style: TextStyle(fontWeight: FontWeight.bold)),
-                const SizedBox(height: 8),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: Colors.black54,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: SelectableText(
-                    skill.content.isEmpty ? '(empty)' : skill.content,
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Close'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _infoRow(String label, String value) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(
-              width: 90,
-              child: Text('$label:',
-                  style: const TextStyle(fontWeight: FontWeight.bold))),
-          Expanded(child: Text(value)),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -289,80 +221,93 @@ class _SkillsScreenState extends ConsumerState<SkillsScreen> {
                 itemCount: _skills.length,
                 itemBuilder: (context, i) {
                   final skill = _skills[i];
-                  return Card(
-                    clipBehavior: Clip.antiAlias,
-                    child: Semantics(
-                      label: 'Skill ${skill.name}',
-                      child: InkWell(
-                      onTap: () => _showSkillDetail(skill),
-                      child: Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              children: [
-                                Expanded(
-                                  child: Semantics(label: 'Skill ${skill.name}', child: Text(skill.name,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium)),
-                                ),
-                                PopupMenuButton<String>(
-                                  itemBuilder: (_) => [
-                                    const PopupMenuItem(value: 'edit', child: Text('Edit')),
-                                    const PopupMenuItem(value: 'export', child: Text('Export')),
-                                    const PopupMenuItem(value: 'delete', child: Text('Delete')),
-                                  ],
-                                  onSelected: (v) {
-                                    if (v == 'edit') _showSkillDetail(skill);
-                                    if (v == 'export') _exportSkill(skill);
-                                    if (v == 'delete') _delete(skill.id);
-                                  },
-                                ),
-                              ],
-                            ),
-                            if (skill.version.isNotEmpty || skill.author.isNotEmpty)
-                              Semantics(
-                                label: [
-                                  if (skill.version.isNotEmpty) 'v${skill.version}',
-                                  if (skill.author.isNotEmpty) 'by ${skill.author}',
-                                ].join(' '),
-                                child: Text(
-                                  [
+                  return Opacity(
+                    opacity: skill.enabled ? 1.0 : 0.5,
+                    child: Card(
+                      clipBehavior: Clip.antiAlias,
+                      child: Semantics(
+                        label: 'Skill ${skill.name}',
+                        child: InkWell(
+                        onTap: () => context.go('/skills/${skill.id}'),
+                        child: Padding(
+                          padding: const EdgeInsets.all(16),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: Semantics(label: 'Skill ${skill.name}', child: Text(skill.name,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium)),
+                                  ),
+                                  PopupMenuButton<String>(
+                                    itemBuilder: (_) => [
+                                      const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                                      const PopupMenuItem(value: 'export', child: Text('Export')),
+                                      const PopupMenuItem(value: 'delete', child: Text('Delete')),
+                                    ],
+                                    onSelected: (v) {
+                                      if (v == 'edit') context.go('/skills/${skill.id}');
+                                      if (v == 'export') _exportSkill(skill);
+                                      if (v == 'delete') _delete(skill.id);
+                                    },
+                                  ),
+                                ],
+                              ),
+                              if (skill.version.isNotEmpty || skill.author.isNotEmpty)
+                                Semantics(
+                                  label: [
                                     if (skill.version.isNotEmpty) 'v${skill.version}',
                                     if (skill.author.isNotEmpty) 'by ${skill.author}',
                                   ].join(' '),
-                                  style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                  child: Text(
+                                    [
+                                      if (skill.version.isNotEmpty) 'v${skill.version}',
+                                      if (skill.author.isNotEmpty) 'by ${skill.author}',
+                                    ].join(' '),
+                                    style: const TextStyle(fontSize: 11, color: Colors.grey),
+                                  ),
                                 ),
-                              ),
-                            if (skill.files.isNotEmpty)
-                              Text('${skill.files.length} files',
-                                  style: const TextStyle(fontSize: 11, color: Colors.grey)),
-                            const SizedBox(height: 4),
-                            if (skill.description.isNotEmpty)
-                              Text(skill.description,
-                                  maxLines: 2,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: Theme.of(context)
-                                      .textTheme
-                                      .bodySmall),
-                            const Spacer(),
-                            if (skill.tags.isNotEmpty)
-                              Wrap(
-                                spacing: 4,
-                                children: skill.tags
-                                    .map((t) => Chip(
-                                          label: Text(t,
-                                              style: const TextStyle(
-                                                  fontSize: 10)),
-                                          visualDensity:
-                                              VisualDensity.compact,
-                                          padding: EdgeInsets.zero,
-                                        ))
-                                    .toList(),
-                              ),
-                          ],
+                              if (!skill.enabled)
+                                Semantics(
+                                  label: 'Disabled',
+                                  child: Chip(
+                                    label: const Text('Disabled', style: TextStyle(fontSize: 10)),
+                                    backgroundColor: Colors.red.shade900,
+                                    visualDensity: VisualDensity.compact,
+                                    padding: EdgeInsets.zero,
+                                  ),
+                                ),
+                              if (skill.files.isNotEmpty)
+                                Text('${skill.files.length} files',
+                                    style: const TextStyle(fontSize: 11, color: Colors.grey)),
+                              const SizedBox(height: 4),
+                              if (skill.description.isNotEmpty)
+                                Text(skill.description,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall),
+                              const Spacer(),
+                              if (skill.tags.isNotEmpty)
+                                Wrap(
+                                  spacing: 4,
+                                  children: skill.tags
+                                      .map((t) => Chip(
+                                            label: Text(t,
+                                                style: const TextStyle(
+                                                    fontSize: 10)),
+                                            visualDensity:
+                                                VisualDensity.compact,
+                                            padding: EdgeInsets.zero,
+                                          ))
+                                      .toList(),
+                                ),
+                            ],
+                          ),
                         ),
                       ),
                     ),

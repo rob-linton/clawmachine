@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:web/web.dart' as web;
 import '../main.dart';
 import '../models/tool.dart';
@@ -426,6 +427,7 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
                             final tool = _tools[i];
                             return _ToolCard(
                               tool: tool,
+                              onTap: () => context.go('/tools/${tool.id}'),
                               onEdit: () =>
                                   _showCreateEditDialog(existing: tool),
                               onDelete: () => _delete(tool.id),
@@ -443,21 +445,25 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
 
 class _ToolCard extends StatelessWidget {
   final Tool tool;
+  final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onExport;
 
   const _ToolCard(
       {required this.tool,
+      required this.onTap,
       required this.onEdit,
       required this.onDelete,
       required this.onExport});
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    return Opacity(
+      opacity: tool.enabled ? 1.0 : 0.5,
+      child: Card(
       child: InkWell(
-        onTap: onEdit,
+        onTap: onTap,
         borderRadius: BorderRadius.circular(12),
         child: Padding(
           padding: const EdgeInsets.all(16),
@@ -518,6 +524,16 @@ class _ToolCard extends StatelessWidget {
                   ),
                 ),
               ],
+              if (!tool.enabled)
+                Semantics(
+                  label: 'Disabled',
+                  child: Chip(
+                    label: const Text('Disabled', style: TextStyle(fontSize: 10)),
+                    backgroundColor: Colors.red.shade900,
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                  ),
+                ),
               if (tool.description.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Text(tool.description,
@@ -560,6 +576,7 @@ class _ToolCard extends StatelessWidget {
           ),
         ),
       ),
+    ),
     );
   }
 }

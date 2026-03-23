@@ -128,6 +128,7 @@ pub async fn harvest_skills(env: &PreparedEnvironment) -> HarvestedSkills {
                         author: String::new(),
                         license: None,
                         source_url: None,
+                        enabled: true,
                         created_at: chrono::Utc::now(),
                         updated_at: chrono::Utc::now(),
                     });

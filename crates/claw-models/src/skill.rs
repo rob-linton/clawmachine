@@ -25,6 +25,12 @@ pub struct Skill {
     pub license: Option<String>,
     #[serde(default)]
     pub source_url: Option<String>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+fn default_true() -> bool {
+    true
 }

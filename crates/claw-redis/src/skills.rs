@@ -131,6 +131,7 @@ pub fn new_skill(
         author: String::new(),
         license: None,
         source_url: None,
+        enabled: true,
         created_at: now,
         updated_at: now,
     }
