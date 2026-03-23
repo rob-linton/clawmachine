@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../main.dart';
 
 class SettingsScreen extends ConsumerStatefulWidget {
@@ -434,6 +435,31 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             const SizedBox(height: 4),
             Text('Job queue orchestrator for Claude Code',
                 style: TextStyle(color: Colors.grey[400])),
+            const SizedBox(height: 4),
+            Semantics(
+              label: 'License MIT',
+              child: Text('License: MIT',
+                  style: TextStyle(color: Colors.grey[400])),
+            ),
+            const SizedBox(height: 4),
+            GestureDetector(
+              onTap: () => launchUrl(
+                  Uri.parse('https://github.com/rob-linton/clawmachine')),
+              child: Semantics(
+                label: 'GitHub repository',
+                child: Text('github.com/rob-linton/clawmachine',
+                    style: TextStyle(
+                        color: Colors.blue[300],
+                        decoration: TextDecoration.underline)),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Semantics(
+              label: 'Trademark disclaimer',
+              child: Text(
+                  'Not affiliated with or endorsed by Anthropic.',
+                  style: TextStyle(color: Colors.grey[500], fontSize: 11)),
+            ),
           ]),
         ],
       ),

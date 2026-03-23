@@ -23,7 +23,7 @@ CLI / API / Cron / Webhooks
 
 ## Install (Production)
 
-Requires Docker and Claude Code authenticated on the host.
+Requires Docker and Claude Code authenticated on the host (or an Anthopic API Key).
 
 ```bash
 # Authenticate Claude Code (one-time)
@@ -227,4 +227,4 @@ Most configuration is managed from the **Settings** screen in the dashboard. Env
 
 ## License
 
-MIT
+[MIT](LICENSE) — see [NOTICE.md](NOTICE.md) for trademark attributions.
