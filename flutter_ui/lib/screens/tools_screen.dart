@@ -722,6 +722,22 @@ class _ToolCard extends StatelessWidget {
                         fontFamily: 'monospace',
                         color: Colors.grey[500])),
               ),
+              if (tool.version.isNotEmpty || tool.author.isNotEmpty) ...[
+                const SizedBox(height: 2),
+                Semantics(
+                  label: [
+                    if (tool.version.isNotEmpty) 'v${tool.version}',
+                    if (tool.author.isNotEmpty) 'by ${tool.author}',
+                  ].join(' '),
+                  child: Text(
+                    [
+                      if (tool.version.isNotEmpty) 'v${tool.version}',
+                      if (tool.author.isNotEmpty) 'by ${tool.author}',
+                    ].join(' '),
+                    style: TextStyle(fontSize: 11, color: Colors.grey[500]),
+                  ),
+                ),
+              ],
               if (!tool.enabled)
                 Semantics(
                   label: 'Disabled',
@@ -740,23 +756,6 @@ class _ToolCard extends StatelessWidget {
                     style: const TextStyle(fontSize: 13)),
               ],
               const Spacer(),
-              Row(
-                children: [
-                  Icon(Icons.terminal, size: 14, color: Colors.grey[500]),
-                  const SizedBox(width: 4),
-                  Expanded(
-                    child: Semantics(
-                      label: 'Check: ${tool.checkCommand}',
-                      child: Text(tool.checkCommand,
-                          style: TextStyle(
-                              fontSize: 11,
-                              fontFamily: 'monospace',
-                              color: Colors.grey[500]),
-                          overflow: TextOverflow.ellipsis),
-                    ),
-                  ),
-                ],
-              ),
               if (tool.tags.isNotEmpty) ...[
                 const SizedBox(height: 4),
                 Wrap(
