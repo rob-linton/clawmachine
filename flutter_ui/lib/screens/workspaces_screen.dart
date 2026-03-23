@@ -14,6 +14,8 @@ import '../services/file_upload.dart';
 import '../widgets/file_tree.dart';
 import '../widgets/skill_selector.dart';
 import '../widgets/tool_selector.dart';
+import '../widgets/credential_binding_editor.dart';
+import '../models/credential.dart';
 
 class WorkspacesScreen extends ConsumerStatefulWidget {
   const WorkspacesScreen({super.key});
@@ -85,13 +87,16 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
     final cpuLimitCtrl = TextEditingController(text: '2.0');
     final selectedSkills = <String>{};
     final selectedToolIds = <String>{};
+    Map<String, String> credentialBindings = {};
     String persistence = 'persistent';
     bool networkEnabled = true;
     bool showLegacyPath = false;
     List<Skill> skills = [];
     List<Tool> tools = [];
+    List<Credential> credentials = [];
     try { skills = await ref.read(apiClientProvider).listSkills(); } catch (_) {}
     try { tools = await ref.read(apiClientProvider).listTools(); } catch (_) {}
+    try { credentials = await ref.read(apiClientProvider).listCredentials(); } catch (_) {}
     // Source: which workspace to fork from (null = empty)
     Workspace? sourceWorkspace;
     List<dynamic> sourceBranches = [];
@@ -334,6 +339,17 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                     }),
                   ),
                   const SizedBox(height: 12),
+                  CredentialBindingEditor(
+                    selectedToolIds: selectedToolIds,
+                    availableTools: tools,
+                    availableCredentials: credentials,
+                    bindings: credentialBindings,
+                    onChanged: (updated) => setDialogState(() {
+                      credentialBindings = updated;
+                    }),
+                  ),
+                  if (selectedToolIds.any((id) => tools.any((t) => t.id == id && t.envVars.isNotEmpty)))
+                    const SizedBox(height: 12),
                   TextField(
                     controller: claudeMdCtrl,
                     decoration: const InputDecoration(
@@ -403,6 +419,8 @@ class _WorkspacesScreenState extends ConsumerState<WorkspacesScreen> {
                     'skill_ids': selectedSkills.toList(),
                   if (selectedToolIds.isNotEmpty)
                     'tool_ids': selectedToolIds.toList(),
+                  if (credentialBindings.isNotEmpty)
+                    'credential_bindings': credentialBindings,
                   'network_mode': networkEnabled ? 'bridge' : 'none',
                   if (memoryLimitCtrl.text.trim().isNotEmpty)
                     'memory_limit': memoryLimitCtrl.text.trim(),
@@ -665,6 +683,9 @@ class _WorkspaceDetailScreenState
   List<dynamic> _events = [];
   int _eventsTotal = 0;
   List<dynamic> _branches = [];
+  List<Tool> _tools = [];
+  List<Credential> _credentials = [];
+  Map<String, String> _credentialBindings = {};
   bool _loading = true;
   String? _selectedFolderPath;
   final _claudeMdCtrl = TextEditingController();
@@ -701,6 +722,10 @@ class _WorkspaceDetailScreenState
       try {
         branches = await api.listWorkspaceBranches(widget.workspaceId);
       } catch (_) {}
+      List<Tool> tools = [];
+      List<Credential> credentials = [];
+      try { tools = await api.listTools(); } catch (_) {}
+      try { credentials = await api.listCredentials(); } catch (_) {}
       final expanded = FileTreeNode.collectExpanded(_treeRoots);
       final newRoots = FileTreeNode.buildTree(files);
       FileTreeNode.restoreExpanded(newRoots, expanded);
@@ -714,6 +739,9 @@ class _WorkspaceDetailScreenState
         _events = events;
         _eventsTotal = eventsTotal;
         _branches = branches;
+        _tools = tools;
+        _credentials = credentials;
+        _credentialBindings = Map<String, String>.from(ws.credentialBindings);
         _nameCtrl.text = ws.name;
         _descCtrl.text = ws.description;
         _claudeMdCtrl.text = ws.claudeMd ?? '';
@@ -744,6 +772,7 @@ class _WorkspaceDetailScreenState
         'claude_md': _claudeMdCtrl.text.isNotEmpty ? _claudeMdCtrl.text : null,
         'skill_ids': _workspace?.skillIds ?? [],
         'tool_ids': _workspace?.toolIds ?? [],
+        'credential_bindings': _credentialBindings,
       });
       if (mounted) {
         ScaffoldMessenger.of(context)
@@ -976,6 +1005,19 @@ class _WorkspaceDetailScreenState
               ],
             ),
             const SizedBox(height: 24),
+
+            // Credential Bindings
+            CredentialBindingEditor(
+              selectedToolIds: Set<String>.from(ws.toolIds),
+              availableTools: _tools,
+              availableCredentials: _credentials,
+              bindings: _credentialBindings,
+              onChanged: (updated) => setState(() {
+                _credentialBindings = updated;
+              }),
+            ),
+            if (_tools.any((t) => ws.toolIds.contains(t.id) && t.envVars.isNotEmpty))
+              const SizedBox(height: 24),
 
             // CLAUDE.md Editor
             Text('CLAUDE.md', style: Theme.of(context).textTheme.titleMedium),
