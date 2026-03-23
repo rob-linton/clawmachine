@@ -245,6 +245,10 @@ POST   /api/v1/skills/install-from-url      — install skill from git repo or Z
 POST   /api/v1/skills/{id}/update-from-source — re-fetch skill from source_url
 ```
 
+Skills and tools have an `enabled` field (default true). Disabled items are filtered out by the worker and not deployed to jobs. Install from URL supports git repos and direct ZIP downloads with SSRF protection (HTTPS only). The `source_url` field tracks where a skill/tool was installed from, enabling updates via `update-from-source`.
+
+**Curated catalog**: Set `catalog_url` in Settings (Redis config key `claw:config:catalog_url`) to a JSON catalog URL. The Skills/Tools screens show a "Recommended" section with one-click install from the catalog.
+
 Tools are CLI programs (az, aws, gh, etc.) installed into Docker sandbox images on demand. Each tool defines `install_commands` (Debian shell), `check_command` (verify presence), optional `auth_script` (login before job), and `env_vars` (credentials needed). Jobs, templates, workspaces, crons, and pipeline steps can reference tools via `tool_ids`.
 
 **Docker mode**: Tools are baked into derived images (`claw-tools:{hash}`) cached by content hash. First job builds the image; subsequent jobs reuse it instantly.
