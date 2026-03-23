@@ -133,7 +133,7 @@ class _ClawAppState extends ConsumerState<ClawApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp.router(
-      title: 'ClaudeCodeClaw',
+      title: 'Claw Machine',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorSchemeSeed: Colors.indigo,

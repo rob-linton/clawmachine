@@ -834,7 +834,7 @@ fn init_git_repo(path: &std::path::Path) {
 
     if run(&["init"]) {
         run(&["add", "-A"]);
-        run(&["-c", "user.name=ClaudeCodeClaw", "-c", "user.email=claw@local", "commit", "-m", "claw: workspace initialized", "--allow-empty"]);
+        run(&["-c", "user.name=Claw Machine", "-c", "user.email=claw@local", "commit", "-m", "claw: workspace initialized", "--allow-empty"]);
     }
 }
 
@@ -902,7 +902,7 @@ async fn init_bare_repo(ws_id: Uuid, claude_md: Option<&str>, is_snapshot: bool)
         // 4. git add + commit + push
         run("git", &["add", "-A"], &checkout_p)?;
         run("git", &[
-            "-c", "user.name=ClaudeCodeClaw",
+            "-c", "user.name=Claw Machine",
             "-c", "user.email=claw@local",
             "commit", "-m", "claw: workspace initialized",
         ], &checkout_p)?;
@@ -990,7 +990,7 @@ async fn revert_commit(
     let hash_clone = hash.clone();
     let result = tokio::task::spawn_blocking(move || {
         let output = std::process::Command::new("git")
-            .args(["-c", "user.name=ClaudeCodeClaw", "-c", "user.email=claw@local", "revert", "--no-edit", &hash_clone])
+            .args(["-c", "user.name=Claw Machine", "-c", "user.email=claw@local", "revert", "--no-edit", &hash_clone])
             .current_dir(&ws_dir)
             .output();
 
@@ -1487,7 +1487,7 @@ async fn sync_checkout_to_bare(ws: &Workspace) {
             .map(|s| !s.success()) // exit 1 = has changes
             .unwrap_or(false);
         if has_changes {
-            run(&["-c", "user.name=ClaudeCodeClaw", "-c", "user.email=claw@local",
+            run(&["-c", "user.name=Claw Machine", "-c", "user.email=claw@local",
                   "commit", "-m", "claw: file browser update"]);
             run(&["push", "origin", "HEAD"]);
         }

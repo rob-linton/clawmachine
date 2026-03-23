@@ -1,4 +1,4 @@
-# ClaudeCodeClaw Architecture Documentation
+# Claw Machine Architecture Documentation
 
 ## Documents
 

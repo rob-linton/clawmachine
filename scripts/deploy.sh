@@ -2,7 +2,7 @@
 set -e
 cd "$(dirname "$0")/.."
 
-echo "=== ClaudeCodeClaw Deploy ==="
+echo "=== Claw Machine Deploy ==="
 
 # Load .env if present
 if [ -f .env ]; then

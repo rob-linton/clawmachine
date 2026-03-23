@@ -1,8 +1,8 @@
-# ClaudeCodeClaw — System Overview
+# Claw Machine — System Overview
 
 ## 1. Vision
 
-ClaudeCodeClaw is a production-grade job queue orchestrator for Claude Code. It replaces ad-hoc, manual invocations of `claude -p` with a structured system where:
+Claw Machine is a production-grade job queue orchestrator for Claude Code. It replaces ad-hoc, manual invocations of `claude -p` with a structured system where:
 
 - Jobs are submitted from multiple sources (CLI, REST API, webhooks, cron schedules, file drops)
 - Parallel workers claim and execute jobs by spawning `claude -p` as subprocesses
@@ -21,7 +21,7 @@ Claude Code is a powerful agentic CLI tool, but using it for recurring or automa
 - **No visibility** — no dashboard showing what's running, what completed, or what failed
 - **No coordination** — running multiple instances risks duplicate work or conflicting file edits
 
-ClaudeCodeClaw solves all of these by wrapping Claude Code in a proper job orchestration layer.
+Claw Machine solves all of these by wrapping Claude Code in a proper job orchestration layer.
 
 ## 3. Goals
 
@@ -58,7 +58,7 @@ ClaudeCodeClaw solves all of these by wrapping Claude Code in a proper job orche
 
 ```
                           ┌─────────────────────────────────────────────┐
-                          │              ClaudeCodeClaw                  │
+                          │              Claw Machine                  │
                           │                                             │
   ┌──────┐   REST/WS     │  ┌─────────┐     ┌───────┐     ┌────────┐ │
   │ User ├───────────────►│  │ Axum    │────►│ Redis │◄────┤Workers │ │
@@ -122,7 +122,7 @@ Each job runs as a clean `claude -p` invocation (no persistent conversation stat
 ## 8. Repository Structure
 
 ```
-claudecodeclaw/
+clawmachine/
 ├── Cargo.toml                      # Workspace manifest
 ├── Cargo.lock
 ├── config.toml                     # Default configuration

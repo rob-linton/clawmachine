@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-ClaudeCodeClaw is a job queue orchestrator for Claude Code. It wraps `claude -p` in a structured system: jobs are submitted via CLI/API/webhooks/cron/file-drops, parallel workers claim and execute them, and results flow back through Redis to a Flutter dashboard.
+Claw Machine is a job queue orchestrator for Claude Code. It wraps `claude -p` in a structured system: jobs are submitted via CLI/API/webhooks/cron/file-drops, parallel workers claim and execute them, and results flow back through Redis to a Flutter dashboard.
 
 **Stack**: Rust (Axum) backend, Flutter (Riverpod) frontend, Redis (queue + state + streams), Docker Compose deployment.
 

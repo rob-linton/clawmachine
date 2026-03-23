@@ -428,8 +428,8 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           // About
           _buildSection('About', Icons.info_outline, [
             Semantics(
-              label: 'ClaudeCodeClaw version',
-              child: const Text('ClaudeCodeClaw v0.1.0'),
+              label: 'Claw Machine version',
+              child: const Text('Claw Machine v0.1.0'),
             ),
             const SizedBox(height: 4),
             Text('Job queue orchestrator for Claude Code',

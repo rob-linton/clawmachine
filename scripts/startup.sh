@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
-# ClaudeCodeClaw — start everything (backend + Flutter admin console)
+# Claw Machine — start everything (backend + Flutter admin console)
 #
 # Usage: ./scripts/startup.sh           (start all, open browser)
 #        ./scripts/startup.sh stop      (stop all)
@@ -54,7 +54,7 @@ fi
 stop_all 2>/dev/null || true
 
 echo "========================================="
-echo "  ClaudeCodeClaw"
+echo "  Claw Machine"
 echo "========================================="
 echo ""
 
@@ -166,7 +166,7 @@ else
 
     echo ""
     echo "========================================="
-    green "  ClaudeCodeClaw running!"
+    green "  Claw Machine running!"
     echo ""
     echo "  URL:        http://localhost:8080"
     echo "  Logs:       .logs/{api,worker,scheduler}.log"

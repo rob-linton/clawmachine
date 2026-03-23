@@ -61,7 +61,7 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text('ClaudeCodeClaw',
+                Text('Claw Machine',
                     style: Theme.of(context)
                         .textTheme
                         .headlineMedium

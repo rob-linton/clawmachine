@@ -1,4 +1,4 @@
-# ClaudeCodeClaw
+# Claw Machine
 
 A self-hosted job orchestrator for [Claude Code](https://claude.ai/code). Run AI coding tasks in isolated Docker containers with git-backed workspaces, pipelines, schedules, and a web dashboard.
 
@@ -12,7 +12,7 @@ CLI / API / Cron / Webhooks
                               Git-backed Workspaces
 ```
 
-## Why ClaudeCodeClaw?
+## Why Claw Machine?
 
 - **Docker isolation** — Every job runs in its own sandbox container with memory, CPU, and network limits. No job can affect the host or other jobs.
 - **Git-backed workspaces** — Workspaces are versioned with git. Fork workspaces, revert to any commit, create snapshots, and track full history.
@@ -30,7 +30,7 @@ Requires Docker and Claude Code authenticated on the host.
 claude
 
 # Run the installer
-curl -fsSL https://raw.githubusercontent.com/rob-linton/claudecodeclaw/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/rob-linton/clawmachine/main/scripts/install.sh | bash
 ```
 
 The installer:
@@ -144,8 +144,8 @@ The Flutter web dashboard provides:
 ## Development Setup
 
 ```bash
-git clone https://github.com/rob-linton/claudecodeclaw.git
-cd claudecodeclaw
+git clone https://github.com/rob-linton/clawmachine.git
+cd clawmachine
 
 # Prerequisites: Rust 1.83+, Flutter 3.x+, Redis, Claude Code CLI
 # Start Redis: docker run -d -p 6379:6379 redis:7-alpine

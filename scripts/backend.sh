@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
-# ClaudeCodeClaw Backend — runs API, Worker, Scheduler in foreground
+# Claw Machine Backend — runs API, Worker, Scheduler in foreground
 # All output goes to stdout AND log files via tee.
 #
 # Usage: ./scripts/backend.sh        (start all backend services)
@@ -43,7 +43,7 @@ fi
 stop_all 2>/dev/null || true
 
 echo "========================================="
-echo "  ClaudeCodeClaw Backend"
+echo "  Claw Machine Backend"
 echo "========================================="
 echo ""
 

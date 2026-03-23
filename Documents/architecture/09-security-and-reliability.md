@@ -2,7 +2,7 @@
 
 ## 1. Threat Model
 
-ClaudeCodeClaw is a single-user/team system running on trusted infrastructure. The primary threats are:
+Claw Machine is a single-user/team system running on trusted infrastructure. The primary threats are:
 
 | Threat | Likelihood | Impact | Mitigation |
 |--------|-----------|--------|------------|

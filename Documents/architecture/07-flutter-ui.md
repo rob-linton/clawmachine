@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The Flutter UI provides a real-time monitoring dashboard for ClaudeCodeClaw. It runs as both a web application (served by the Axum API server) and a native desktop application (macOS/Linux/Windows), sharing a single codebase.
+The Flutter UI provides a real-time monitoring dashboard for Claw Machine. It runs as both a web application (served by the Axum API server) and a native desktop application (macOS/Linux/Windows), sharing a single codebase.
 
 **State management**: Riverpod
 **Routing**: go_router

@@ -776,5 +776,5 @@ fn git_commit(path: &std::path::Path, message: &str) {
     };
 
     run(&["add", "-A"]);
-    run(&["-c", "user.name=ClaudeCodeClaw", "-c", "user.email=claw@local", "commit", "-m", message]);
+    run(&["-c", "user.name=Claw Machine", "-c", "user.email=claw@local", "commit", "-m", message]);
 }

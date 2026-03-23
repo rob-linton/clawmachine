@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The `claw` CLI is the primary interface for interacting with ClaudeCodeClaw from the terminal. It communicates with the API server via REST endpoints, ensuring a single codepath for validation, defaults, and event publishing. The `--follow` flag uses the WebSocket endpoint for real-time log streaming.
+The `claw` CLI is the primary interface for interacting with Claw Machine from the terminal. It communicates with the API server via REST endpoints, ensuring a single codepath for validation, defaults, and event publishing. The `--follow` flag uses the WebSocket endpoint for real-time log streaming.
 
 **Binary name**: `claw` (installed as `claw` or `claw-cli`)
 
@@ -483,7 +483,7 @@ Every config option can be overridden by an environment variable:
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "claw", about = "ClaudeCodeClaw — Job queue for Claude Code")]
+#[command(name = "claw", about = "Claw Machine — Job queue for Claude Code")]
 pub struct Cli {
     #[arg(long, env = "CLAW_REDIS_URL", default_value = "redis://127.0.0.1:6379")]
     pub redis_url: String,

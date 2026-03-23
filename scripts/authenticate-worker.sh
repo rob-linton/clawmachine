@@ -2,7 +2,7 @@
 set -euo pipefail
 
 echo ""
-echo "=== ClaudeCodeClaw: Authenticate Worker ==="
+echo "=== Claw Machine: Authenticate Worker ==="
 echo ""
 echo "This runs Claude Code interactively so you can complete OAuth login."
 echo "The token will be saved to ~/.claude.json on this machine."

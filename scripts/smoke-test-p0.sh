@@ -48,7 +48,7 @@ wait_for_job() {
 }
 
 echo "========================================="
-echo "  ClaudeCodeClaw Phase 0 Smoke Test"
+echo "  Claw Machine Phase 0 Smoke Test"
 echo "========================================="
 echo ""
 

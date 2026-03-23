@@ -52,7 +52,7 @@ Do not include any text outside the JSON block.
 
 **When to use**: When you want to set project-level conventions, tool preferences, or behavioral rules that Claude Code's built-in CLAUDE.md system understands.
 
-**How injected**: Written to `{working_dir}/CLAUDE.md` (appended if one already exists, with a `## ClaudeCodeClaw Skills` section separator).
+**How injected**: Written to `{working_dir}/CLAUDE.md` (appended if one already exists, with a `## Claw Machine Skills` section separator).
 
 **Examples**:
 
@@ -307,7 +307,7 @@ If the working directory already has a `CLAUDE.md`, the injected config is appen
 
 ---
 
-## ClaudeCodeClaw Injected Skills
+## Claw Machine Injected Skills
 
 [claude_config skill content]
 ```

@@ -4,7 +4,7 @@ use clap::{Parser, Subcommand};
 use uuid::Uuid;
 
 #[derive(Parser)]
-#[command(name = "claw", about = "ClaudeCodeClaw CLI — job queue for Claude Code")]
+#[command(name = "claw", about = "Claw Machine CLI — job queue for Claude Code")]
 struct Cli {
     /// API server URL
     #[arg(long, env = "CLAW_API_URL", default_value = "http://127.0.0.1:8080")]

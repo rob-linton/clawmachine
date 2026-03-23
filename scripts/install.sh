@@ -2,7 +2,7 @@
 set -euo pipefail
 
 INSTALL_DIR="${1:-$HOME/claw}"
-REPO="ghcr.io/rob-linton/claudecodeclaw"
+REPO="ghcr.io/rob-linton/clawmachine"
 
 red()    { printf '\033[0;31m%s\033[0m\n' "$1"; }
 green()  { printf '\033[0;32m%s\033[0m\n' "$1"; }
@@ -10,7 +10,7 @@ yellow() { printf '\033[0;33m%s\033[0m\n' "$1"; }
 
 echo ""
 echo "==========================================="
-echo "  ClaudeCodeClaw — Install"
+echo "  Claw Machine — Install"
 echo "==========================================="
 echo ""
 

@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-The worker engine is the core of ClaudeCodeClaw. It claims jobs from Redis, builds rich prompts by injecting skills, spawns `claude -p` as a subprocess, streams output in real-time, and routes results to configured destinations.
+The worker engine is the core of Claw Machine. It claims jobs from Redis, builds rich prompts by injecting skills, spawns `claude -p` as a subprocess, streams output in real-time, and routes results to configured destinations.
 
 ## 2. Worker Process Lifecycle
 

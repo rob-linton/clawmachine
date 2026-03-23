@@ -1,15 +1,15 @@
-# ClaudeCodeClaw — Install
+# Claw Machine — Install
 
 One script. Requires Docker, npm, and a Linux server.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/rob-linton/claudecodeclaw/main/scripts/install.sh | bash -s /opt/claw
+curl -fsSL https://raw.githubusercontent.com/rob-linton/clawmachine/main/scripts/install.sh | bash -s /opt/claw
 ```
 
 Or download and run manually:
 
 ```bash
-wget https://raw.githubusercontent.com/rob-linton/claudecodeclaw/main/scripts/install.sh
+wget https://raw.githubusercontent.com/rob-linton/clawmachine/main/scripts/install.sh
 chmod +x install.sh
 ./install.sh /opt/claw
 ```

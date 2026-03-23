@@ -3,7 +3,7 @@ name: create-skill
 description: Creates new Agent Skills following the agentskills.io specification. Use when asked to create a skill, build a new capability, package instructions as a skill, or when the user says "create a skill" or "make a skill for".
 license: MIT
 metadata:
-  author: claudecodeclaw
+  author: clawmachine
   version: "1.0"
   spec-url: https://agentskills.io/specification
 ---
@@ -125,7 +125,7 @@ After creating, verify:
 
 ## Step 6: Package as ZIP
 
-For distribution via ClaudeCodeClaw:
+For distribution via Claw Machine:
 1. Create a ZIP of the skill directory
 2. Upload via Skills → Import ZIP in the admin console
 3. The ZIP root should be the skill directory (e.g., `code-review/SKILL.md`)

@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
 
-# ClaudeCodeClaw Frontend — runs Flutter web in dev mode with hot reload
+# Claw Machine Frontend — runs Flutter web in dev mode with hot reload
 # All output goes to stdout AND log file via tee.
 #
 # Usage: ./scripts/frontend.sh           (start Flutter dev server on :3000)
