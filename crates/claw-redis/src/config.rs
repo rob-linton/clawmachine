@@ -16,10 +16,11 @@ fn defaults() -> HashMap<&'static str, &'static str> {
     m.insert("docker_pids_limit", "256");
     m.insert("repos_dir", "~/.claw/repos");
     m.insert("checkouts_dir", "~/.claw/checkouts");
-    // Default credential mounts: Claude OAuth + gh CLI
+    // Default credential mounts: Claude OAuth only.
+    // gh CLI and SSH keys are managed via the tool + credential system.
     m.insert(
         "docker_credential_mounts",
-        r#"[{"host_path":"~/.claude","container_path":"/home/claw/.claude","readonly":false},{"host_path":"~/.claude.json","container_path":"/home/claw/.claude.json","readonly":false},{"host_path":"~/.config/gh","container_path":"/home/claw/.config/gh","readonly":true},{"host_path":"~/.ssh","container_path":"/home/claw/.ssh","readonly":true}]"#,
+        r#"[{"host_path":"~/.claude","container_path":"/home/claw/.claude","readonly":false},{"host_path":"~/.claude.json","container_path":"/home/claw/.claude.json","readonly":false}]"#,
     );
     m
 }

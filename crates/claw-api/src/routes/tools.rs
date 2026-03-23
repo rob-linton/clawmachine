@@ -32,6 +32,9 @@ async fn create_tool(
         tags: req.tags,
         env_vars: req.env_vars,
         auth_script: req.auth_script,
+        version: req.version,
+        author: req.author,
+        license: req.license,
         ..tool
     };
     match claw_redis::create_tool(&state.pool, &tool).await {
@@ -68,6 +71,9 @@ async fn update_tool(
     tool.tags = req.tags;
     tool.env_vars = req.env_vars;
     tool.auth_script = req.auth_script;
+    tool.version = req.version;
+    tool.author = req.author;
+    tool.license = req.license;
 
     if let Ok(Some(existing)) = claw_redis::get_tool(&state.pool, &id).await {
         tool.created_at = existing.created_at;

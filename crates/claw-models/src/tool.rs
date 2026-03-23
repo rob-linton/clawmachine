@@ -70,4 +70,10 @@ pub struct CreateToolRequest {
     pub env_vars: Vec<ToolEnvVar>,
     #[serde(default)]
     pub auth_script: Option<String>,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub license: Option<String>,
 }
