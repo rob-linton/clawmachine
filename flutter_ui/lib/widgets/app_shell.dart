@@ -20,19 +20,7 @@ class AppShell extends ConsumerWidget {
             labelType: NavigationRailLabelType.all,
             leading: Padding(
               padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Column(
-                children: [
-                  Image.network('clawmachine_logo.png',
-                      height: 40, filterQuality: FilterQuality.none),
-                  const SizedBox(height: 4),
-                  Text('Claw\nMachine',
-                      textAlign: TextAlign.center,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleSmall
-                          ?.copyWith(fontWeight: FontWeight.bold, height: 1.2)),
-                ],
-              ),
+              child: const _ClawLogo(),
             ),
             trailing: Expanded(
               child: Column(
@@ -123,5 +111,50 @@ class AppShell extends ConsumerWidget {
     if (location.startsWith('/credentials')) return 8;
     if (location.startsWith('/settings')) return -1;
     return 0;
+  }
+}
+
+class _ClawLogo extends StatefulWidget {
+  const _ClawLogo();
+
+  @override
+  State<_ClawLogo> createState() => _ClawLogoState();
+}
+
+class _ClawLogoState extends State<_ClawLogo> {
+  bool _animating = false;
+
+  void _toggle() {
+    if (_animating) {
+      setState(() => _animating = false);
+      return;
+    }
+    setState(() => _animating = true);
+    Future.delayed(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _animating = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: _toggle,
+      child: Column(
+        children: [
+          Image.network(
+            _animating ? 'clawmachine_pickup.gif' : 'clawmachine_logo.png',
+            height: 40,
+            filterQuality: FilterQuality.none,
+          ),
+          const SizedBox(height: 4),
+          Text('Claw\nMachine',
+              textAlign: TextAlign.center,
+              style: Theme.of(context)
+                  .textTheme
+                  .titleSmall
+                  ?.copyWith(fontWeight: FontWeight.bold, height: 1.2)),
+        ],
+      ),
+    );
   }
 }
