@@ -117,6 +117,7 @@ async fn download_tool(
         "check_command": tool.check_command,
         "env_vars": tool.env_vars,
         "auth_script": tool.auth_script,
+        "skill_content": tool.skill_content,
     });
     if let Err(e) = zip.start_file("TOOL.json", options) {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": format!("zip error: {e}")}))).into_response();
@@ -252,6 +253,9 @@ async fn upload_tool_zip(
         }
         if let Some(auth) = tj.get("auth_script").and_then(|v| v.as_str()) {
             tool.auth_script = Some(auth.to_string());
+        }
+        if let Some(sc) = tj.get("skill_content").and_then(|v| v.as_str()) {
+            tool.skill_content = Some(sc.to_string());
         }
     }
 
@@ -467,6 +471,9 @@ fn build_tool_from_fetched(
         }
         if let Some(auth) = tj.get("auth_script").and_then(|v| v.as_str()) {
             tool.auth_script = Some(auth.to_string());
+        }
+        if let Some(sc) = tj.get("skill_content").and_then(|v| v.as_str()) {
+            tool.skill_content = Some(sc.to_string());
         }
     }
 

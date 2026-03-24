@@ -420,6 +420,9 @@ async fn sync_tool(
         if let Some(auth) = tj.get("auth_script").and_then(|v| v.as_str()) {
             tool.auth_script = Some(auth.to_string());
         }
+        if let Some(sc) = tj.get("skill_content").and_then(|v| v.as_str()) {
+            tool.skill_content = Some(sc.to_string());
+        }
     }
 
     if !catalog_version.is_empty() {

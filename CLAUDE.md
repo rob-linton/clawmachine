@@ -250,7 +250,9 @@ Skills and tools have an `enabled` field (default true). Disabled items are filt
 
 **Curated catalog**: Set `catalog_url` in Settings (Redis config key `claw:config:catalog_url`) to a JSON catalog URL. The Skills/Tools screens show a "Recommended" section with one-click install from the catalog.
 
-Tools are CLI programs (az, aws, gh, etc.) installed into Docker sandbox images on demand. Each tool defines `install_commands` (Debian shell), `check_command` (verify presence), optional `auth_script` (login before job), and `env_vars` (credentials needed). Jobs, templates, workspaces, crons, and pipeline steps can reference tools via `tool_ids`.
+Tools are CLI programs (az, aws, gh, etc.) installed into Docker sandbox images on demand. Each tool defines `install_commands` (Debian shell), `check_command` (verify presence), optional `auth_script` (login before job), `env_vars` (credentials needed), and optional `skill_content` (usage guide). Jobs, templates, workspaces, crons, and pipeline steps can reference tools via `tool_ids`.
+
+**Usage guides**: Tools with `skill_content` get a SKILL.md deployed to `.claude/skills/tool-{id}/` in the workspace during job preparation. This gives Claude Code native instructions on how to use the tool. The skill is cleaned up after job execution.
 
 **Docker mode**: Tools are baked into derived images (`claw-tools:{hash}`) cached by content hash. First job builds the image; subsequent jobs reuse it instantly.
 

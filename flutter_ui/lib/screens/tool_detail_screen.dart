@@ -139,6 +139,7 @@ class _ToolDetailScreenState extends ConsumerState<ToolDetailScreen> {
     final installCtrl = TextEditingController(text: tool.installCommands);
     final checkCtrl = TextEditingController(text: tool.checkCommand);
     final authCtrl = TextEditingController(text: tool.authScript ?? '');
+    final skillContentCtrl = TextEditingController(text: tool.skillContent ?? '');
     final tagsCtrl = TextEditingController(text: tool.tags.join(', '));
     final versionCtrl = TextEditingController(text: tool.version);
     final authorCtrl = TextEditingController(text: tool.author);
@@ -219,6 +220,16 @@ class _ToolDetailScreenState extends ConsumerState<ToolDetailScreen> {
                 ),
                 const SizedBox(height: 12),
                 TextField(
+                  controller: skillContentCtrl,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                      labelText: 'Usage Guide (deployed as SKILL.md)',
+                      hintText:
+                          '# How to use this tool\n\nDescribe common commands and patterns...',
+                      border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextField(
                   controller: tagsCtrl,
                   decoration: const InputDecoration(
                       labelText: 'Tags (comma-separated)',
@@ -258,6 +269,9 @@ class _ToolDetailScreenState extends ConsumerState<ToolDetailScreen> {
                 authScript: authCtrl.text.trim().isEmpty
                     ? null
                     : authCtrl.text.trim(),
+                skillContent: skillContentCtrl.text.trim().isEmpty
+                    ? null
+                    : skillContentCtrl.text.trim(),
                 tags: tags,
                 version: versionCtrl.text.trim(),
                 author: authorCtrl.text.trim(),
@@ -560,6 +574,40 @@ class _ToolDetailScreenState extends ConsumerState<ToolDetailScreen> {
                       label: 'Auth script content',
                       child: SelectableText(
                         tool.authScript!,
+                        style: const TextStyle(
+                            fontFamily: 'monospace', fontSize: 13),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (tool.skillContent != null && tool.skillContent!.isNotEmpty) ...[
+          const SizedBox(height: 16),
+          Card(
+            child: ExpansionTile(
+              title: Semantics(
+                header: true,
+                label: 'Usage Guide',
+                child: const Text('Usage Guide'),
+              ),
+              initiallyExpanded: false,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF1E1E1E),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Semantics(
+                      label: 'Usage guide content',
+                      child: SelectableText(
+                        tool.skillContent!,
                         style: const TextStyle(
                             fontFamily: 'monospace', fontSize: 13),
                       ),

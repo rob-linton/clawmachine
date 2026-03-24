@@ -328,6 +328,7 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
         TextEditingController(text: existing?.installCommands ?? '');
     final checkCtrl = TextEditingController(text: existing?.checkCommand ?? '');
     final authCtrl = TextEditingController(text: existing?.authScript ?? '');
+    final skillContentCtrl = TextEditingController(text: existing?.skillContent ?? '');
     final tagsCtrl =
         TextEditingController(text: existing?.tags.join(', ') ?? '');
     final envVarsCtrl = TextEditingController(
@@ -425,6 +426,16 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
                 ),
                 const SizedBox(height: 12),
                 TextField(
+                  controller: skillContentCtrl,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                      labelText: 'Usage Guide (deployed as SKILL.md)',
+                      hintText:
+                          '# How to use this tool\n\nDescribe common commands and patterns...',
+                      border: OutlineInputBorder()),
+                ),
+                const SizedBox(height: 12),
+                TextField(
                   controller: tagsCtrl,
                   decoration: const InputDecoration(
                       labelText: 'Tags (comma-separated)',
@@ -470,6 +481,9 @@ class _ToolsScreenState extends ConsumerState<ToolsScreen> {
                 authScript: authCtrl.text.trim().isEmpty
                     ? null
                     : authCtrl.text.trim(),
+                skillContent: skillContentCtrl.text.trim().isEmpty
+                    ? null
+                    : skillContentCtrl.text.trim(),
                 tags: tags,
                 version: versionCtrl.text.trim(),
                 author: authorCtrl.text.trim(),

@@ -380,7 +380,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                 }
 
                 // 4. Prepare environment (workspace dir, CLAUDE.md, skill files)
-                let prepared_env = match environment::prepare_environment(&job, workspace.as_ref(), &skills, &pipeline_checkouts).await {
+                let prepared_env = match environment::prepare_environment(&job, workspace.as_ref(), &skills, &tools, &pipeline_checkouts).await {
                     Ok(env) => env,
                     Err(e) => {
                         tracing::error!(job_id = %job_id, error = %e, "Failed to prepare environment");

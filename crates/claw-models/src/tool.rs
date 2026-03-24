@@ -24,6 +24,10 @@ pub struct Tool {
     /// These can reference credential env vars injected at runtime.
     #[serde(default)]
     pub auth_script: Option<String>,
+    /// Optional usage guide deployed as a SKILL.md in .claude/skills/tool-{id}/.
+    /// Gives Claude Code instructions on how to use this tool.
+    #[serde(default)]
+    pub skill_content: Option<String>,
     #[serde(default)]
     pub version: String,
     #[serde(default)]
@@ -70,6 +74,8 @@ pub struct CreateToolRequest {
     pub env_vars: Vec<ToolEnvVar>,
     #[serde(default)]
     pub auth_script: Option<String>,
+    #[serde(default)]
+    pub skill_content: Option<String>,
     #[serde(default)]
     pub version: String,
     #[serde(default)]

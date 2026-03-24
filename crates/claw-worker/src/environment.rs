@@ -35,6 +35,7 @@ pub async fn prepare_environment(
     job: &Job,
     workspace: Option<&Workspace>,
     skills: &[Skill],
+    tools: &[Tool],
     pipeline_checkouts: &PipelineCheckouts,
 ) -> Result<PreparedEnvironment, String> {
     let (working_dir, is_temp, is_pipeline_reuse) = resolve_working_dir(job, workspace, pipeline_checkouts).await?;
@@ -46,7 +47,11 @@ pub async fn prepare_environment(
     let pre_existing_skill_dirs = snapshot_existing_skills(&working_dir).await;
     let (claude_md_backup, original_claude_md, marker_file) =
         inject_claude_md(job.id, &working_dir, workspace).await?;
-    let deployed_skill_dirs = deploy_skills(&working_dir, skills).await?;
+    let mut deployed_skill_dirs = deploy_skills(&working_dir, skills).await?;
+
+    // Deploy tool usage guides as skills (tools with skill_content)
+    let tool_skill_dirs = deploy_tool_skills(&working_dir, tools).await?;
+    deployed_skill_dirs.extend(tool_skill_dirs);
 
     Ok(PreparedEnvironment {
         working_dir,
@@ -513,6 +518,54 @@ async fn deploy_skills(working_dir: &Path, skills: &[Skill]) -> Result<Vec<PathB
 
         deployed.push(skill_dir);
         tracing::debug!(skill_id = %skill.id, "Deployed skill to workspace");
+    }
+
+    Ok(deployed)
+}
+
+/// Deploy tool usage guides as SKILL.md files in .claude/skills/tool-{id}/.
+/// Only tools with `skill_content` get a skill deployed.
+async fn deploy_tool_skills(working_dir: &Path, tools: &[Tool]) -> Result<Vec<PathBuf>, String> {
+    let mut deployed = Vec::new();
+
+    let tools_with_content: Vec<_> = tools
+        .iter()
+        .filter(|t| t.skill_content.is_some())
+        .collect();
+
+    if tools_with_content.is_empty() {
+        return Ok(deployed);
+    }
+
+    let skills_dir = working_dir.join(".claude").join("skills");
+    tokio::fs::create_dir_all(&skills_dir)
+        .await
+        .map_err(|e| format!("Failed to create .claude/skills: {e}"))?;
+
+    for tool in tools_with_content {
+        let skill_dir = skills_dir.join(format!("tool-{}", tool.id));
+
+        // Skip if already exists (workspace takes precedence)
+        if skill_dir.exists() {
+            tracing::debug!(tool_id = %tool.id, "Tool skill already exists in workspace, skipping");
+            continue;
+        }
+
+        tokio::fs::create_dir_all(&skill_dir)
+            .await
+            .map_err(|e| format!("Failed to create tool skill dir {}: {e}", tool.id))?;
+
+        let content = tool.skill_content.as_deref().unwrap_or("");
+        let skill_md = format!(
+            "---\nname: {}\ndescription: {}\n---\n\n{}",
+            tool.name, tool.description, content
+        );
+        tokio::fs::write(skill_dir.join("SKILL.md"), &skill_md)
+            .await
+            .map_err(|e| format!("Failed to write SKILL.md for tool {}: {e}", tool.id))?;
+
+        deployed.push(skill_dir);
+        tracing::debug!(tool_id = %tool.id, "Deployed tool usage skill to workspace");
     }
 
     Ok(deployed)

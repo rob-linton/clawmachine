@@ -50,6 +50,7 @@ The tool definition file. Specifies how to install, verify, and authenticate the
 | `check_command` | string | Yes | Command to verify installation. Exit code 0 = installed. Example: `jq --version` |
 | `env_vars` | object[] | No | Environment variables the tool needs at runtime |
 | `auth_script` | string | No | Shell commands run before job execution to authenticate the tool |
+| `skill_content` | string | No | Markdown usage guide deployed as `.claude/skills/tool-{id}/SKILL.md` in the workspace |
 
 ### env_vars Object
 
@@ -88,6 +89,12 @@ When any tool in a job has an `auth_script`, the Docker entrypoint is overridden
 - A runner script is written to `/workspace/.claw-run.sh` containing the `claude -p` command
 - The container runs: `bash -c "set -e; {auth_scripts}; exec /workspace/.claw-run.sh"`
 - The prompt is never embedded in `bash -c` (prevents shell injection)
+
+### skill_content
+
+Optional markdown content deployed as a SKILL.md file in `.claude/skills/tool-{id}/` during job preparation. This gives Claude Code native instructions on how to use the tool. The tool's `name` and `description` are used as SKILL.md frontmatter.
+
+Tools without `skill_content` do not get a skill deployed. The skill directory is cleaned up after job execution (same lifecycle as regular skills).
 
 ## manifest.json
 

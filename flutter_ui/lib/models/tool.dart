@@ -27,6 +27,7 @@ class Tool {
   final String checkCommand;
   final List<ToolEnvVar> envVars;
   final String? authScript;
+  final String? skillContent;
   final String version;
   final String author;
   final String? license;
@@ -44,6 +45,7 @@ class Tool {
     required this.checkCommand,
     this.envVars = const [],
     this.authScript,
+    this.skillContent,
     this.version = '',
     this.author = '',
     this.license,
@@ -65,6 +67,7 @@ class Tool {
                 .toList() ??
             [],
         authScript: json['auth_script'],
+        skillContent: json['skill_content'],
         version: json['version'] ?? '',
         author: json['author'] ?? '',
         license: json['license'],
@@ -83,6 +86,7 @@ class Tool {
         'check_command': checkCommand,
         'env_vars': envVars.map((e) => e.toJson()).toList(),
         if (authScript != null) 'auth_script': authScript,
+        if (skillContent != null) 'skill_content': skillContent,
         'version': version,
         'author': author,
         if (license != null) 'license': license,
