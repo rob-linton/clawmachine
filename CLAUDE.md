@@ -465,10 +465,33 @@ ssh claw-server "docker pull ghcr.io/rob-linton/clawmachine/sandbox:latest && do
 
 **Tool images**: When a tool has `install_commands`, the worker builds a derived Docker image (`claw-tools:{hash}`) cached by content hash. Clear cached images with `docker rmi` on the server when changing install commands, otherwise the old image is reused.
 
-## Flutter Web Notes
+## Template-First Architecture
+
+Job Templates are the primary building block. Pipelines and Schedules reference templates rather than defining inline prompts/skills/tools:
+
+- **Job Templates** define reusable job configurations (prompt, skills, tools, model, workspace, timeout)
+- **Pipelines** compose templates into ordered steps. Each step references a template via `template_id` (optional for backward compatibility — inline prompts still work). Steps can use `{{previous_result}}` to chain outputs.
+- **Schedules** reference a template via `template_id` for the recurring job definition. Inline prompt is supported as a fallback.
+- Template deletion is protected: returns 409 if referenced by any pipeline step or schedule.
+- The worker resolves `template_id` at job execution time, so template changes take effect on the next run without updating pipelines/schedules.
+
+## Flutter UI Patterns
+
+### Full-Page Create/Edit Screens
+
+Templates, Pipelines, and Schedules use full-page create/edit screens (not dialogs). All follow the same pattern:
+
+- `ConsumerStatefulWidget` with optional ID parameter (null = create, non-null = edit)
+- Routes: `/entity/create` and `/entity/:id/edit` (static path before parameterized to avoid GoRouter matching "create" as an ID)
+- `initState` → `_loadData()` fetches reference data (skills, tools, workspaces, templates) and populates controllers in edit mode
+- Layout: header row (back button + title + save button) → `SingleChildScrollView` → `Center` → `ConstrainedBox(maxWidth: 900)` → `Column`
+- Save calls create or update API method based on mode, then `context.go('/entity')` to return to list
+
+### General Notes
 
 - **SelectionArea** wraps the entire app (`MaterialApp.router` builder) so all text is selectable/copyable. No need for per-widget `SelectableText` or copy buttons.
 - **`Image.network('clawmachine_logo.png')`** loads the logo from the web directory (served as a static asset). Use `filterQuality: FilterQuality.none` for pixel art to stay crisp.
+- **Docker builds must run from the project root** — running from a subdirectory causes `lstat docker: no such file or directory`.
 - The login screen, nav rail, and web manifest all reference the Claw Machine branding.
 
 ## Install Script
