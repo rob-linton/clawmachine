@@ -70,7 +70,7 @@ async fn update_pipeline_handler(
     Path(id): Path<Uuid>,
     Json(req): Json<CreatePipelineRequest>,
 ) -> impl IntoResponse {
-    let existing = match claw_redis::pipelines::get_pipeline(&state.pool, id).await {
+    let existing = match claw_redis::get_pipeline(&state.pool, id).await {
         Ok(Some(p)) => p,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
@@ -86,7 +86,7 @@ async fn update_pipeline_handler(
         steps: req.steps,
         created_at: existing.created_at,
     };
-    match claw_redis::pipelines::update_pipeline(&state.pool, &updated).await {
+    match claw_redis::update_pipeline(&state.pool, &updated).await {
         Ok(()) => Json(updated).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }

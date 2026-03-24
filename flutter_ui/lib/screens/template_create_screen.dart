@@ -69,10 +69,9 @@ class _TemplateCreateScreenState extends ConsumerState<TemplateCreateScreen> {
         api.listTools(),
         api.listWorkspaces(),
       ]);
-      _skills = (results[0] as List).map((s) => Skill.fromJson(s)).toList();
-      _tools = (results[1] as List).map((t) => Tool.fromJson(t)).toList();
-      _workspaces =
-          (results[2] as List).map((w) => Workspace.fromJson(w)).toList();
+      _skills = results[0] as List<Skill>;
+      _tools = results[1] as List<Tool>;
+      _workspaces = results[2] as List<Workspace>;
 
       if (widget.templateId != null) {
         final t = await api.getJobTemplate(widget.templateId!);
@@ -405,9 +404,12 @@ class _TemplateCreateScreenState extends ConsumerState<TemplateCreateScreen> {
                               ),
                               if (_error != null) ...[
                                 const SizedBox(height: 8),
-                                Text(
-                                  _error!,
-                                  style: const TextStyle(color: Colors.red),
+                                Semantics(
+                                  label: 'Error: $_error',
+                                  child: Text(
+                                    _error!,
+                                    style: const TextStyle(color: Colors.red),
+                                  ),
                                 ),
                               ],
                               const SizedBox(height: 32),
