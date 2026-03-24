@@ -11,9 +11,12 @@ import 'screens/tools_screen.dart';
 import 'screens/tool_detail_screen.dart';
 import 'screens/credentials_screen.dart';
 import 'screens/schedules_screen.dart';
+import 'screens/schedule_create_screen.dart';
 import 'screens/workspaces_screen.dart';
 import 'screens/pipelines_screen.dart';
+import 'screens/pipeline_create_screen.dart';
 import 'screens/templates_screen.dart';
+import 'screens/template_create_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/api_client.dart';
@@ -60,11 +63,29 @@ final _router = GoRouter(
               JobDetailScreen(jobId: state.pathParameters['id']!),
         ),
         GoRoute(
+            path: '/templates/create',
+            builder: (_, __) => const TemplateCreateScreen()),
+        GoRoute(
+            path: '/templates/:id/edit',
+            builder: (_, state) => TemplateCreateScreen(templateId: state.pathParameters['id']!)),
+        GoRoute(
             path: '/templates',
             builder: (_, __) => const TemplatesScreen()),
         GoRoute(
+            path: '/pipelines/create',
+            builder: (_, __) => const PipelineCreateScreen()),
+        GoRoute(
+            path: '/pipelines/:id/edit',
+            builder: (_, state) => PipelineCreateScreen(pipelineId: state.pathParameters['id']!)),
+        GoRoute(
             path: '/pipelines',
             builder: (_, __) => const PipelinesScreen()),
+        GoRoute(
+            path: '/schedules/create',
+            builder: (_, __) => const ScheduleCreateScreen()),
+        GoRoute(
+            path: '/schedules/:id/edit',
+            builder: (_, state) => ScheduleCreateScreen(scheduleId: state.pathParameters['id']!)),
         GoRoute(
             path: '/schedules',
             builder: (_, __) => const SchedulesScreen()),

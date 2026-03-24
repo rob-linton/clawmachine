@@ -124,6 +124,7 @@ Without `Semantics`, Playwright tests cannot find or verify text content.
 POST   /api/v1/pipelines              — create pipeline template (name, steps with prompts)
 GET    /api/v1/pipelines              — list all pipelines
 GET    /api/v1/pipelines/{id}         — get pipeline details
+PUT    /api/v1/pipelines/{id}         — update pipeline (same body as create)
 DELETE /api/v1/pipelines/{id}         — delete pipeline
 POST   /api/v1/pipelines/{id}/run     — trigger pipeline run (submits first step as job)
 GET    /api/v1/pipeline-runs          — list all pipeline runs

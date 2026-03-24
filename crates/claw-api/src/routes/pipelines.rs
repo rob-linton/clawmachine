@@ -13,7 +13,7 @@ use crate::AppState;
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/pipelines", post(create_pipeline).get(list_pipelines))
-        .route("/pipelines/{id}", get(get_pipeline).delete(delete_pipeline))
+        .route("/pipelines/{id}", get(get_pipeline).put(update_pipeline_handler).delete(delete_pipeline))
         .route("/pipelines/{id}/run", post(run_pipeline))
         .route("/pipeline-runs", get(list_runs))
         .route("/pipeline-runs/{id}", get(get_run))
@@ -61,6 +61,33 @@ async fn get_pipeline(
     match claw_redis::get_pipeline(&state.pool, id).await {
         Ok(Some(p)) => Json(p).into_response(),
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+async fn update_pipeline_handler(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    Json(req): Json<CreatePipelineRequest>,
+) -> impl IntoResponse {
+    let existing = match claw_redis::pipelines::get_pipeline(&state.pool, id).await {
+        Ok(Some(p)) => p,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+    if req.steps.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Pipeline must have at least one step"}))).into_response();
+    }
+    let updated = Pipeline {
+        id: existing.id,
+        name: req.name,
+        description: req.description,
+        workspace_id: req.workspace_id,
+        steps: req.steps,
+        created_at: existing.created_at,
+    };
+    match claw_redis::pipelines::update_pipeline(&state.pool, &updated).await {
+        Ok(()) => Json(updated).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
 }

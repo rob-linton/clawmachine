@@ -310,6 +310,11 @@ class ApiClient {
     return Map<String, dynamic>.from(resp.data);
   }
 
+  Future<Map<String, dynamic>> getJobTemplate(String id) async {
+    final resp = await _dio.get('/job-templates/$id');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
   Future<void> deleteJobTemplate(String id) async {
     await _dio.delete('/job-templates/$id');
   }
@@ -356,6 +361,11 @@ class ApiClient {
 
   Future<Map<String, dynamic>> getPipeline(String id) async {
     final resp = await _dio.get('/pipelines/$id');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<Map<String, dynamic>> updatePipeline(String id, Map<String, dynamic> data) async {
+    final resp = await _dio.put('/pipelines/$id', data: data);
     return Map<String, dynamic>.from(resp.data);
   }
 

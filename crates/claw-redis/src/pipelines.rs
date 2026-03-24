@@ -61,6 +61,14 @@ pub async fn list_pipelines(pool: &Pool) -> Result<Vec<Pipeline>, RedisError> {
     Ok(pipelines)
 }
 
+pub async fn update_pipeline(pool: &Pool, pipeline: &Pipeline) -> Result<(), RedisError> {
+    let mut conn = pool.get().await?;
+    let json = serde_json::to_string(pipeline)?;
+    let _: () = conn.set(format!("claw:pipeline:{}", pipeline.id), &json).await?;
+    tracing::info!(pipeline_id = %pipeline.id, name = %pipeline.name, "Pipeline updated");
+    Ok(())
+}
+
 pub async fn delete_pipeline(pool: &Pool, id: Uuid) -> Result<(), RedisError> {
     let mut conn = pool.get().await?;
     redis::pipe()
