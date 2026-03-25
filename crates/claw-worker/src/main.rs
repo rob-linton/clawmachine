@@ -324,14 +324,17 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                         let model = job.model.as_deref();
                                         let (log_tx, _log_rx) = tokio::sync::mpsc::channel(256);
 
+                                                let seq_tag = job.tags.iter().find(|t| t.starts_with("chat_seq:"));
+                                        let seq: u32 = seq_tag.and_then(|t| t.strip_prefix("chat_seq:")).and_then(|s| s.parse().ok()).unwrap_or(1);
+                                        let is_first = seq == 1;
+
+                                        // job.prompt is the raw user message — Claude handles context via --continue
                                         match session_container::execute_chat_message(
-                                            &container_name, ws_id, &job.prompt, model, log_tx
+                                            &container_name, ws_id, &job.prompt, model, is_first, log_tx
                                         ).await {
                                             Ok(r) => {
                                                 claw_redis::complete_job(&pool, job_id, &r.result_text, r.cost_usd, r.duration_ms).await.ok();
-                                                // Store assistant response as chat message
-                                                let seq_tag = job.tags.iter().find(|t| t.starts_with("chat_seq:"));
-                                                let seq: u32 = seq_tag.and_then(|t| t.strip_prefix("chat_seq:")).and_then(|s| s.parse().ok()).unwrap_or(0);
+                                                // Store assistant response as chat message (seq already extracted above)
                                                 if seq > 0 {
                                                     let assistant_msg = claw_models::ChatMessage {
                                                         seq, role: "assistant".to_string(), content: r.result_text.clone(),
