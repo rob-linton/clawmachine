@@ -352,6 +352,14 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                 }
                                                 tracing::info!(job_id = %job_id, duration_ms = r.duration_ms, "Chat completed");
 
+                                                // Publish SSE event so the UI gets notified
+                                                let event = serde_json::json!({
+                                                    "type": "job_update",
+                                                    "job_id": job_id.to_string(),
+                                                    "status": "completed",
+                                                });
+                                                claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
+
                                                 // Generate summary in background
                                                 let pool2 = pool.clone();
                                                 let user_content = job.prompt.clone();
@@ -369,6 +377,8 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                 tracing::error!(job_id = %job_id, error = %e, "Chat execution failed");
                                                 claw_redis::fail_job(&pool, job_id, &e).await.ok();
                                                 claw_redis::delete_chat_container(&pool, chat_id).await.ok();
+                                                let event = serde_json::json!({"type": "job_update", "job_id": job_id.to_string(), "status": "failed"});
+                                                claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
                                             }
                                         }
                                     }

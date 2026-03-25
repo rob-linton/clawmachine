@@ -153,15 +153,18 @@ DELETE /api/v1/chat                    — delete chat session + workspace
 GET    /api/v1/chat/search?q=keyword   — full-text search message history
 ```
 
-Each user gets one chat session tied to a private persistent workspace. Messages are submitted as high-priority jobs through the existing queue. The worker detects chat jobs via `chat:` and `chat_seq:` tags and stores assistant responses as `ChatMessage` objects in Redis. Both user and assistant messages are also written to `.chat/messages/{seq}-{role}.md` in the workspace for grep-based history access.
+Each user gets one chat session tied to a private persistent workspace. Messages are submitted as high-priority jobs. The worker detects chat jobs via `chat:` and `chat_seq:` tags and routes them through a **persistent session container** (`docker exec` into a long-lived container) with `claude -p --continue` for native conversation context. Both user and assistant messages are also written to `.chat/messages/{seq}-{role}.md` in the workspace.
 
-**Context assembly**: The server assembles the prompt with a sliding window — recent messages verbatim (configurable, default 20) and older messages as one-line summaries. The workspace CLAUDE.md instructs Claude to maintain `.chat/summary.md` and use `grep` on `.chat/messages/` for older history.
+**Session containers**: Each chat gets a Docker container that stays alive across messages (`sleep infinity` + `docker exec` per message). This avoids container startup overhead (~5s vs ~12s). Containers are cleaned up after 30 minutes of inactivity. The `--continue` flag tells Claude Code to resume the most recent conversation, maintaining full context natively without server-side prompt assembly.
+
+**Fallback**: If Docker backend is not active, chat jobs fall through to the standard job execution path with server-side context assembly (sliding window of recent messages + summaries of older ones).
 
 ## Chat Redis Keys
 
 ```
 claw:chat:{chat_id}                    — JSON ChatSession metadata
 claw:chat:{chat_id}:messages           — Sorted set (score=seq) of JSON ChatMessage
+claw:chat:{chat_id}:container          — JSON session container info {container_name, started_at}
 claw:user:{username}:chats             — Set of chat IDs belonging to user
 claw:user:{username}:default_chat      — User's primary chat_id
 ```
