@@ -173,13 +173,16 @@ async fn send_message(
     let user_file = messages_dir.join(format!("{:04}-user.md", seq));
     tokio::fs::write(&user_file, &req.content).await.ok();
 
+    // Assemble prompt with conversation context
+    // (needed for standard job path; session container path uses --continue instead)
+    let all_messages = claw_redis::get_all_chat_messages(&state.pool, chat_id).await.unwrap_or_default();
+    let assembled = assemble_chat_prompt(&all_messages, &req.content, session.context_window_size);
+
     // Determine model
     let model = req.model.or_else(|| Some(session.model.clone()));
 
-    // Submit as a job — just the raw user message.
-    // Claude Code's --continue flag handles conversation context natively.
     let job_req = claw_models::CreateJobRequest {
-        prompt: req.content.clone(),
+        prompt: assembled,
         skill_ids: session.skill_ids.clone(),
         skill_tags: Vec::new(),
         tool_ids: session.tool_ids.clone(),
@@ -287,8 +290,40 @@ fn estimate_tokens(text: &str) -> u32 {
     (text.len() / 4).max(1) as u32
 }
 
-// Context assembly removed — Claude Code's --continue flag handles conversation
-// context natively. The server just passes the raw user message.
+/// Assemble the chat prompt with conversation context.
+/// Used by the standard job path. The session container path uses --continue instead.
+fn assemble_chat_prompt(messages: &[ChatMessage], new_message: &str, context_window: u32) -> String {
+    let mut prompt = String::new();
+
+    // Exclude the just-added user message
+    let history: Vec<&ChatMessage> = messages.iter()
+        .filter(|m| !(m.role == "user" && m.content == new_message && m.seq == messages.last().map_or(0, |l| l.seq)))
+        .collect();
+
+    let total = history.len();
+    let window = (context_window as usize) * 2;
+    let split_point = if total > window { total - window } else { 0 };
+
+    if split_point > 0 {
+        prompt.push_str("[Earlier conversation summary]\n");
+        for msg in &history[..split_point] {
+            let summary = msg.summary.as_deref().unwrap_or(&msg.content);
+            let truncated = if summary.len() > 120 { &summary[..120] } else { summary };
+            prompt.push_str(&format!("[{}] {}: {}\n", msg.seq, msg.role.to_uppercase(), truncated));
+        }
+        prompt.push('\n');
+    }
+
+    if !history.is_empty() && split_point < total {
+        prompt.push_str("[Recent conversation]\n");
+        for msg in &history[split_point..] {
+            prompt.push_str(&format!("{} [{}]: {}\n\n", msg.role.to_uppercase(), msg.seq, msg.content));
+        }
+    }
+
+    prompt.push_str(new_message);
+    prompt
+}
 
 /// Generate the CLAUDE.md content for a chat workspace.
 fn chat_claude_md(username: &str) -> String {
