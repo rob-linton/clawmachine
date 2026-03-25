@@ -44,9 +44,23 @@ pub async fn ensure_container(
     let checkout = checkout_path(workspace_id);
     let host_checkout = translate_to_host_path(&checkout);
 
+    // Determine UID/GID — same logic as docker_execute_job
+    let (uid, gid) = {
+        let current_uid = users::get_current_uid();
+        if current_uid == 0 {
+            let claude_dir = dirs::home_dir().unwrap_or_else(|| "/home/claw".into()).join(".claude");
+            std::fs::metadata(&claude_dir)
+                .map(|m| { use std::os::unix::fs::MetadataExt; (m.uid(), m.gid()) })
+                .unwrap_or((1000, 1000))
+        } else {
+            (current_uid, users::get_current_gid())
+        }
+    };
+
     let mut args = vec![
         "run".to_string(), "-d".into(),
         "--name".into(), container_name.clone(),
+        "--user".into(), format!("{}:{}", uid, gid),
         "--memory".into(), "2g".into(),
         "--cpus".into(), "1.0".into(),
         "--pids-limit".into(), "128".into(),
