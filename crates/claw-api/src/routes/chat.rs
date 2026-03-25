@@ -237,8 +237,6 @@ async fn retry_message(
     // Actually, sorted set scores: user and assistant both have score=seq
     // We need to remove only the assistant message. For now, truncate removes seq+1 and above.
     // The assistant message at seq will be replaced by the new response.
-    // TODO: more precise truncation
-
     (StatusCode::OK, Json(serde_json::json!({"status": "truncated", "retry_from_seq": seq}))).into_response()
 }
 
