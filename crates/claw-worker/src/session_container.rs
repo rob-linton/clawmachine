@@ -88,9 +88,10 @@ pub async fn ensure_container(
         args.push(format!("{}:{}{}", host_path, mount.container_path, mode));
     }
 
-    // Image + sleep command
-    args.push(config.image.clone());
+    // Override entrypoint (sandbox image has ENTRYPOINT ["claude"])
+    args.push("--entrypoint".into());
     args.push("sleep".into());
+    args.push(config.image.clone());
     args.push("infinity".into());
 
     let output = Command::new("docker")
