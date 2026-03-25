@@ -286,6 +286,7 @@ fn estimate_tokens(text: &str) -> u32 {
 }
 
 /// Assemble the chat prompt with context window management.
+/// Note: avoid leading dashes in the prompt as claude -p may interpret them as CLI flags.
 fn assemble_chat_prompt(messages: &[ChatMessage], new_message: &str, context_window: u32) -> String {
     let mut prompt = String::new();
 
@@ -301,25 +302,25 @@ fn assemble_chat_prompt(messages: &[ChatMessage], new_message: &str, context_win
 
     // Old messages as summaries
     if split_point > 0 {
-        prompt.push_str("--- Earlier conversation summary ---\n");
+        prompt.push_str("[Earlier conversation summary]\n");
         for msg in &history[..split_point] {
             let summary = msg.summary.as_deref().unwrap_or(&msg.content);
             let truncated = if summary.len() > 120 { &summary[..120] } else { summary };
             prompt.push_str(&format!("[{}] {}: {}\n", msg.seq, msg.role.to_uppercase(), truncated));
         }
-        prompt.push_str("\n");
+        prompt.push('\n');
     }
 
     // Recent messages verbatim
-    if split_point < total {
-        prompt.push_str("--- Recent conversation ---\n");
+    if !history.is_empty() && split_point < total {
+        prompt.push_str("[Recent conversation]\n");
         for msg in &history[split_point..] {
             prompt.push_str(&format!("{} [{}]: {}\n\n", msg.role.to_uppercase(), msg.seq, msg.content));
         }
     }
 
     // Current message
-    prompt.push_str(&format!("USER [new]: {}", new_message));
+    prompt.push_str(new_message);
 
     prompt
 }
