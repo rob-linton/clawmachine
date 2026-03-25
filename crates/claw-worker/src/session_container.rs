@@ -2,7 +2,7 @@
 //! Keeps Docker containers alive across chat messages for performance.
 //! Uses claude --continue to maintain conversation state natively.
 
-use crate::docker::{DockerConfig, shell_escape, translate_to_host_path};
+use crate::docker::{DockerConfig, expand_tilde, shell_escape, translate_credential_host_path, translate_to_host_path};
 use crate::executor::{ExecutionResult, StreamState};
 use deadpool_redis::Pool;
 use std::path::{Path, PathBuf};
@@ -55,18 +55,14 @@ pub async fn ensure_container(
         "-v".into(), format!("{}:/workspace", host_checkout),
     ];
 
-    // Credential mounts from config (includes .claude, .claude.json etc.)
+    // Credential mounts — use same DinD translation as docker_execute_job
     for mount in &config.credential_mounts {
-        let host_path = if mount.host_path.starts_with("~/") {
-            let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
-            home.join(&mount.host_path[2..]).display().to_string()
-        } else {
-            mount.host_path.clone()
-        };
-        if !std::path::Path::new(&host_path).exists() { continue; }
-        let mode = if mount.readonly { ":ro" } else { "" };
+        let host = translate_credential_host_path(&mount.host_path);
+        let local = expand_tilde(&mount.host_path);
+        if !Path::new(&local).exists() { continue; }
+        let mode = if mount.readonly { "ro" } else { "rw" };
         args.push("-v".into());
-        args.push(format!("{}:{}{}", host_path, mount.container_path, mode));
+        args.push(format!("{}:{}:{}", host, mount.container_path, mode));
     }
 
     // Override entrypoint (sandbox has ENTRYPOINT ["claude"])

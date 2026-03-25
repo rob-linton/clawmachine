@@ -193,7 +193,7 @@ pub fn translate_to_host_path(container_path: &Path) -> String {
 }
 
 /// Translate credential mount paths to host paths for Docker-in-Docker.
-fn translate_credential_host_path(host_path: &str) -> String {
+pub fn translate_credential_host_path(host_path: &str) -> String {
     let expanded = expand_tilde(host_path);
 
     // CLAW_HOST_CLAUDE_HOME overrides ~/.claude and ~/.claude.json paths
@@ -631,7 +631,7 @@ pub async fn docker_execute_job(
     })
 }
 
-fn expand_tilde(path: &str) -> String {
+pub fn expand_tilde(path: &str) -> String {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest).to_string_lossy().to_string();
