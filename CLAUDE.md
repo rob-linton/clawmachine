@@ -168,8 +168,7 @@ claw:chat:{chat_id}                    — JSON ChatSession metadata
 claw:chat:{chat_id}:messages           — Sorted set (score=seq) of JSON ChatMessage
 claw:chat:{chat_id}:container          — JSON session container info {container_name, started_at}
 claw:chat:{chat_id}:stream             — Pub/sub channel for real-time assistant text chunks
-claw:user:{username}:chats             — Set of chat IDs belonging to user
-claw:user:{username}:default_chat      — User's primary chat_id
+claw:user:{username}:default_chat      — User's chat_id (one per user)
 ```
 
 ## Authentication Endpoints

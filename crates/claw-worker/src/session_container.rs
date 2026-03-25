@@ -323,15 +323,16 @@ pub async fn process_install_requests(pool: &Pool, workspace_id: Uuid, chat_id: 
 
     match item_type {
         "skill" => {
-            // Add skill to the chat session
             if let Ok(Some(mut session)) = claw_redis::get_chat_session(pool, chat_id).await {
                 if !session.skill_ids.contains(&item_id.to_string()) {
                     session.skill_ids.push(item_id.to_string());
                     session.updated_at = chrono::Utc::now();
                     claw_redis::update_chat_session(pool, &session).await.ok();
-                    tracing::info!(chat_id = %chat_id, skill = %item_id, "Skill added to chat session");
                 }
             }
+            // Deploy skill files to workspace so Claude discovers them immediately
+            deploy_skill_to_workspace(pool, &checkout, item_id).await;
+            tracing::info!(chat_id = %chat_id, skill = %item_id, "Skill installed + deployed to workspace");
         }
         "tool" => {
             if let Ok(Some(mut session)) = claw_redis::get_chat_session(pool, chat_id).await {
@@ -339,15 +340,75 @@ pub async fn process_install_requests(pool: &Pool, workspace_id: Uuid, chat_id: 
                     session.tool_ids.push(item_id.to_string());
                     session.updated_at = chrono::Utc::now();
                     claw_redis::update_chat_session(pool, &session).await.ok();
-                    tracing::info!(chat_id = %chat_id, tool = %item_id, "Tool added to chat session");
                 }
             }
+            // Deploy tool skill_content to workspace if it has a usage guide
+            deploy_tool_skill_to_workspace(pool, &checkout, item_id).await;
+            tracing::info!(chat_id = %chat_id, tool = %item_id, "Tool installed + deployed to workspace");
         }
         _ => {}
     }
 
     // Remove the request file after processing
     tokio::fs::remove_file(&request_path).await.ok();
+}
+
+/// Deploy a skill's SKILL.md + bundled files to .claude/skills/{id}/ in the workspace.
+/// Since the workspace is bind-mounted, writing to the host path makes it visible in the container.
+async fn deploy_skill_to_workspace(pool: &Pool, checkout: &Path, skill_id: &str) {
+    let skill = match claw_redis::get_skill(pool, skill_id).await {
+        Ok(Some(s)) => s,
+        _ => return,
+    };
+
+    let skill_dir = checkout.join(".claude").join("skills").join(skill_id);
+    if skill_dir.exists() {
+        return; // Already deployed
+    }
+
+    if let Err(e) = tokio::fs::create_dir_all(&skill_dir).await {
+        tracing::warn!(skill = %skill_id, error = %e, "Failed to create skill dir");
+        return;
+    }
+
+    // Write SKILL.md with frontmatter
+    let skill_md = format!("---\nname: {}\ndescription: {}\n---\n\n{}", skill.name, skill.description, skill.content);
+    tokio::fs::write(skill_dir.join("SKILL.md"), &skill_md).await.ok();
+
+    // Write bundled files
+    for (rel_path, content) in &skill.files {
+        let file_path = skill_dir.join(rel_path);
+        if let Some(parent) = file_path.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        tokio::fs::write(&file_path, content).await.ok();
+    }
+}
+
+/// Deploy a tool's skill_content as .claude/skills/tool-{id}/SKILL.md in the workspace.
+async fn deploy_tool_skill_to_workspace(pool: &Pool, checkout: &Path, tool_id: &str) {
+    let tool = match claw_redis::get_tool(pool, tool_id).await {
+        Ok(Some(t)) => t,
+        _ => return,
+    };
+
+    let content = match tool.skill_content {
+        Some(ref c) if !c.is_empty() => c,
+        _ => return, // No usage guide to deploy
+    };
+
+    let skill_dir = checkout.join(".claude").join("skills").join(format!("tool-{}", tool_id));
+    if skill_dir.exists() {
+        return;
+    }
+
+    if let Err(e) = tokio::fs::create_dir_all(&skill_dir).await {
+        tracing::warn!(tool = %tool_id, error = %e, "Failed to create tool skill dir");
+        return;
+    }
+
+    let skill_md = format!("---\nname: {}\ndescription: {}\n---\n\n{}", tool.name, tool.description, content);
+    tokio::fs::write(skill_dir.join("SKILL.md"), &skill_md).await.ok();
 }
 
 fn checkout_path(workspace_id: Uuid) -> PathBuf {
