@@ -641,7 +641,7 @@ fn expand_tilde(path: &str) -> String {
 }
 
 /// Shell-escape a string for safe inclusion in a bash script.
-fn shell_escape(s: &str) -> String {
+pub fn shell_escape(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }

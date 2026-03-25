@@ -188,3 +188,39 @@ pub async fn update_message_summary(pool: &Pool, chat_id: Uuid, seq: u32, role: 
     }
     Ok(())
 }
+
+// --- Container Tracking ---
+
+/// Store the active container info for a chat session.
+pub async fn set_chat_container(pool: &Pool, chat_id: Uuid, container_name: &str) -> Result<(), RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("{}{}:container", CHAT_PREFIX, chat_id);
+    let json = serde_json::json!({
+        "container_name": container_name,
+        "started_at": chrono::Utc::now().to_rfc3339(),
+    });
+    let _: () = conn.set(&key, serde_json::to_string(&json)?).await?;
+    Ok(())
+}
+
+/// Get the active container name for a chat session.
+pub async fn get_chat_container(pool: &Pool, chat_id: Uuid) -> Result<Option<String>, RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("{}{}:container", CHAT_PREFIX, chat_id);
+    let json: Option<String> = conn.get(&key).await?;
+    match json {
+        Some(j) => {
+            let v: serde_json::Value = serde_json::from_str(&j)?;
+            Ok(v.get("container_name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Delete the container tracking key.
+pub async fn delete_chat_container(pool: &Pool, chat_id: Uuid) -> Result<(), RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("{}{}:container", CHAT_PREFIX, chat_id);
+    let _: () = conn.del(&key).await?;
+    Ok(())
+}

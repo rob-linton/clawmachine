@@ -4,6 +4,7 @@ mod environment;
 mod executor;
 mod pipeline_runner;
 mod prompt_builder;
+pub mod session_container;
 mod token_refresh;
 
 use claw_models::WorkspacePersistence;
@@ -165,6 +166,26 @@ async fn main() {
         }));
     }
 
+    // Clean up orphaned session containers on startup
+    {
+        let pool = pool.clone();
+        session_container::cleanup_orphans(&pool).await;
+    }
+
+    // Spawn session container idle cleanup task (every 60s)
+    {
+        let pool = pool.clone();
+        let shutdown = shutdown.clone();
+        handles.push(tokio::spawn(async move {
+            let timeout_secs = 1800; // 30 minutes
+            loop {
+                if shutdown.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                session_container::cleanup_idle_containers(&pool, timeout_secs).await;
+            }
+        }));
+    }
+
     // Wait for Ctrl+C
     tokio::signal::ctrl_c().await.ok();
     tracing::info!("Shutting down...");
@@ -287,6 +308,73 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                 // Pre-job OAuth token check (use raw_api_key for bypass check, not the filtered one)
                 if let Err(e) = token_refresh::ensure_token_fresh(raw_api_key.as_deref()).await {
                     tracing::warn!(job_id = %job_id, error = %e, "Token refresh failed — job may fail if expired");
+                }
+
+                // CHAT FAST PATH: route chat jobs through session container
+                if let Some(chat_tag) = job.tags.iter().find(|t| t.starts_with("chat:")) {
+                    if let Ok(chat_id) = chat_tag.strip_prefix("chat:").unwrap_or("").parse::<uuid::Uuid>() {
+                        if backend == executor::ExecutionBackend::Docker {
+                            if let Some(ref dc) = docker_config {
+                                let ws_id = job.workspace_id.unwrap_or_default();
+                                tracing::info!(job_id = %job_id, chat_id = %chat_id, "Routing to chat session container");
+
+                                // Ensure session container is alive
+                                match session_container::ensure_container(&pool, chat_id, ws_id, dc).await {
+                                    Ok(container_name) => {
+                                        let model = job.model.as_deref();
+                                        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(256);
+
+                                        match session_container::execute_chat_message(
+                                            &container_name, ws_id, &job.prompt, model, log_tx
+                                        ).await {
+                                            Ok(r) => {
+                                                claw_redis::complete_job(&pool, job_id, &r.result_text, r.cost_usd, r.duration_ms).await.ok();
+                                                // Store assistant response as chat message
+                                                let seq_tag = job.tags.iter().find(|t| t.starts_with("chat_seq:"));
+                                                let seq: u32 = seq_tag.and_then(|t| t.strip_prefix("chat_seq:")).and_then(|s| s.parse().ok()).unwrap_or(0);
+                                                if seq > 0 {
+                                                    let assistant_msg = claw_models::ChatMessage {
+                                                        seq, role: "assistant".to_string(), content: r.result_text.clone(),
+                                                        summary: None, job_id: Some(job_id), cost_usd: Some(r.cost_usd),
+                                                        model: job.model.clone(), token_estimate: (r.result_text.len() / 4).max(1) as u32,
+                                                        files_written: Vec::new(), timestamp: chrono::Utc::now(),
+                                                    };
+                                                    claw_redis::add_chat_message(&pool, chat_id, &assistant_msg).await.ok();
+                                                    // Write message file to workspace
+                                                    let checkout = dirs::home_dir().unwrap_or_else(|| "/tmp".into())
+                                                        .join(".claw").join("checkouts").join(ws_id.to_string())
+                                                        .join(".chat").join("messages");
+                                                    tokio::fs::create_dir_all(&checkout).await.ok();
+                                                    tokio::fs::write(checkout.join(format!("{:04}-assistant.md", seq)), &r.result_text).await.ok();
+                                                    // Update session
+                                                    if let Ok(Some(mut session)) = claw_redis::get_chat_session(&pool, chat_id).await {
+                                                        session.total_messages += 1;
+                                                        session.total_cost_usd += r.cost_usd;
+                                                        session.last_activity = chrono::Utc::now();
+                                                        session.updated_at = chrono::Utc::now();
+                                                        claw_redis::update_chat_session(&pool, &session).await.ok();
+                                                    }
+                                                }
+                                                tracing::info!(job_id = %job_id, chat_id = %chat_id, duration_ms = r.duration_ms, "Chat message completed via session container");
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(job_id = %job_id, error = %e, "Chat session container execution failed");
+                                                claw_redis::fail_job(&pool, job_id, &e).await.ok();
+                                                // Check if container died
+                                                claw_redis::delete_chat_container(&pool, chat_id).await.ok();
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(job_id = %job_id, error = %e, "Failed to ensure session container");
+                                        claw_redis::fail_job(&pool, job_id, &format!("Session container failed: {e}")).await.ok();
+                                    }
+                                }
+                                continue; // Skip the standard job flow
+                            }
+                        }
+                        // If not Docker backend, fall through to standard flow
+                    }
                 }
 
                 // 1. Resolve workspace (if workspace_id set)
