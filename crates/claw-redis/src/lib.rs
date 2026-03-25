@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod pool;
 pub mod jobs;
 pub mod logs;
@@ -12,6 +13,7 @@ pub mod config;
 pub mod users;
 pub mod sessions;
 
+pub use chat::*;
 pub use pool::*;
 pub use jobs::*;
 pub use logs::*;

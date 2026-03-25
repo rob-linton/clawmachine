@@ -1,3 +1,4 @@
+pub mod anthropic;
 mod docker;
 mod environment;
 mod executor;

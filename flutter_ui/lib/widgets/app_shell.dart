@@ -65,6 +65,8 @@ class AppShell extends ConsumerWidget {
               NavigationRailDestination(
                   icon: Icon(Icons.dashboard), label: Text('Dashboard')),
               NavigationRailDestination(
+                  icon: Icon(Icons.chat), label: Text('Chat')),
+              NavigationRailDestination(
                   icon: Icon(Icons.work), label: Text('Jobs')),
               NavigationRailDestination(
                   icon: Icon(Icons.description), label: Text('Templates')),
@@ -86,20 +88,22 @@ class AppShell extends ConsumerWidget {
                 case 0:
                   context.go('/');
                 case 1:
-                  context.go('/jobs');
+                  context.go('/chat');
                 case 2:
-                  context.go('/templates');
+                  context.go('/jobs');
                 case 3:
-                  context.go('/pipelines');
+                  context.go('/templates');
                 case 4:
-                  context.go('/schedules');
+                  context.go('/pipelines');
                 case 5:
-                  context.go('/workspaces');
+                  context.go('/schedules');
                 case 6:
-                  context.go('/skills');
+                  context.go('/workspaces');
                 case 7:
-                  context.go('/tools');
+                  context.go('/skills');
                 case 8:
+                  context.go('/tools');
+                case 9:
                   context.go('/credentials');
               }
             },
@@ -112,14 +116,15 @@ class AppShell extends ConsumerWidget {
   }
 
   int _indexForLocation(String location) {
-    if (location.startsWith('/jobs')) return 1;
-    if (location.startsWith('/templates')) return 2;
-    if (location.startsWith('/pipelines')) return 3;
-    if (location.startsWith('/schedules')) return 4;
-    if (location.startsWith('/workspaces')) return 5;
-    if (location.startsWith('/skills')) return 6;
-    if (location.startsWith('/tools')) return 7;
-    if (location.startsWith('/credentials')) return 8;
+    if (location.startsWith('/chat')) return 1;
+    if (location.startsWith('/jobs')) return 2;
+    if (location.startsWith('/templates')) return 3;
+    if (location.startsWith('/pipelines')) return 4;
+    if (location.startsWith('/schedules')) return 5;
+    if (location.startsWith('/workspaces')) return 6;
+    if (location.startsWith('/skills')) return 7;
+    if (location.startsWith('/tools')) return 8;
+    if (location.startsWith('/credentials')) return 9;
     if (location.startsWith('/settings')) return -1;
     return 0;
   }

@@ -17,6 +17,7 @@ import 'screens/pipelines_screen.dart';
 import 'screens/pipeline_create_screen.dart';
 import 'screens/templates_screen.dart';
 import 'screens/template_create_screen.dart';
+import 'screens/chat_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/users_screen.dart';
 import 'screens/login_screen.dart';
@@ -116,6 +117,7 @@ final _router = GoRouter(
         GoRoute(path: '/credentials', builder: (_, __) => const CredentialsScreen()),
         GoRoute(
             path: '/settings', builder: (_, __) => const SettingsScreen()),
+        GoRoute(path: '/chat', builder: (_, __) => const ChatScreen()),
         GoRoute(path: '/users', builder: (_, __) => const UsersScreen()),
       ],
     ),

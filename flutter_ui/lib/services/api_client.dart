@@ -68,6 +68,40 @@ class ApiClient {
     await _dio.delete('/auth/users/$username');
   }
 
+  // Chat
+  Future<Map<String, dynamic>> createOrGetChat() async {
+    final resp = await _dio.post('/chat');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<Map<String, dynamic>> getChat() async {
+    final resp = await _dio.get('/chat');
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<List<Map<String, dynamic>>> getChatMessages({int limit = 50, int before = 0}) async {
+    final params = <String, dynamic>{'limit': limit};
+    if (before > 0) params['before'] = before;
+    final resp = await _dio.get('/chat/messages', queryParameters: params);
+    return List<Map<String, dynamic>>.from(resp.data['messages']);
+  }
+
+  Future<Map<String, dynamic>> sendChatMessage(String content, {String? model}) async {
+    final data = <String, dynamic>{'content': content};
+    if (model != null) data['model'] = model;
+    final resp = await _dio.post('/chat/messages', data: data);
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<void> deleteChat() async {
+    await _dio.delete('/chat');
+  }
+
+  Future<List<Map<String, dynamic>>> searchChatMessages(String query) async {
+    final resp = await _dio.get('/chat/search', queryParameters: {'q': query});
+    return List<Map<String, dynamic>>.from(resp.data['messages']);
+  }
+
   // Jobs
   Future<Map<String, dynamic>> submitJob({
     required String prompt,

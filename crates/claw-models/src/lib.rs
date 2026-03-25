@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod job;
 pub mod skill;
 pub mod tool;
@@ -8,6 +9,7 @@ pub mod pipeline;
 pub mod job_template;
 pub mod credential;
 
+pub use chat::*;
 pub use job::*;
 pub use skill::*;
 pub use tool::*;

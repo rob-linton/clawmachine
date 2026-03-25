@@ -1,12 +1,75 @@
 use axum::{
-    extract::{Request, State},
-    http::StatusCode,
+    extract::{FromRequestParts, Request, State},
+    http::{request::Parts, StatusCode},
     middleware::Next,
     response::{IntoResponse, Response},
+    Json,
 };
 use std::sync::OnceLock;
 
 use crate::AppState;
+
+/// Authenticated user identity, extracted from session cookie.
+/// Use as a handler parameter: `async fn handler(user: CurrentUser, ...) { ... }`
+/// Returns 401 if no valid session. Bearer token users get username "__api_token__".
+#[derive(Debug, Clone)]
+pub struct CurrentUser {
+    pub username: String,
+    pub role: String,
+}
+
+impl FromRequestParts<AppState> for CurrentUser {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        // Check session cookie
+        let session_cookie = parts
+            .headers
+            .get("cookie")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|cookies| {
+                cookies.split(';').find_map(|pair| {
+                    pair.trim()
+                        .strip_prefix("claw_session=")
+                        .map(|v| v.trim().to_string())
+                })
+            });
+
+        if let Some(session_id) = session_cookie {
+            if let Ok(Some(username)) = claw_redis::get_session(&state.pool, &session_id).await {
+                let role = match claw_redis::get_user(&state.pool, &username).await {
+                    Ok(Some(user)) => user.get("role").cloned().unwrap_or_else(|| "user".to_string()),
+                    _ => "user".to_string(),
+                };
+                return Ok(CurrentUser { username, role });
+            }
+        }
+
+        // Check bearer token
+        let bearer = parts
+            .headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer ").map(|t| t.to_string()));
+
+        if let Some(token) = bearer {
+            if let Some(expected) = get_api_token() {
+                if token == *expected {
+                    return Ok(CurrentUser {
+                        username: "__api_token__".to_string(),
+                        role: "admin".to_string(),
+                    });
+                }
+            }
+        }
+
+        Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Authentication required"})),
+        )
+            .into_response())
+    }
+}
 
 static API_TOKEN: OnceLock<Option<String>> = OnceLock::new();
 
