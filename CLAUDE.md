@@ -141,6 +141,31 @@ GET    /api/v1/events/jobs             — SSE stream of job status updates (via
 
 Clients receive `job_update` events with `{type, job_id, status}` payloads. The connection auto-sends keepalive pings.
 
+## Interactive Chat Endpoints
+
+```
+POST   /api/v1/chat                    — create/get default chat session for current user
+GET    /api/v1/chat                    — get current user's chat session
+GET    /api/v1/chat/messages           — paginated message history (?limit=50&before=seq)
+POST   /api/v1/chat/messages           — send new message {content, model?} → returns job_id
+POST   /api/v1/chat/messages/{seq}/retry — retry from this point (truncates history)
+DELETE /api/v1/chat                    — delete chat session + workspace
+GET    /api/v1/chat/search?q=keyword   — full-text search message history
+```
+
+Each user gets one chat session tied to a private persistent workspace. Messages are submitted as high-priority jobs through the existing queue. The worker detects chat jobs via `chat:` and `chat_seq:` tags and stores assistant responses as `ChatMessage` objects in Redis. Both user and assistant messages are also written to `.chat/messages/{seq}-{role}.md` in the workspace for grep-based history access.
+
+**Context assembly**: The server assembles the prompt with a sliding window — recent messages verbatim (configurable, default 20) and older messages as one-line summaries. The workspace CLAUDE.md instructs Claude to maintain `.chat/summary.md` and use `grep` on `.chat/messages/` for older history.
+
+## Chat Redis Keys
+
+```
+claw:chat:{chat_id}                    — JSON ChatSession metadata
+claw:chat:{chat_id}:messages           — Sorted set (score=seq) of JSON ChatMessage
+claw:user:{username}:chats             — Set of chat IDs belonging to user
+claw:user:{username}:default_chat      — User's primary chat_id
+```
+
 ## Authentication Endpoints
 
 ```
