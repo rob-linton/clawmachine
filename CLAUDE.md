@@ -151,6 +151,7 @@ POST   /api/v1/chat/messages           — send new message {content, model?} �
 POST   /api/v1/chat/messages/{seq}/retry — retry from this point (truncates history)
 DELETE /api/v1/chat                    — delete chat session + workspace
 GET    /api/v1/chat/search?q=keyword   — full-text search message history
+GET    /api/v1/chat/stream             — SSE stream of assistant text chunks (real-time)
 ```
 
 Each user gets one chat session tied to a private persistent workspace. Messages are submitted as high-priority jobs. The worker detects chat jobs via `chat:` and `chat_seq:` tags and routes them through a **persistent session container** (`docker exec` into a long-lived container) with `claude -p --continue` for native conversation context. Both user and assistant messages are also written to `.chat/messages/{seq}-{role}.md` in the workspace.
@@ -165,6 +166,7 @@ Each user gets one chat session tied to a private persistent workspace. Messages
 claw:chat:{chat_id}                    — JSON ChatSession metadata
 claw:chat:{chat_id}:messages           — Sorted set (score=seq) of JSON ChatMessage
 claw:chat:{chat_id}:container          — JSON session container info {container_name, started_at}
+claw:chat:{chat_id}:stream             — Pub/sub channel for real-time assistant text chunks
 claw:user:{username}:chats             — Set of chat IDs belonging to user
 claw:user:{username}:default_chat      — User's primary chat_id
 ```
