@@ -38,7 +38,9 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
     try {
       final api = ref.read(apiClientProvider);
-      await api.login(username, password);
+      final result = await api.login(username, password);
+      ref.read(currentUserProvider.notifier).state = result;
+      ref.read(isAuthenticatedProvider.notifier).state = true;
       if (mounted) {
         context.go('/');
       }

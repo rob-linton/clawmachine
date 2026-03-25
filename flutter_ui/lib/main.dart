@@ -18,6 +18,7 @@ import 'screens/pipeline_create_screen.dart';
 import 'screens/templates_screen.dart';
 import 'screens/template_create_screen.dart';
 import 'screens/settings_screen.dart';
+import 'screens/users_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/api_client.dart';
 import 'services/event_service.dart';
@@ -38,6 +39,9 @@ final eventServiceProvider = Provider<EventService>((ref) {
 
 /// Tracks whether the user is authenticated.
 final isAuthenticatedProvider = StateProvider<bool>((ref) => false);
+
+/// Caches the current user info ({username, role}) from /auth/me.
+final currentUserProvider = StateProvider<Map<String, dynamic>?>((ref) => null);
 
 final _router = GoRouter(
   initialLocation: '/',
@@ -112,6 +116,7 @@ final _router = GoRouter(
         GoRoute(path: '/credentials', builder: (_, __) => const CredentialsScreen()),
         GoRoute(
             path: '/settings', builder: (_, __) => const SettingsScreen()),
+        GoRoute(path: '/users', builder: (_, __) => const UsersScreen()),
       ],
     ),
   ],
@@ -140,7 +145,8 @@ class _ClawAppState extends ConsumerState<ClawApp> {
   Future<void> _checkAuth() async {
     try {
       final api = ref.read(apiClientProvider);
-      await api.checkAuth();
+      final user = await api.checkAuth();
+      ref.read(currentUserProvider.notifier).state = user;
       ref.read(isAuthenticatedProvider.notifier).state = true;
     } catch (_) {
       ref.read(isAuthenticatedProvider.notifier).state = false;

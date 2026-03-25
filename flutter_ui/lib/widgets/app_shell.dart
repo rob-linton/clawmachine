@@ -26,6 +26,15 @@ class AppShell extends ConsumerWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.end,
                 children: [
+                  if (ref.watch(currentUserProvider)?['role'] == 'admin')
+                    IconButton(
+                      icon: Icon(Icons.people,
+                          color: location.startsWith('/users')
+                              ? Theme.of(context).colorScheme.primary
+                              : null),
+                      tooltip: 'Users',
+                      onPressed: () => context.go('/users'),
+                    ),
                   IconButton(
                     icon: Icon(Icons.settings,
                         color: location.startsWith('/settings')
@@ -43,6 +52,8 @@ class AppShell extends ConsumerWidget {
                         final api = ref.read(apiClientProvider);
                         await api.logout();
                       } catch (_) {}
+                      ref.read(currentUserProvider.notifier).state = null;
+                      ref.read(isAuthenticatedProvider.notifier).state = false;
                       if (context.mounted) context.go('/login');
                     },
                   ),

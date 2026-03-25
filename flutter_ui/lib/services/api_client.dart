@@ -50,6 +50,24 @@ class ApiClient {
     return Map<String, dynamic>.from(resp.data);
   }
 
+  // Users (admin-only)
+  Future<List<Map<String, dynamic>>> listUsers() async {
+    final resp = await _dio.get('/auth/users');
+    return List<Map<String, dynamic>>.from(resp.data['items']);
+  }
+
+  Future<void> createUser(String username, String password, String role) async {
+    await _dio.post('/auth/users', data: {
+      'username': username,
+      'password': password,
+      'role': role,
+    });
+  }
+
+  Future<void> deleteUser(String username) async {
+    await _dio.delete('/auth/users/$username');
+  }
+
   // Jobs
   Future<Map<String, dynamic>> submitJob({
     required String prompt,

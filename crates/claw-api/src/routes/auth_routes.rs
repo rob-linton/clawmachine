@@ -278,6 +278,17 @@ async fn delete_user(
         return resp;
     }
 
+    // Prevent self-deletion: extract current user from session
+    if let Some(session_user) = session_username(&state, &headers).await {
+        if session_user == username {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "Cannot delete your own account"})),
+            )
+                .into_response();
+        }
+    }
+
     match claw_redis::delete_user(&state.pool, &username).await {
         Ok(()) => (StatusCode::OK, Json(serde_json::json!({"ok": true}))).into_response(),
         Err(e) => (
@@ -356,4 +367,22 @@ async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), Resp
     }
 
     Ok(())
+}
+
+/// Extract the current session username from cookies (if present).
+async fn session_username(state: &AppState, headers: &HeaderMap) -> Option<String> {
+    let session_id = headers
+        .get("cookie")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|cookies| {
+            cookies.split(';').find_map(|pair| {
+                pair.trim()
+                    .strip_prefix("claw_session=")
+                    .map(|v| v.trim().to_string())
+            })
+        })?;
+    claw_redis::get_session(&state.pool, &session_id)
+        .await
+        .ok()
+        .flatten()
 }
