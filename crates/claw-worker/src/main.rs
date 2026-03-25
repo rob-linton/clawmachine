@@ -633,6 +633,19 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                             session.last_activity = chrono::Utc::now();
                                             session.updated_at = chrono::Utc::now();
                                             claw_redis::update_chat_session(&pool, &session).await.ok();
+
+                                            // Write message files to workspace for grep-based history
+                                            let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+                                            let checkout = home.join(".claw").join("checkouts").join(session.workspace_id.to_string());
+                                            let messages_dir = checkout.join(".chat").join("messages");
+                                            if let Err(e) = tokio::fs::create_dir_all(&messages_dir).await {
+                                                tracing::warn!(error = %e, "Failed to create .chat/messages dir");
+                                            } else {
+                                                // Write assistant response file
+                                                let assistant_path = messages_dir.join(format!("{:04}-assistant.md", seq));
+                                                tokio::fs::write(&assistant_path, &r.result_text).await.ok();
+                                                tracing::debug!(seq = seq, "Wrote chat message files to workspace");
+                                            }
                                         }
                                     }
                                 }

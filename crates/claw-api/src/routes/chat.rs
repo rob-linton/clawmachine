@@ -166,6 +166,13 @@ async fn send_message(
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response();
     }
 
+    // Write user message file to workspace for grep-based history
+    let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+    let messages_dir = home.join(".claw").join("checkouts").join(session.workspace_id.to_string()).join(".chat").join("messages");
+    tokio::fs::create_dir_all(&messages_dir).await.ok();
+    let user_file = messages_dir.join(format!("{:04}-user.md", seq));
+    tokio::fs::write(&user_file, &req.content).await.ok();
+
     // Assemble the prompt with context window
     let all_messages = claw_redis::get_all_chat_messages(&state.pool, chat_id).await.unwrap_or_default();
     let assembled = assemble_chat_prompt(&all_messages, &req.content, session.context_window_size);

@@ -19,19 +19,29 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _loading = true;
   bool _sending = false;
   String? _error;
-  Timer? _pollTimer;
+  String? _pendingJobId;
+  StreamSubscription? _eventSub;
 
   @override
   void initState() {
     super.initState();
     _initChat();
+    // Listen for job completion via SSE
+    _eventSub = ref.read(eventServiceProvider).jobUpdates.listen((event) {
+      if (_pendingJobId != null && event['job_id'] == _pendingJobId) {
+        final status = event['status'] as String?;
+        if (status == 'completed' || status == 'failed') {
+          _onJobComplete();
+        }
+      }
+    });
   }
 
   @override
   void dispose() {
     _inputController.dispose();
     _scrollController.dispose();
-    _pollTimer?.cancel();
+    _eventSub?.cancel();
     super.dispose();
   }
 
@@ -100,13 +110,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       });
       _scrollToBottom();
 
-      // Poll for completion
-      if (jobId != null) {
-        _pollForResponse(jobId, (optimisticMsg['seq'] as int));
-      }
+      // Wait for SSE event to signal completion
+      _pendingJobId = jobId;
     } catch (e) {
       setState(() {
         _sending = false;
+        _pendingJobId = null;
         _messages.removeLast(); // remove optimistic
       });
       if (mounted) {
@@ -117,30 +126,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  void _pollForResponse(String jobId, int seq) {
-    _pollTimer?.cancel();
-    _pollTimer = Timer.periodic(const Duration(seconds: 2), (timer) async {
-      try {
-        final api = ref.read(apiClientProvider);
-        final job = await api.getJob(jobId);
-        final status = job.status;
-
-        if (status == 'completed' || status == 'failed') {
-          timer.cancel();
-          // Refresh messages from server to get the actual response
-          await _refreshMessages();
-          // Also refresh session for cost update
-          try {
-            final session = await api.getChat();
-            if (mounted) setState(() => _session = session);
-          } catch (_) {}
-          if (mounted) setState(() => _sending = false);
-          _scrollToBottom();
-        }
-      } catch (_) {
-        // Keep polling
-      }
-    });
+  Future<void> _onJobComplete() async {
+    _pendingJobId = null;
+    await _refreshMessages();
+    // Refresh session for cost update
+    try {
+      final api = ref.read(apiClientProvider);
+      final session = await api.getChat();
+      if (mounted) setState(() => _session = session);
+    } catch (_) {}
+    if (mounted) setState(() => _sending = false);
+    _scrollToBottom();
   }
 
   void _scrollToBottom() {
