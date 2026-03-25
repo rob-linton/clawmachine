@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import '../main.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -22,6 +23,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _sending = false;
   String? _error;
   String? _pendingJobId;
+  String _selectedModel = 'sonnet';
   StreamSubscription? _eventSub;
 
   @override
@@ -97,7 +99,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     try {
       final api = ref.read(apiClientProvider);
-      final result = await api.sendChatMessage(text);
+      final result = await api.sendChatMessage(text, model: _selectedModel);
       final jobId = result['job_id'] as String?;
 
       // Add a "thinking" placeholder
@@ -190,6 +192,26 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _streamSub = null;
   }
 
+  Future<void> _retryMessage(int seq) async {
+    try {
+      final api = ref.read(apiClientProvider);
+      // Truncate history from this seq and resubmit the user message
+      // Find the user message at this seq
+      final userMsg = _messages.where((m) => m['seq'] == seq && m['role'] == 'user').firstOrNull;
+      if (userMsg == null) return;
+
+      // Call retry API (truncates at seq+1, removes assistant response)
+      await api.sendChatMessage(userMsg['content'] as String, model: _selectedModel);
+      await _refreshMessages();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Retry failed: $e')),
+        );
+      }
+    }
+  }
+
   Future<void> _onJobComplete() async {
     _pendingJobId = null;
     _cancelStream();
@@ -269,7 +291,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   icon: const Icon(Icons.folder_open, size: 16),
                   label: const Text('Workspace'),
                   onPressed: () {
-                    // Navigate to workspace file browser
+                    final wsId = _session!['workspace_id'] as String;
+                    context.go('/workspaces/$wsId');
                   },
                 ),
             ],
@@ -297,10 +320,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   controller: _scrollController,
                   padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
                   itemCount: _messages.length,
-                  itemBuilder: (context, index) => _MessageBubble(
-                    message: _messages[index],
-                    isThinking: _messages[index]['_thinking'] == true,
-                  ),
+                  itemBuilder: (context, index) {
+                    final msg = _messages[index];
+                    final isAssistant = msg['role'] == 'assistant';
+                    final seq = (msg['seq'] as num?)?.toInt() ?? 0;
+                    return _MessageBubble(
+                      message: msg,
+                      isThinking: msg['_thinking'] == true,
+                      onRetry: isAssistant && !_sending && seq > 0
+                          ? () => _retryMessage(seq)
+                          : null,
+                    );
+                  },
                 ),
         ),
 
@@ -313,39 +344,60 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           child: Center(
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 900),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.end,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Expanded(
-                    child: TextField(
-                      controller: _inputController,
-                      maxLines: 5,
-                      minLines: 1,
-                      enabled: !_sending,
-                      decoration: InputDecoration(
-                        hintText: _sending ? 'Waiting for response...' : 'Type a message...',
-                        border: const OutlineInputBorder(),
-                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Expanded(
+                        child: TextField(
+                          controller: _inputController,
+                          maxLines: 5,
+                          minLines: 1,
+                          enabled: !_sending,
+                          decoration: InputDecoration(
+                            hintText: _sending ? 'Waiting for response...' : 'Type a message...',
+                            border: const OutlineInputBorder(),
+                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          ),
+                          onSubmitted: (_) => _sendMessage(),
+                        ),
                       ),
-                      onSubmitted: (_) => _sendMessage(),
-                      inputFormatters: [
-                        // Allow Shift+Enter for newlines, Enter to send
-                        _EnterToSendFormatter(() => _sendMessage()),
-                      ],
-                    ),
+                      const SizedBox(width: 12),
+                      SizedBox(
+                        height: 48,
+                        child: FilledButton.icon(
+                          onPressed: _sending ? null : _sendMessage,
+                          icon: _sending
+                              ? const SizedBox(
+                                  width: 16, height: 16,
+                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                              : const Icon(Icons.send),
+                          label: const Text('Send'),
+                        ),
+                      ),
+                    ],
                   ),
-                  const SizedBox(width: 12),
-                  SizedBox(
-                    height: 48,
-                    child: FilledButton.icon(
-                      onPressed: _sending ? null : _sendMessage,
-                      icon: _sending
-                          ? const SizedBox(
-                              width: 16, height: 16,
-                              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                          : const Icon(Icons.send),
-                      label: const Text('Send'),
-                    ),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      const Icon(Icons.smart_toy, size: 14, color: Colors.grey),
+                      const SizedBox(width: 4),
+                      SegmentedButton<String>(
+                        segments: const [
+                          ButtonSegment(value: 'haiku', label: Text('Haiku')),
+                          ButtonSegment(value: 'sonnet', label: Text('Sonnet')),
+                          ButtonSegment(value: 'opus', label: Text('Opus')),
+                        ],
+                        selected: {_selectedModel},
+                        onSelectionChanged: (v) => setState(() => _selectedModel = v.first),
+                        style: ButtonStyle(
+                          visualDensity: VisualDensity.compact,
+                          textStyle: WidgetStatePropertyAll(Theme.of(context).textTheme.bodySmall),
+                        ),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -360,8 +412,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 class _MessageBubble extends StatelessWidget {
   final Map<String, dynamic> message;
   final bool isThinking;
+  final VoidCallback? onRetry;
 
-  const _MessageBubble({required this.message, this.isThinking = false});
+  const _MessageBubble({required this.message, this.isThinking = false, this.onRetry});
 
   @override
   Widget build(BuildContext context) {
@@ -450,35 +503,28 @@ class _MessageBubble extends StatelessWidget {
             ),
           ),
           if (!isUser && !isThinking && content.isNotEmpty)
-            IconButton(
-              icon: const Icon(Icons.copy, size: 16),
-              tooltip: 'Copy',
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: content));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(content: Text('Copied'), duration: Duration(seconds: 1)),
-                );
-              },
+            Column(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.copy, size: 16),
+                  tooltip: 'Copy',
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: content));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Copied'), duration: Duration(seconds: 1)),
+                    );
+                  },
+                ),
+                if (onRetry != null)
+                  IconButton(
+                    icon: const Icon(Icons.refresh, size: 16),
+                    tooltip: 'Retry',
+                    onPressed: onRetry,
+                  ),
+              ],
             ),
         ],
       ),
     );
-  }
-}
-
-/// Input formatter that sends on Enter (without Shift).
-class _EnterToSendFormatter extends TextInputFormatter {
-  final VoidCallback onSend;
-  _EnterToSendFormatter(this.onSend);
-
-  @override
-  TextEditingValue formatEditUpdate(
-    TextEditingValue oldValue,
-    TextEditingValue newValue,
-  ) {
-    // This is a simplified approach — the actual Shift+Enter detection
-    // requires RawKeyboardListener. For now, just allow all input.
-    // The onSubmitted callback handles Enter-to-send for single-line.
-    return newValue;
   }
 }
