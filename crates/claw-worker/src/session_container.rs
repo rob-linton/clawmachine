@@ -54,7 +54,7 @@ pub async fn ensure_container(
         "--name".into(),
         container_name.clone(),
         "--memory".into(),
-        "1g".into(),
+        "2g".into(),
         "--cpus".into(),
         "1.0".into(),
         "--pids-limit".into(),
