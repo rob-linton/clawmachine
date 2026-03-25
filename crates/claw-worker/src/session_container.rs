@@ -42,6 +42,9 @@ pub async fn ensure_container(
         Command::new("docker").args(["rm", "-f", &container_name]).output().await.ok();
     }
 
+    // Remove any dead container with the same name
+    Command::new("docker").args(["rm", "-f", &container_name]).output().await.ok();
+
     // Create new container
     let checkout = checkout_path(workspace_id);
 
