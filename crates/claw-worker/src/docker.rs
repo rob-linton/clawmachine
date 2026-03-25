@@ -176,7 +176,7 @@ pub async fn check_docker_socket() -> Result<(), String> {
 /// Translate a container-local path to a host path for Docker volume mounts.
 /// When the worker runs inside a container, paths like /home/claw/.claw/jobs/{id}
 /// must be translated to the host equivalent (e.g., /opt/claw/data/jobs/{id}).
-fn translate_to_host_path(container_path: &Path) -> String {
+pub fn translate_to_host_path(container_path: &Path) -> String {
     let container_str = container_path.to_string_lossy();
 
     // If CLAW_HOST_DATA_DIR is set, translate ~/.claw → host path

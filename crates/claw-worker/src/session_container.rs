@@ -1,7 +1,7 @@
 //! Session container manager for interactive chat.
 //! Keeps Docker containers alive across chat messages for performance.
 
-use crate::docker::{DockerConfig, shell_escape};
+use crate::docker::{DockerConfig, shell_escape, translate_to_host_path};
 use crate::executor::{ExecutionResult, StreamState};
 use deadpool_redis::Pool;
 use std::path::{Path, PathBuf};
@@ -65,9 +65,10 @@ pub async fn ensure_container(
         "HOME=/home/claw".into(),
     ];
 
-    // Mount workspace
+    // Mount workspace (translate path for Docker-in-Docker)
+    let host_checkout = translate_to_host_path(&checkout);
     args.push("-v".into());
-    args.push(format!("{}:/workspace", checkout.display()));
+    args.push(format!("{}:/workspace", host_checkout));
 
     // Credential mounts from config (includes .claude, .claude.json, .ssh etc.)
     for mount in &config.credential_mounts {
