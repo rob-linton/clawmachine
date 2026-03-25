@@ -100,7 +100,10 @@ pub async fn ensure_container(
 /// Execute a chat message using `claude -p "msg" --continue`.
 /// Claude Code maintains conversation state internally — no prompt assembly needed.
 /// First message omits --continue (creates the session).
+/// Streams assistant text chunks to Redis pub/sub for real-time UI display.
 pub async fn execute_chat_message(
+    pool: &Pool,
+    chat_id: Uuid,
     container_name: &str,
     workspace_id: Uuid,
     user_message: &str,
@@ -166,12 +169,33 @@ pub async fn execute_chat_message(
         output
     });
 
-    // Parse stream-json from stdout
+    // Parse stream-json from stdout + publish assistant text chunks for streaming UI
+    let stream_channel = format!("claw:chat:{}:stream", chat_id);
     let mut lines = BufReader::new(stdout).lines();
     let mut state = StreamState::new();
     while let Ok(Some(line)) = lines.next_line().await {
         let trimmed = line.trim();
         if !trimmed.is_empty() {
+            // Publish assistant text chunks for real-time streaming
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if val.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                    if let Some(content) = val.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                        for item in content {
+                            if item.get("type").and_then(|t| t.as_str()) == Some("text") {
+                                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                                    if !text.is_empty() {
+                                        let chunk = serde_json::json!({"type": "text", "content": text});
+                                        claw_redis::publish_chat_stream(pool, &stream_channel, &chunk.to_string()).await.ok();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if val.get("type").and_then(|t| t.as_str()) == Some("result") {
+                    let done = serde_json::json!({"type": "done"});
+                    claw_redis::publish_chat_stream(pool, &stream_channel, &done.to_string()).await.ok();
+                }
+            }
             state.process_line(trimmed);
             log_tx.send(line.clone()).await.ok();
         }

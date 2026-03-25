@@ -1,12 +1,17 @@
 use axum::{
     extract::{Query, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse,
+    },
     routing::{delete, get, post},
     Json, Router,
 };
 use claw_models::{ChatMessage, CreateWorkspaceRequest, SendMessageRequest, WorkspacePersistence};
+use futures::stream::Stream;
 use serde::Deserialize;
+use std::convert::Infallible;
 use uuid::Uuid;
 
 use crate::auth::CurrentUser;
@@ -18,6 +23,7 @@ pub fn router() -> Router<AppState> {
         .route("/chat/messages", get(list_messages).post(send_message))
         .route("/chat/messages/{seq}/retry", post(retry_message))
         .route("/chat/search", get(search_messages))
+        .route("/chat/stream", get(chat_stream_sse))
         .route("/chat", delete(delete_chat))
 }
 
@@ -280,6 +286,58 @@ async fn delete_chat(
 }
 
 // --- Helpers ---
+
+/// SSE endpoint for real-time chat response streaming.
+/// Subscribes to Redis pub/sub channel `claw:chat:{chat_id}:stream`.
+async fn chat_stream_sse(
+    user: CurrentUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let chat_id = match get_user_chat_id(&state, &user.username).await {
+        Some(id) => id,
+        None => {
+            return Sse::new(futures::stream::once(async {
+                Ok::<_, Infallible>(Event::default().data(r#"{"error":"No chat session"}"#))
+            })).keep_alive(KeepAlive::default()).into_response();
+        }
+    };
+
+    let channel = format!("claw:chat:{}:stream", chat_id);
+    let stream = chat_text_stream(state.redis_url.clone(), channel);
+    Sse::new(stream).keep_alive(KeepAlive::default()).into_response()
+}
+
+fn chat_text_stream(redis_url: String, channel: String) -> impl Stream<Item = Result<Event, Infallible>> {
+    async_stream::stream! {
+        let client = match redis::Client::open(redis_url.as_str()) {
+            Ok(c) => c,
+            Err(_) => return,
+        };
+        let mut pubsub = match client.get_async_pubsub().await {
+            Ok(ps) => ps,
+            Err(_) => return,
+        };
+        if pubsub.subscribe(&channel).await.is_err() { return; }
+
+        yield Ok(Event::default().event("connected").data(r#"{"status":"connected"}"#));
+
+        loop {
+            use futures::StreamExt;
+            match pubsub.on_message().next().await {
+                Some(msg) => {
+                    if let Ok(payload) = msg.get_payload::<String>() {
+                        if payload.contains("\"type\":\"done\"") {
+                            yield Ok(Event::default().event("done").data(payload));
+                            break;
+                        }
+                        yield Ok(Event::default().event("chunk").data(payload));
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+}
 
 async fn get_user_chat_id(state: &AppState, username: &str) -> Option<Uuid> {
     claw_redis::get_default_chat_id(&state.pool, username).await.ok().flatten()

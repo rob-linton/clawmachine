@@ -93,6 +93,8 @@ class ApiClient {
     return Map<String, dynamic>.from(resp.data);
   }
 
+  String get chatStreamUrl => '$_baseUrl/api/v1/chat/stream';
+
   Future<void> deleteChat() async {
     await _dio.delete('/chat');
   }

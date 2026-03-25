@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -42,6 +44,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _inputController.dispose();
     _scrollController.dispose();
     _eventSub?.cancel();
+    _cancelStream();
     super.dispose();
   }
 
@@ -110,8 +113,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       });
       _scrollToBottom();
 
-      // Wait for SSE event to signal completion
+      // Subscribe to chat stream for progressive text display
       _pendingJobId = jobId;
+      _startStreamSubscription();
     } catch (e) {
       setState(() {
         _sending = false;
@@ -126,8 +130,69 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  StreamSubscription? _streamSub;
+
+  void _startStreamSubscription() {
+    _streamSub?.cancel();
+    final api = ref.read(apiClientProvider);
+    final streamUrl = api.chatStreamUrl;
+
+    // Connect to SSE chat stream for progressive text
+    final dio = Dio(BaseOptions(extra: {'withCredentials': true}));
+    dio.get<ResponseBody>(
+      streamUrl,
+      options: Options(responseType: ResponseType.stream, headers: {'Accept': 'text/event-stream'}),
+    ).then((response) {
+      final stream = response.data?.stream;
+      if (stream == null) return;
+
+      String buffer = '';
+      _streamSub = stream.listen((chunk) {
+        if (!mounted) return;
+        buffer += utf8.decode(chunk);
+
+        while (buffer.contains('\n\n')) {
+          final idx = buffer.indexOf('\n\n');
+          final block = buffer.substring(0, idx);
+          buffer = buffer.substring(idx + 2);
+
+          String? data;
+          for (final line in block.split('\n')) {
+            if (line.startsWith('data: ')) data = line.substring(6);
+          }
+          if (data == null) continue;
+
+          try {
+            final parsed = json.decode(data) as Map<String, dynamic>;
+            if (parsed['type'] == 'text' && parsed['content'] != null) {
+              // Append text to the last (assistant) message
+              setState(() {
+                if (_messages.isNotEmpty) {
+                  final last = _messages.last;
+                  if (last['role'] == 'assistant') {
+                    last['content'] = (last['content'] as String? ?? '') + parsed['content'];
+                    last['_thinking'] = false;
+                  }
+                }
+              });
+              _scrollToBottom();
+            }
+          } catch (_) {}
+        }
+      });
+    }).catchError((_) {
+      // Stream connection failed — fall back to SSE job event completion
+    });
+  }
+
+  void _cancelStream() {
+    _streamSub?.cancel();
+    _streamSub = null;
+  }
+
   Future<void> _onJobComplete() async {
     _pendingJobId = null;
+    _cancelStream();
     await _refreshMessages();
     // Refresh session for cost update
     try {

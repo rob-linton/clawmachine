@@ -326,7 +326,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                     Ok(container_name) => {
                                         let (log_tx, _log_rx) = tokio::sync::mpsc::channel(256);
                                         match session_container::execute_chat_message(
-                                            &container_name, ws_id, &job.prompt, job.model.as_deref(), is_first, log_tx
+                                            &pool, chat_id, &container_name, ws_id, &job.prompt, job.model.as_deref(), is_first, log_tx
                                         ).await {
                                             Ok(r) => {
                                                 claw_redis::complete_job(&pool, job_id, &r.result_text, r.cost_usd, r.duration_ms).await.ok();
@@ -351,6 +351,13 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                     }
                                                 }
                                                 tracing::info!(job_id = %job_id, duration_ms = r.duration_ms, "Chat completed");
+
+                                                // Periodic git commit every 5 messages
+                                                if seq > 0 && seq % 5 == 0 {
+                                                    let checkout = dirs::home_dir().unwrap_or_else(|| "/tmp".into())
+                                                        .join(".claw/checkouts").join(ws_id.to_string());
+                                                    session_container::git_commit(&checkout, &format!("chat: auto-commit at message {}", seq)).await;
+                                                }
 
                                                 // Publish SSE event so the UI gets notified
                                                 let event = serde_json::json!({

@@ -189,6 +189,19 @@ pub async fn update_message_summary(pool: &Pool, chat_id: Uuid, seq: u32, role: 
     Ok(())
 }
 
+// --- Streaming ---
+
+/// Publish a chat stream chunk to Redis pub/sub for real-time UI display.
+pub async fn publish_chat_stream(pool: &Pool, channel: &str, data: &str) -> Result<(), RedisError> {
+    let mut conn = pool.get().await?;
+    let _: () = redis::cmd("PUBLISH")
+        .arg(channel)
+        .arg(data)
+        .query_async(&mut *conn)
+        .await?;
+    Ok(())
+}
+
 // --- Container Tracking ---
 
 /// Store the active container info for a chat session.
