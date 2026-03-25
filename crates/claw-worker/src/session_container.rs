@@ -44,7 +44,6 @@ pub async fn ensure_container(
 
     // Create new container
     let checkout = checkout_path(workspace_id);
-    let claude_home = claude_home_path();
 
     let mut args = vec![
         "run".to_string(),
@@ -67,22 +66,22 @@ pub async fn ensure_container(
     args.push("-v".into());
     args.push(format!("{}:/workspace", checkout.display()));
 
-    // Mount Claude credentials
-    args.push("-v".into());
-    args.push(format!("{}:/home/claw/.claude", claude_home.display()));
-
-    // Mount .claude.json (read-write, Claude writes to it)
-    let claude_json = claude_home.parent().unwrap_or(Path::new("/tmp")).join(".claude.json");
-    if claude_json.exists() {
-        args.push("-v".into());
-        args.push(format!("{}:/home/claw/.claude.json", claude_json.display()));
-    }
-
-    // Credential mounts from config
+    // Credential mounts from config (includes .claude, .claude.json, .ssh etc.)
     for mount in &config.credential_mounts {
+        // Expand ~ to home directory
+        let host_path = if mount.host_path.starts_with("~/") {
+            let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+            home.join(&mount.host_path[2..]).display().to_string()
+        } else {
+            mount.host_path.clone()
+        };
+        // Skip if host path doesn't exist
+        if !std::path::Path::new(&host_path).exists() {
+            continue;
+        }
         args.push("-v".into());
         let mode = if mount.readonly { ":ro" } else { "" };
-        args.push(format!("{}:{}{}", mount.host_path, mount.container_path, mode));
+        args.push(format!("{}:{}{}", host_path, mount.container_path, mode));
     }
 
     // Image + sleep command
@@ -293,7 +292,3 @@ fn checkout_path(workspace_id: Uuid) -> PathBuf {
     home.join(".claw").join("checkouts").join(workspace_id.to_string())
 }
 
-fn claude_home_path() -> PathBuf {
-    let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
-    home.join(".claude")
-}
