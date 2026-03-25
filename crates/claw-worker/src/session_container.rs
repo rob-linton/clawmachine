@@ -272,6 +272,84 @@ pub async fn git_commit(checkout: &Path, message: &str) {
     Command::new("bash").args(["-c", &cmds]).output().await.ok();
 }
 
+/// Refresh .chat/available-skills.json and .chat/available-tools.json from Redis.
+pub async fn refresh_available_catalog(pool: &Pool, workspace_id: Uuid) {
+    let checkout = checkout_path(workspace_id);
+    let chat_dir = checkout.join(".chat");
+
+    // Skills
+    if let Ok(skills) = claw_redis::list_skills(pool).await {
+        let items: Vec<serde_json::Value> = skills.iter()
+            .filter(|s| s.enabled)
+            .map(|s| serde_json::json!({"id": s.id, "name": s.name, "description": s.description, "tags": s.tags}))
+            .collect();
+        tokio::fs::write(chat_dir.join("available-skills.json"), serde_json::to_string_pretty(&items).unwrap_or_default()).await.ok();
+    }
+
+    // Tools
+    if let Ok(tools) = claw_redis::list_tools(pool).await {
+        let items: Vec<serde_json::Value> = tools.iter()
+            .filter(|t| t.enabled)
+            .map(|t| serde_json::json!({"id": t.id, "name": t.name, "description": t.description, "tags": t.tags}))
+            .collect();
+        tokio::fs::write(chat_dir.join("available-tools.json"), serde_json::to_string_pretty(&items).unwrap_or_default()).await.ok();
+    }
+}
+
+/// Check for .chat/install-request.json and process it.
+pub async fn process_install_requests(pool: &Pool, workspace_id: Uuid, chat_id: Uuid) {
+    let checkout = checkout_path(workspace_id);
+    let request_path = checkout.join(".chat").join("install-request.json");
+
+    let content = match tokio::fs::read_to_string(&request_path).await {
+        Ok(c) if !c.trim().is_empty() => c,
+        _ => return,
+    };
+
+    // Parse the request
+    let req: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+
+    let item_type = req.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let item_id = req.get("id").and_then(|v| v.as_str()).unwrap_or("");
+
+    if item_id.is_empty() {
+        // Remove the request file
+        tokio::fs::remove_file(&request_path).await.ok();
+        return;
+    }
+
+    match item_type {
+        "skill" => {
+            // Add skill to the chat session
+            if let Ok(Some(mut session)) = claw_redis::get_chat_session(pool, chat_id).await {
+                if !session.skill_ids.contains(&item_id.to_string()) {
+                    session.skill_ids.push(item_id.to_string());
+                    session.updated_at = chrono::Utc::now();
+                    claw_redis::update_chat_session(pool, &session).await.ok();
+                    tracing::info!(chat_id = %chat_id, skill = %item_id, "Skill added to chat session");
+                }
+            }
+        }
+        "tool" => {
+            if let Ok(Some(mut session)) = claw_redis::get_chat_session(pool, chat_id).await {
+                if !session.tool_ids.contains(&item_id.to_string()) {
+                    session.tool_ids.push(item_id.to_string());
+                    session.updated_at = chrono::Utc::now();
+                    claw_redis::update_chat_session(pool, &session).await.ok();
+                    tracing::info!(chat_id = %chat_id, tool = %item_id, "Tool added to chat session");
+                }
+            }
+        }
+        _ => {}
+    }
+
+    // Remove the request file after processing
+    tokio::fs::remove_file(&request_path).await.ok();
+}
+
 fn checkout_path(workspace_id: Uuid) -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| "/tmp".into())
         .join(".claw").join("checkouts").join(workspace_id.to_string())

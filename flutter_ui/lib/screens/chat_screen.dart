@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../main.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -286,6 +287,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 Text('\$${totalCost.toStringAsFixed(4)}', style: Theme.of(context).textTheme.bodySmall),
               ],
               const Spacer(),
+              TextButton.icon(
+                icon: const Icon(Icons.download, size: 16),
+                label: const Text('Export'),
+                onPressed: () {
+                  final api = ref.read(apiClientProvider);
+                  launchUrl(Uri.parse(api.chatExportUrl));
+                },
+              ),
               if (_session?['workspace_id'] != null)
                 TextButton.icon(
                   icon: const Icon(Icons.folder_open, size: 16),

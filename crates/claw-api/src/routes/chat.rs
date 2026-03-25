@@ -24,6 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/chat/messages/{seq}/retry", post(retry_message))
         .route("/chat/search", get(search_messages))
         .route("/chat/stream", get(chat_stream_sse))
+        .route("/chat/export", get(export_chat))
         .route("/chat", delete(delete_chat))
 }
 
@@ -286,6 +287,32 @@ async fn delete_chat(
 }
 
 // --- Helpers ---
+
+/// Export chat as markdown.
+async fn export_chat(
+    user: CurrentUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let chat_id = match get_user_chat_id(&state, &user.username).await {
+        Some(id) => id,
+        None => return (StatusCode::NOT_FOUND, "No chat session").into_response(),
+    };
+
+    let messages = claw_redis::get_all_chat_messages(&state.pool, chat_id).await.unwrap_or_default();
+    let mut markdown = String::from("# Chat Export\n\n");
+
+    for msg in &messages {
+        let role = if msg.role == "user" { "You" } else { "Claude" };
+        markdown.push_str(&format!("## {} (message {})\n\n{}\n\n---\n\n", role, msg.seq, msg.content));
+    }
+
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "text/markdown"),
+         (axum::http::header::CONTENT_DISPOSITION, "attachment; filename=\"chat-export.md\"")],
+        markdown,
+    ).into_response()
+}
 
 /// SSE endpoint for real-time chat response streaming.
 /// Subscribes to Redis pub/sub channel `claw:chat:{chat_id}:stream`.

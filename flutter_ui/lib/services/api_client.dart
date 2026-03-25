@@ -94,6 +94,7 @@ class ApiClient {
   }
 
   String get chatStreamUrl => '$_baseUrl/api/v1/chat/stream';
+  String get chatExportUrl => '$_baseUrl/api/v1/chat/export';
 
   Future<void> retryChatMessage(int seq) async {
     await _dio.post('/chat/messages/$seq/retry');
