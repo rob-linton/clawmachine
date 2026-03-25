@@ -601,6 +601,44 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                             claw_redis::append_workspace_event(&pool, ws_id, &event).await.ok();
                         }
 
+                        // Chat message: store assistant response if this is a chat job
+                        if let Some(chat_tag) = job.tags.iter().find(|t| t.starts_with("chat:")) {
+                            if let Ok(chat_id) = chat_tag.strip_prefix("chat:").unwrap_or("").parse::<uuid::Uuid>() {
+                                let seq_tag = job.tags.iter().find(|t| t.starts_with("chat_seq:"));
+                                let seq: u32 = seq_tag
+                                    .and_then(|t| t.strip_prefix("chat_seq:"))
+                                    .and_then(|s| s.parse().ok())
+                                    .unwrap_or(0);
+                                if seq > 0 {
+                                    let assistant_msg = claw_models::ChatMessage {
+                                        seq,
+                                        role: "assistant".to_string(),
+                                        content: r.result_text.clone(),
+                                        summary: None,
+                                        job_id: Some(job_id),
+                                        cost_usd: Some(r.cost_usd),
+                                        model: job.model.clone(),
+                                        token_estimate: (r.result_text.len() / 4).max(1) as u32,
+                                        files_written: Vec::new(),
+                                        timestamp: chrono::Utc::now(),
+                                    };
+                                    if let Err(e) = claw_redis::add_chat_message(&pool, chat_id, &assistant_msg).await {
+                                        tracing::error!(chat_id = %chat_id, seq = seq, error = %e, "Failed to store chat response");
+                                    } else {
+                                        tracing::info!(chat_id = %chat_id, seq = seq, "Chat response stored");
+                                        // Update session totals
+                                        if let Ok(Some(mut session)) = claw_redis::get_chat_session(&pool, chat_id).await {
+                                            session.total_messages += 1;
+                                            session.total_cost_usd += r.cost_usd;
+                                            session.last_activity = chrono::Utc::now();
+                                            session.updated_at = chrono::Utc::now();
+                                            claw_redis::update_chat_session(&pool, &session).await.ok();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         // File output
                         if let claw_models::OutputDest::File { path } = &job.output_dest {
                             if let Err(e) = tokio::fs::create_dir_all(path).await {
