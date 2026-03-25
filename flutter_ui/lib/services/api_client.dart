@@ -95,6 +95,10 @@ class ApiClient {
 
   String get chatStreamUrl => '$_baseUrl/api/v1/chat/stream';
 
+  Future<void> retryChatMessage(int seq) async {
+    await _dio.post('/chat/messages/$seq/retry');
+  }
+
   Future<void> deleteChat() async {
     await _dio.delete('/chat');
   }

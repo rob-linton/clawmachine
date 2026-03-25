@@ -195,12 +195,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   Future<void> _retryMessage(int seq) async {
     try {
       final api = ref.read(apiClientProvider);
-      // Truncate history from this seq and resubmit the user message
-      // Find the user message at this seq
       final userMsg = _messages.where((m) => m['seq'] == seq && m['role'] == 'user').firstOrNull;
       if (userMsg == null) return;
 
-      // Call retry API (truncates at seq+1, removes assistant response)
+      // Truncate history at this seq (removes assistant response and everything after)
+      await api.retryChatMessage(seq);
+      // Re-send the user message
       await api.sendChatMessage(userMsg['content'] as String, model: _selectedModel);
       await _refreshMessages();
     } catch (e) {
