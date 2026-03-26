@@ -279,6 +279,120 @@ pub async fn git_commit(checkout: &Path, message: &str) {
     Command::new("bash").args(["-c", &cmds]).output().await.ok();
 }
 
+/// Extract artifacts (code blocks) from assistant response and store in .chat/artifacts/.
+/// Returns list of artifact IDs.
+pub async fn extract_artifacts(workspace_id: Uuid, seq: u32, response: &str) -> Vec<u32> {
+    let checkout = checkout_path(workspace_id);
+    let artifacts_dir = checkout.join(".chat").join("artifacts");
+    let index_path = artifacts_dir.join("index.json");
+
+    // Parse fenced code blocks: ```language:filename\n...\n```
+    let mut artifacts = Vec::new();
+    let mut pos = 0;
+    let bytes = response.as_bytes();
+
+    // Load existing index
+    let mut index: Vec<serde_json::Value> = tokio::fs::read_to_string(&index_path)
+        .await
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+
+    let next_id = index.iter()
+        .filter_map(|v| v.get("id").and_then(|i| i.as_u64()))
+        .max()
+        .map(|m| m as u32 + 1)
+        .unwrap_or(1);
+    let mut artifact_id = next_id;
+
+    while pos < response.len() {
+        // Find opening ```
+        let Some(start) = response[pos..].find("```") else { break };
+        let block_start = pos + start + 3;
+
+        // Find the language/filename line (up to \n)
+        let line_end = response[block_start..].find('\n').map(|i| block_start + i).unwrap_or(response.len());
+        let lang_line = response[block_start..line_end].trim();
+
+        // Find closing ```
+        let Some(end) = response[line_end..].find("\n```") else { pos = line_end; continue };
+        let code_start = line_end + 1;
+        let code_end = line_end + end;
+        let code = &response[code_start..code_end];
+
+        pos = code_end + 4; // past closing ```
+
+        // Determine if this is an artifact
+        let (language, filename) = if lang_line.contains(':') {
+            let parts: Vec<&str> = lang_line.splitn(2, ':').collect();
+            (parts[0].to_string(), Some(parts[1].to_string()))
+        } else {
+            (lang_line.to_string(), None)
+        };
+
+        // Only extract: has filename hint OR >20 lines
+        let line_count = code.lines().count();
+        if filename.is_none() && line_count <= 20 {
+            continue;
+        }
+
+        let fname = filename.unwrap_or_else(|| {
+            let ext = match language.as_str() {
+                "python" | "py" => "py",
+                "javascript" | "js" => "js",
+                "typescript" | "ts" => "ts",
+                "rust" | "rs" => "rs",
+                "go" => "go",
+                "java" => "java",
+                "bash" | "sh" | "shell" => "sh",
+                "yaml" | "yml" => "yaml",
+                "json" => "json",
+                "sql" => "sql",
+                "html" => "html",
+                "css" => "css",
+                _ => "txt",
+            };
+            format!("snippet_{}.{}", artifact_id, ext)
+        });
+
+        // Write artifact file
+        if let Err(e) = tokio::fs::create_dir_all(&artifacts_dir).await {
+            tracing::warn!(error = %e, "Failed to create artifacts dir");
+            continue;
+        }
+        let artifact_filename = format!("{:03}-{}", artifact_id, fname);
+        let artifact_path = artifacts_dir.join(&artifact_filename);
+        if let Err(e) = tokio::fs::write(&artifact_path, code).await {
+            tracing::warn!(error = %e, artifact = %artifact_filename, "Failed to write artifact");
+            continue;
+        }
+
+        // Add to index
+        index.push(serde_json::json!({
+            "id": artifact_id,
+            "seq": seq,
+            "filename": fname,
+            "language": language,
+            "lines": line_count,
+            "created_at": chrono::Utc::now().to_rfc3339(),
+            "path": format!(".chat/artifacts/{}", artifact_filename),
+        }));
+
+        artifacts.push(artifact_id);
+        artifact_id += 1;
+    }
+
+    if !artifacts.is_empty() {
+        // Write updated index
+        if let Ok(json) = serde_json::to_string_pretty(&index) {
+            tokio::fs::write(&index_path, json).await.ok();
+        }
+        tracing::info!(count = artifacts.len(), "Extracted artifacts from response");
+    }
+
+    artifacts
+}
+
 /// Refresh .chat/available-skills.json and .chat/available-tools.json from Redis.
 pub async fn refresh_available_catalog(pool: &Pool, workspace_id: Uuid) {
     let checkout = checkout_path(workspace_id);

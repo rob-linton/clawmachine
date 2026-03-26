@@ -25,6 +25,8 @@ pub fn router() -> Router<AppState> {
         .route("/chat/search", get(search_messages))
         .route("/chat/stream", get(chat_stream_sse))
         .route("/chat/export", get(export_chat))
+        .route("/chat/tasks", post(submit_task))
+        .route("/chat/artifacts", get(list_artifacts))
         .route("/chat", delete(delete_chat))
 }
 
@@ -289,6 +291,115 @@ async fn delete_chat(
 }
 
 // --- Helpers ---
+
+/// Submit a background task that runs in a forked workspace.
+async fn submit_task(
+    user: CurrentUser,
+    State(state): State<AppState>,
+    Json(req): Json<SendMessageRequest>,
+) -> impl IntoResponse {
+    let chat_id = match get_user_chat_id(&state, &user.username).await {
+        Some(id) => id,
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No chat session"}))).into_response(),
+    };
+
+    let session = match claw_redis::get_chat_session(&state.pool, chat_id).await {
+        Ok(Some(s)) => s,
+        _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Session not found"}))).into_response(),
+    };
+
+    let seq = match claw_redis::next_chat_seq(&state.pool, chat_id).await {
+        Ok(s) => s,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    };
+
+    // Store task user message
+    let task_msg = ChatMessage {
+        seq,
+        role: "user".to_string(),
+        content: format!("/task {}", req.content),
+        status: "complete".to_string(),
+        summary: None, job_id: None, cost_usd: None, model: None,
+        token_estimate: estimate_tokens(&req.content),
+        files_written: Vec::new(), artifacts: Vec::new(),
+        timestamp: chrono::Utc::now(),
+    };
+    claw_redis::add_chat_message(&state.pool, chat_id, &task_msg).await.ok();
+
+    // Fork the workspace for the task
+    let fork_resp = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}/api/v1/workspaces/{}/fork",
+            std::env::var("CLAW_API_PORT").unwrap_or_else(|_| "8080".into()),
+            session.workspace_id))
+        .json(&serde_json::json!({"name": format!("task-{}", seq), "persistence": "ephemeral"}))
+        .send().await;
+
+    let fork_ws_id = match fork_resp {
+        Ok(resp) if resp.status().is_success() => {
+            match resp.json::<serde_json::Value>().await {
+                Ok(v) => v.get("id").and_then(|i| i.as_str()).and_then(|s| s.parse::<uuid::Uuid>().ok()),
+                Err(_) => None,
+            }
+        }
+        _ => None,
+    };
+
+    let workspace_id = fork_ws_id.unwrap_or(session.workspace_id);
+    let model = req.model.or_else(|| Some(session.model.clone()));
+
+    let job_req = claw_models::CreateJobRequest {
+        prompt: req.content.clone(),
+        skill_ids: session.skill_ids.clone(),
+        skill_tags: Vec::new(),
+        tool_ids: session.tool_ids.clone(),
+        allowed_tools: None,
+        working_dir: None,
+        workspace_id: Some(workspace_id),
+        model,
+        max_budget_usd: None,
+        timeout_secs: Some(1800),
+        output_dest: claw_models::OutputDest::Redis,
+        priority: Some(7), // lower than chat (9) so tasks don't block conversation
+        tags: vec![format!("chat:{}", chat_id), format!("chat_seq:{}", seq), "task".to_string()],
+        template_id: None,
+    };
+
+    match claw_redis::submit_job(&state.pool, &job_req, claw_models::JobSource::Api).await {
+        Ok(job) => {
+            (StatusCode::ACCEPTED, Json(serde_json::json!({
+                "seq": seq, "job_id": job.id, "status": "submitted", "type": "task"
+            }))).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+/// List artifacts from the workspace.
+async fn list_artifacts(
+    user: CurrentUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let chat_id = match get_user_chat_id(&state, &user.username).await {
+        Some(id) => id,
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No chat session"}))).into_response(),
+    };
+
+    let session = match claw_redis::get_chat_session(&state.pool, chat_id).await {
+        Ok(Some(s)) => s,
+        _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Session not found"}))).into_response(),
+    };
+
+    let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+    let index_path = home.join(".claw/checkouts").join(session.workspace_id.to_string()).join(".chat/artifacts/index.json");
+
+    match tokio::fs::read_to_string(&index_path).await {
+        Ok(content) => {
+            let artifacts: serde_json::Value = serde_json::from_str(&content).unwrap_or(serde_json::json!([]));
+            (StatusCode::OK, Json(serde_json::json!({"artifacts": artifacts}))).into_response()
+        }
+        Err(_) => (StatusCode::OK, Json(serde_json::json!({"artifacts": []}))).into_response(),
+    }
+}
 
 /// Export chat as markdown.
 async fn export_chat(

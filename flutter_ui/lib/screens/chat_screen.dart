@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../main.dart';
+import '../widgets/markdown_message.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -24,6 +25,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String? _error;
   final Map<String, int> _pendingJobs = {}; // job_id → seq
   String _selectedModel = 'sonnet';
+  String _searchQuery = '';
+  List<Map<String, dynamic>>? _searchResults;
   StreamSubscription? _eventSub;
   StreamSubscription? _streamSub;
 
@@ -82,9 +85,59 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     } catch (_) {}
   }
 
+  Future<void> _search(String query) async {
+    if (query.isEmpty) {
+      setState(() { _searchQuery = ''; _searchResults = null; });
+      return;
+    }
+    try {
+      final results = await ref.read(apiClientProvider).searchChatMessages(query);
+      setState(() { _searchQuery = query; _searchResults = results; });
+    } catch (_) {}
+  }
+
+  Future<void> _sendTask() async {
+    final text = _inputController.text.trim();
+    if (text.isEmpty) return;
+    _inputController.clear();
+
+    final optimisticSeq = (_messages.isEmpty ? 1 : (_messages.last['seq'] as num).toInt() + 1);
+    setState(() {
+      _messages.add({
+        'seq': optimisticSeq, 'role': 'user', 'content': '/task $text',
+        'status': 'complete', 'timestamp': DateTime.now().toIso8601String(),
+      });
+      _messages.add({
+        'seq': optimisticSeq, 'role': 'task', 'content': '',
+        'status': 'pending', 'timestamp': DateTime.now().toIso8601String(),
+        '_thinking': true,
+      });
+    });
+    _scrollToBottom();
+
+    try {
+      final result = await ref.read(apiClientProvider).submitTask(text, model: _selectedModel);
+      final jobId = result['job_id'] as String?;
+      if (jobId != null) _pendingJobs[jobId] = optimisticSeq;
+    } catch (e) {
+      setState(() {
+        _messages.removeWhere((m) => m['seq'] == optimisticSeq && m['_thinking'] == true);
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Task failed: $e')));
+      }
+    }
+  }
+
   Future<void> _sendMessage() async {
     final text = _inputController.text.trim();
     if (text.isEmpty) return;
+
+    // Check for /task prefix
+    if (text.startsWith('/task ')) {
+      _inputController.text = text.substring(6);
+      return _sendTask();
+    }
 
     _inputController.clear();
 
@@ -299,6 +352,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 Text('\$${totalCost.toStringAsFixed(4)}', style: Theme.of(context).textTheme.bodySmall),
               ],
               const Spacer(),
+              // Search
+              SizedBox(
+                width: 200,
+                height: 32,
+                child: TextField(
+                  decoration: InputDecoration(
+                    hintText: 'Search...',
+                    prefixIcon: const Icon(Icons.search, size: 16),
+                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                    contentPadding: EdgeInsets.zero,
+                    isDense: true,
+                  ),
+                  style: const TextStyle(fontSize: 13),
+                  onSubmitted: _search,
+                ),
+              ),
+              const SizedBox(width: 8),
               TextButton.icon(
                 icon: const Icon(Icons.download, size: 16),
                 label: const Text('Export'),
@@ -319,6 +389,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ],
           ),
         ),
+
+        // Search results banner
+        if (_searchResults != null) ...[
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: Row(
+              children: [
+                Text('${_searchResults!.length} results for "$_searchQuery"',
+                    style: Theme.of(context).textTheme.bodySmall),
+                const Spacer(),
+                TextButton(onPressed: () => setState(() { _searchQuery = ''; _searchResults = null; }),
+                    child: const Text('Clear')),
+              ],
+            ),
+          ),
+        ],
 
         // Messages
         Expanded(
@@ -385,13 +472,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           onSubmitted: (_) => _sendMessage(),
                         ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 8),
                       SizedBox(
                         height: 48,
                         child: FilledButton.icon(
                           onPressed: _sendMessage,
                           icon: const Icon(Icons.send),
                           label: const Text('Send'),
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      SizedBox(
+                        height: 48,
+                        child: OutlinedButton.icon(
+                          onPressed: _sendTask,
+                          icon: const Icon(Icons.construction, size: 18),
+                          label: const Text('Task'),
                         ),
                       ),
                     ],
@@ -444,8 +540,20 @@ class _MessageBubble extends StatelessWidget {
     final role = message['role'] as String? ?? 'user';
     final content = message['content'] as String? ?? '';
     final isUser = role == 'user';
+    final isTask = role == 'task';
     final cost = (message['cost_usd'] as num?)?.toDouble();
     final filesWritten = (message['files_written'] as List?)?.cast<String>() ?? [];
+
+    final IconData icon;
+    final Color bgColor;
+    final String label;
+    if (isUser) {
+      icon = Icons.person; bgColor = Theme.of(context).colorScheme.primary; label = 'You';
+    } else if (isTask) {
+      icon = Icons.construction; bgColor = Colors.orange; label = 'Task';
+    } else {
+      icon = Icons.smart_toy; bgColor = Theme.of(context).colorScheme.secondary; label = 'Claude';
+    }
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
@@ -454,14 +562,8 @@ class _MessageBubble extends StatelessWidget {
         children: [
           CircleAvatar(
             radius: 16,
-            backgroundColor: isUser
-                ? Theme.of(context).colorScheme.primary
-                : Theme.of(context).colorScheme.secondary,
-            child: Icon(
-              isUser ? Icons.person : Icons.smart_toy,
-              size: 18,
-              color: Colors.white,
-            ),
+            backgroundColor: bgColor,
+            child: Icon(icon, size: 18, color: Colors.white),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -471,7 +573,7 @@ class _MessageBubble extends StatelessWidget {
                 Row(
                   children: [
                     Text(
-                      isUser ? 'You' : 'Claude',
+                      label,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(width: 8),
@@ -506,10 +608,9 @@ class _MessageBubble extends StatelessWidget {
                 else
                   Semantics(
                     label: '${isUser ? "You" : "Claude"}: $content',
-                    child: SelectableText(
-                      content,
-                      style: const TextStyle(height: 1.5),
-                    ),
+                    child: isUser
+                        ? SelectableText(content, style: const TextStyle(height: 1.5))
+                        : MarkdownMessage(content: content),
                   ),
                 if (filesWritten.isNotEmpty) ...[
                   const SizedBox(height: 8),

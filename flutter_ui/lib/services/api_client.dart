@@ -96,6 +96,18 @@ class ApiClient {
   String get chatStreamUrl => '$_baseUrl/api/v1/chat/stream';
   String get chatExportUrl => '$_baseUrl/api/v1/chat/export';
 
+  Future<Map<String, dynamic>> submitTask(String prompt, {String? model}) async {
+    final data = <String, dynamic>{'content': prompt};
+    if (model != null) data['model'] = model;
+    final resp = await _dio.post('/chat/tasks', data: data);
+    return Map<String, dynamic>.from(resp.data);
+  }
+
+  Future<List<Map<String, dynamic>>> getArtifacts() async {
+    final resp = await _dio.get('/chat/artifacts');
+    return List<Map<String, dynamic>>.from(resp.data['artifacts']);
+  }
+
   Future<void> retryChatMessage(int seq) async {
     await _dio.post('/chat/messages/$seq/retry');
   }

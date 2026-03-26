@@ -359,7 +359,8 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                 }
                                                 tracing::info!(job_id = %job_id, duration_ms = r.duration_ms, "Chat completed");
 
-                                                // Post-exec: check for skill/tool install requests
+                                                // Post-exec: extract artifacts + check install requests
+                                                session_container::extract_artifacts(ws_id, seq, &r.result_text).await;
                                                 session_container::process_install_requests(&pool, ws_id, chat_id).await;
 
                                                 // Periodic git commit every 5 messages
