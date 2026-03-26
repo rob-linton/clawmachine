@@ -1,4 +1,3 @@
-pub mod anthropic;
 mod docker;
 mod environment;
 mod executor;
@@ -401,18 +400,6 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                 });
                                                 claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
 
-                                                // Generate summary in background
-                                                let pool2 = pool.clone();
-                                                let user_content = job.prompt.clone();
-                                                let result_text = r.result_text.clone();
-                                                let cname = container_name.clone();
-                                                tokio::spawn(async move {
-                                                    if let Some(summary) = anthropic::generate_summary(
-                                                        Some(&cname), &user_content, &result_text
-                                                    ).await {
-                                                        claw_redis::update_message_summary(&pool2, chat_id, seq, "assistant", &summary).await.ok();
-                                                    }
-                                                });
                                             }
                                             Err(e) => {
                                                 tracing::error!(job_id = %job_id, error = %e, "Chat execution failed");
