@@ -11,6 +11,28 @@ class MarkdownMessage extends StatelessWidget {
 
   const MarkdownMessage({super.key, required this.content});
 
+  /// Adds two trailing spaces to lines so Markdown renders hard line breaks.
+  /// Skips blank lines (paragraph separators) and code fence regions.
+  static String _preserveLineBreaks(String text) {
+    final lines = text.split('\n');
+    final buf = StringBuffer();
+    bool inCodeFence = false;
+    for (int i = 0; i < lines.length; i++) {
+      final line = lines[i];
+      if (line.trimLeft().startsWith('```')) inCodeFence = !inCodeFence;
+      if (i < lines.length - 1 && !inCodeFence && line.isNotEmpty && !line.endsWith('  ')) {
+        buf.writeln('$line  ');
+      } else {
+        if (i < lines.length - 1) {
+          buf.writeln(line);
+        } else {
+          buf.write(line);
+        }
+      }
+    }
+    return buf.toString();
+  }
+
   static bool _languagesRegistered = false;
   static void _ensureLanguages() {
     if (!_languagesRegistered) {
@@ -25,8 +47,13 @@ class MarkdownMessage extends StatelessWidget {
   Widget build(BuildContext context) {
     _ensureLanguages();
 
+    // Convert single newlines to hard line breaks (two trailing spaces)
+    // so that text like haikus preserves its line structure. Skip lines
+    // that are already blank (paragraph breaks) or inside code fences.
+    final processed = _preserveLineBreaks(content);
+
     return MarkdownBody(
-      data: content,
+      data: processed,
       selectable: true,
       styleSheet: MarkdownStyleSheet(
         p: const TextStyle(height: 1.5, fontSize: 14),

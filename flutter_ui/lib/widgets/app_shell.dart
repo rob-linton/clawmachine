@@ -11,102 +11,123 @@ class AppShell extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final location = GoRouterState.of(context).uri.toString();
     final idx = _indexForLocation(location);
+    final currentUser = ref.watch(currentUserProvider);
+    final username = currentUser?['username'] as String?;
+    final role = currentUser?['role'] as String?;
+    final isAdmin = role == 'admin';
+    final theme = Theme.of(context);
 
     return Scaffold(
       body: Row(
         children: [
-          NavigationRail(
-            selectedIndex: idx >= 0 ? idx : null,
-            labelType: NavigationRailLabelType.all,
-            leading: Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: const _ClawLogo(),
-            ),
-            trailing: Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  if (ref.watch(currentUserProvider)?['role'] == 'admin')
-                    IconButton(
-                      icon: Icon(Icons.people,
-                          color: location.startsWith('/users')
-                              ? Theme.of(context).colorScheme.primary
-                              : null),
-                      tooltip: 'Users',
-                      onPressed: () => context.go('/users'),
+          // Custom scrollable sidebar
+          Container(
+            width: 88,
+            color: theme.colorScheme.surface,
+            child: Column(
+              children: [
+                // Logo (fixed)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 12),
+                  child: _ClawLogo(),
+                ),
+                const Divider(height: 1),
+                // Scrollable nav items
+                Expanded(
+                  child: SingleChildScrollView(
+                    child: Column(
+                      children: [
+                        const SizedBox(height: 8),
+                        _NavItem(Icons.dashboard, 'Dashboard', idx == 0, () => context.go('/'), context),
+                        _NavItem(Icons.chat, 'Chat', idx == 1, () => context.go('/chat'), context),
+                        _NavItem(Icons.work, 'Jobs', idx == 2, () => context.go('/jobs'), context),
+                        _NavItem(Icons.description, 'Templates', idx == 3, () => context.go('/templates'), context),
+                        _NavItem(Icons.view_list, 'Pipelines', idx == 4, () => context.go('/pipelines'), context),
+                        _NavItem(Icons.schedule, 'Schedules', idx == 5, () => context.go('/schedules'), context),
+                        _NavItem(Icons.folder_open, 'Workspaces', idx == 6, () => context.go('/workspaces'), context),
+                        _NavItem(Icons.auto_fix_high, 'Skills', idx == 7, () => context.go('/skills'), context),
+                        _NavItem(Icons.build_circle, 'Tools', idx == 8, () => context.go('/tools'), context),
+                        _NavItem(Icons.vpn_key, 'Credentials', idx == 9, () => context.go('/credentials'), context),
+                        const SizedBox(height: 8),
+                      ],
                     ),
-                  IconButton(
-                    icon: Icon(Icons.settings,
-                        color: location.startsWith('/settings')
-                            ? Theme.of(context).colorScheme.primary
-                            : null),
-                    tooltip: 'Settings',
-                    onPressed: () => context.go('/settings'),
                   ),
-                  const SizedBox(height: 8),
-                  IconButton(
-                    icon: const Icon(Icons.logout),
-                    tooltip: 'Sign out',
-                    onPressed: () async {
-                      try {
-                        final api = ref.read(apiClientProvider);
-                        await api.logout();
-                      } catch (_) {}
-                      ref.read(currentUserProvider.notifier).state = null;
-                      ref.read(isAuthenticatedProvider.notifier).state = false;
-                      if (context.mounted) context.go('/login');
-                    },
+                ),
+                // Footer (fixed) — user info, settings, logout
+                const Divider(height: 1),
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  child: Column(
+                    children: [
+                      if (isAdmin)
+                        IconButton(
+                          icon: Icon(Icons.people,
+                              color: location.startsWith('/users')
+                                  ? theme.colorScheme.primary
+                                  : null),
+                          tooltip: 'Users',
+                          onPressed: () => context.go('/users'),
+                        ),
+                      IconButton(
+                        icon: Icon(Icons.settings,
+                            color: location.startsWith('/settings')
+                                ? theme.colorScheme.primary
+                                : null),
+                        tooltip: 'Settings',
+                        onPressed: () => context.go('/settings'),
+                      ),
+                      const SizedBox(height: 4),
+                      // Logged-in user
+                      if (username != null) ...[
+                        Semantics(
+                          label: 'Logged in as $username',
+                          child: Tooltip(
+                            message: '${isAdmin ? "Admin" : "User"}: $username',
+                            child: Column(
+                              children: [
+                                CircleAvatar(
+                                  radius: 14,
+                                  backgroundColor: isAdmin
+                                      ? Colors.orange.shade700
+                                      : theme.colorScheme.primary,
+                                  child: Text(
+                                    username[0].toUpperCase(),
+                                    style: const TextStyle(
+                                        color: Colors.white,
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.bold),
+                                  ),
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  username,
+                                  style: theme.textTheme.bodySmall?.copyWith(fontSize: 10),
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                      ],
+                      IconButton(
+                        icon: const Icon(Icons.logout, size: 20),
+                        tooltip: 'Sign out',
+                        onPressed: () async {
+                          try {
+                            final api = ref.read(apiClientProvider);
+                            await api.logout();
+                          } catch (_) {}
+                          ref.read(currentUserProvider.notifier).state = null;
+                          ref.read(isAuthenticatedProvider.notifier).state = false;
+                          if (context.mounted) context.go('/login');
+                        },
+                      ),
+                    ],
                   ),
-                  const SizedBox(height: 16),
-                ],
-              ),
+                ),
+              ],
             ),
-            destinations: const [
-              NavigationRailDestination(
-                  icon: Icon(Icons.dashboard), label: Text('Dashboard')),
-              NavigationRailDestination(
-                  icon: Icon(Icons.chat), label: Text('Chat')),
-              NavigationRailDestination(
-                  icon: Icon(Icons.work), label: Text('Jobs')),
-              NavigationRailDestination(
-                  icon: Icon(Icons.description), label: Text('Templates')),
-              NavigationRailDestination(
-                  icon: Icon(Icons.view_list), label: Text('Pipelines')),
-              NavigationRailDestination(
-                  icon: Icon(Icons.schedule), label: Text('Schedules')),
-              NavigationRailDestination(
-                  icon: Icon(Icons.folder_open), label: Text('Workspaces')),
-              NavigationRailDestination(
-                  icon: Icon(Icons.auto_fix_high), label: Text('Skills')),
-              NavigationRailDestination(
-                  icon: Icon(Icons.build_circle), label: Text('Tools')),
-              NavigationRailDestination(
-                  icon: Icon(Icons.vpn_key), label: Text('Credentials')),
-            ],
-            onDestinationSelected: (i) {
-              switch (i) {
-                case 0:
-                  context.go('/');
-                case 1:
-                  context.go('/chat');
-                case 2:
-                  context.go('/jobs');
-                case 3:
-                  context.go('/templates');
-                case 4:
-                  context.go('/pipelines');
-                case 5:
-                  context.go('/schedules');
-                case 6:
-                  context.go('/workspaces');
-                case 7:
-                  context.go('/skills');
-                case 8:
-                  context.go('/tools');
-                case 9:
-                  context.go('/credentials');
-              }
-            },
           ),
           const VerticalDivider(width: 1),
           Expanded(child: child),
@@ -127,6 +148,54 @@ class AppShell extends ConsumerWidget {
     if (location.startsWith('/credentials')) return 9;
     if (location.startsWith('/settings')) return -1;
     return 0;
+  }
+}
+
+/// Single nav item matching NavigationRail style.
+class _NavItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+  final BuildContext parentContext;
+
+  const _NavItem(this.icon, this.label, this.selected, this.onTap, this.parentContext);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = selected ? theme.colorScheme.primary : theme.colorScheme.onSurface.withValues(alpha: 0.7);
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        width: 80,
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        decoration: selected
+            ? BoxDecoration(
+                color: theme.colorScheme.primary.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+              )
+            : null,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 22, color: color),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontSize: 10,
+                color: color,
+                fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

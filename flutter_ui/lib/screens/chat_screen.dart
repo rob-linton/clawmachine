@@ -30,11 +30,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   List<Map<String, dynamic>>? _searchResults;
   StreamSubscription? _eventSub;
   StreamSubscription? _streamSub;
+  Timer? _pollTimer;
 
   @override
   void initState() {
     super.initState();
     _initChat();
+    _connectChatStream();
     // Listen for job completion via SSE
     _eventSub = ref.read(eventServiceProvider).jobUpdates.listen((event) {
       final jobId = event['job_id'] as String?;
@@ -45,6 +47,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         }
       }
     });
+    // Polling fallback: SSE events are unreliable (Redis pub/sub is
+    // fire-and-forget). Poll every 2s to clear any stuck messages.
+    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      final thinkingCount = _messages.where((m) => m['_thinking'] == true).length;
+      final pendingCount = _pendingJobs.length;
+      print('[POLL] pending=$pendingCount thinking=$thinkingCount msgs=${_messages.length}');
+      if (!mounted || (_pendingJobs.isEmpty && thinkingCount == 0)) return;
+      print('[POLL] refreshing...');
+      _refreshMessages();
+    });
   }
 
   @override
@@ -54,6 +66,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _scrollController.dispose();
     _eventSub?.cancel();
     _streamSub?.cancel();
+    _pollTimer?.cancel();
     super.dispose();
   }
 
@@ -81,6 +94,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     try {
       final api = ref.read(apiClientProvider);
       final messages = await api.getChatMessages(limit: 200);
+      print('[REFRESH] server returned ${messages.length} messages');
 
       // Preserve optimistic messages not yet stored on server
       final serverKeys = messages.map((m) => '${m['seq']}_${m['role']}').toSet();
@@ -88,6 +102,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         !serverKeys.contains('${m['seq']}_${m['role']}') &&
         (m['_thinking'] == true || m['status'] == 'pending')
       ).toList();
+      if (optimistic.isNotEmpty) {
+        print('[REFRESH] preserving ${optimistic.length} optimistic: ${optimistic.map((m) => '${m['seq']}_${m['role']}_thinking=${m['_thinking']}').join(', ')}');
+      }
       messages.addAll(optimistic);
 
       // Sort: by seq, then user before assistant/task within same seq
@@ -195,8 +212,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
       if (jobId != null) {
         _pendingJobs[jobId] = seq;
-        // Start streaming for this message
-        _startStreamSubscription(jobId);
+        print('[SEND] jobId=$jobId seq=$seq pending=${_pendingJobs.length}');
       }
     } catch (e) {
       // Remove the optimistic messages
@@ -212,9 +228,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  void _startStreamSubscription(String jobId) {
-    // Only one stream subscription at a time (chat messages are sequential)
+  /// Persistent SSE connection to the chat stream. Stays open for the
+  /// lifetime of the screen — no per-message reconnection (which caused
+  /// events to be lost during the reconnect gap). Seq matching routes
+  /// text chunks to the correct message.
+  void _connectChatStream() {
     _streamSub?.cancel();
+    print('[STREAM] connecting...');
     final api = ref.read(apiClientProvider);
     final streamUrl = api.chatStreamUrl;
 
@@ -247,13 +267,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               final parsed = json.decode(data) as Map<String, dynamic>;
               if (parsed['type'] == 'text' && parsed['content'] != null) {
                 final eventSeq = (parsed['seq'] as num?)?.toInt();
-                // Find the matching assistant message by seq (or latest pending)
+                print('[STREAM] text seq=$eventSeq content="${(parsed['content'] as String).substring(0, (parsed['content'] as String).length.clamp(0, 20))}"');
                 setState(() {
                   for (int i = _messages.length - 1; i >= 0; i--) {
                     final msg = _messages[i];
                     if (msg['role'] != 'assistant') continue;
                     final msgSeq = (msg['seq'] as num?)?.toInt();
-                    // Match by seq if available, otherwise fall back to latest pending
                     if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
                     if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
                       msg['content'] = (msg['content'] as String? ?? '') + parsed['content'];
@@ -264,43 +283,55 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 });
                 _scrollToBottom();
               } else if (parsed['type'] == 'done') {
-                _streamSub?.cancel();
-                _streamSub = null;
-                // Delayed fallback: the job SSE event should trigger refresh
-                // after the worker stores the message, but if it's missed
-                // (e.g. SSE reconnection), refresh after a short delay.
-                Future.delayed(const Duration(milliseconds: 3000), () {
-                  if (mounted && _pendingJobs.containsKey(jobId)) {
-                    _onJobComplete(jobId);
-                  }
-                });
+                // Don't cancel the persistent stream here — it stays open
+                // for all messages. Just clean up the pending job.
+                final doneSeq = (parsed['seq'] as num?)?.toInt();
+                print('[STREAM] done seq=$doneSeq pending=${_pendingJobs.length}');
+                final jobId = _pendingJobs.entries
+                    .where((e) => e.value == doneSeq)
+                    .map((e) => e.key)
+                    .firstOrNull;
+                if (jobId != null) {
+                  _pendingJobs.remove(jobId);
+                  print('[STREAM] removed jobId=$jobId, pending=${_pendingJobs.length}');
+                  // Update session stats
+                  ref.read(apiClientProvider).getChat().then((session) {
+                    if (mounted) setState(() => _session = session);
+                  }).catchError((_) {});
+                }
               }
             } catch (_) {}
           }
         },
         onDone: () {
-          // Stream closed — give the worker time to store, then refresh
-          if (mounted && _pendingJobs.containsKey(jobId)) {
-            Future.delayed(const Duration(milliseconds: 1500), () {
-              if (mounted && _pendingJobs.containsKey(jobId)) _onJobComplete(jobId);
+          // SSE connection closed — reconnect after a short delay
+          if (mounted) {
+            Future.delayed(const Duration(seconds: 2), () {
+              if (mounted) _connectChatStream();
             });
           }
         },
         onError: (_) {
-          if (mounted && _pendingJobs.containsKey(jobId)) {
-            Future.delayed(const Duration(milliseconds: 1500), () {
-              if (mounted && _pendingJobs.containsKey(jobId)) _onJobComplete(jobId);
+          if (mounted) {
+            Future.delayed(const Duration(seconds: 2), () {
+              if (mounted) _connectChatStream();
             });
           }
         },
       );
-    }).catchError((_) {});
+    }).catchError((_) {
+      // Connection failed — retry
+      if (mounted) {
+        Future.delayed(const Duration(seconds: 2), () {
+          if (mounted) _connectChatStream();
+        });
+      }
+    });
   }
 
   Future<void> _onJobComplete(String jobId) async {
+    print('[JOB_COMPLETE] jobId=$jobId via SSE event, pending=${_pendingJobs.length}');
     _pendingJobs.remove(jobId);
-    _streamSub?.cancel();
-    _streamSub = null;
     await _refreshMessages();
     try {
       final api = ref.read(apiClientProvider);
@@ -681,6 +712,9 @@ class _MessageBubble extends StatelessWidget {
                 IconButton(
                   icon: const Icon(Icons.copy, size: 16),
                   tooltip: 'Copy',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                  padding: EdgeInsets.zero,
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: content));
                     ScaffoldMessenger.of(context).showSnackBar(
@@ -692,6 +726,9 @@ class _MessageBubble extends StatelessWidget {
                   IconButton(
                     icon: const Icon(Icons.refresh, size: 16),
                     tooltip: 'Retry',
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                    padding: EdgeInsets.zero,
                     onPressed: onRetry,
                   ),
               ],
