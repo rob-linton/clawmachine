@@ -326,8 +326,15 @@ async fn submit_task(
     };
     claw_redis::add_chat_message(&state.pool, chat_id, &task_msg).await.ok();
 
-    // Task runs in the same workspace (standard job path handles workspace locking)
-    let workspace_id = session.workspace_id;
+    // Fork an ephemeral workspace from the chat workspace for this task.
+    // Each task gets its own workspace — no lock contention, truly parallel.
+    let task_ws = match fork_ephemeral_workspace(&state.pool, &session, seq).await {
+        Ok(ws) => ws,
+        Err(e) => {
+            tracing::warn!(error = %e, "Task workspace fork failed, using chat workspace");
+            session.workspace_id // fallback
+        }
+    };
     let model = req.model.or_else(|| Some(session.model.clone()));
 
     let job_req = claw_models::CreateJobRequest {
@@ -337,12 +344,12 @@ async fn submit_task(
         tool_ids: session.tool_ids.clone(),
         allowed_tools: None,
         working_dir: None,
-        workspace_id: Some(workspace_id),
+        workspace_id: Some(task_ws),
         model,
         max_budget_usd: None,
         timeout_secs: Some(1800),
         output_dest: claw_models::OutputDest::Redis,
-        priority: Some(7), // lower than chat (9) so tasks don't block conversation
+        priority: Some(7),
         tags: vec![format!("chat:{}", chat_id), format!("chat_seq:{}", seq), "task".to_string()],
         template_id: None,
     };
@@ -460,6 +467,67 @@ fn chat_text_stream(redis_url: String, channel: String) -> impl Stream<Item = Re
             }
         }
     }
+}
+
+/// Fork an ephemeral workspace from the chat workspace for a task.
+/// Each task gets its own isolated copy — no lock contention.
+async fn fork_ephemeral_workspace(
+    pool: &deadpool_redis::Pool,
+    session: &claw_models::ChatSession,
+    seq: u32,
+) -> Result<Uuid, String> {
+    let parent_id = session.workspace_id;
+
+    // Create workspace record in Redis
+    let create_req = CreateWorkspaceRequest {
+        name: format!("task-{}-{}", session.user_id, seq),
+        description: Some(format!("Ephemeral task workspace (seq {})", seq)),
+        path: None,
+        skill_ids: session.skill_ids.clone(),
+        tool_ids: session.tool_ids.clone(),
+        credential_bindings: Default::default(),
+        claude_md: None, // Inherited from parent via git clone
+        persistence: Some(WorkspacePersistence::Ephemeral),
+        remote_url: None,
+        base_image: None,
+        memory_limit: None,
+        cpu_limit: None,
+        network_mode: None,
+        parent_workspace_id: Some(parent_id),
+        parent_ref: Some("HEAD".to_string()),
+    };
+
+    let new_ws = claw_redis::create_workspace(pool, &create_req).await
+        .map_err(|e| format!("Create workspace failed: {e}"))?;
+    let new_id = new_ws.id;
+
+    // Clone the bare repo
+    let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+    let parent_repo = home.join(".claw/repos").join(format!("{}.git", parent_id));
+    let new_repo = home.join(".claw/repos").join(format!("{}.git", new_id));
+    let new_checkout = home.join(".claw/checkouts").join(new_id.to_string());
+
+    let cmds = format!(
+        "git clone --bare {} {} && git clone {} {} && cd {} && git checkout -b claw/task-{}",
+        parent_repo.display(), new_repo.display(),
+        new_repo.display(), new_checkout.display(),
+        new_checkout.display(), seq,
+    );
+
+    let output = tokio::process::Command::new("bash")
+        .args(["-c", &cmds])
+        .output().await
+        .map_err(|e| format!("Fork command failed: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Rollback
+        claw_redis::delete_workspace(pool, new_id).await.ok();
+        return Err(format!("Fork failed: {}", stderr.chars().take(200).collect::<String>()));
+    }
+
+    tracing::info!(parent = %parent_id, fork = %new_id, seq, "Forked ephemeral task workspace");
+    Ok(new_id)
 }
 
 async fn get_user_chat_id(state: &AppState, username: &str) -> Option<Uuid> {
