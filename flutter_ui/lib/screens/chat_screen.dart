@@ -186,11 +186,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           }
         },
         onDone: () {
-          // Stream closed = Claude finished. Trigger completion.
-          if (_sending && mounted) _onJobComplete();
+          // Stream closed = Claude finished. Just reset the spinner.
+          // Don't refresh messages yet — the worker may still be storing
+          // the response in Redis. The full refresh happens after a delay
+          // to let the worker catch up.
+          if (_sending && mounted) {
+            Future.delayed(const Duration(milliseconds: 1500), () {
+              if (_sending && mounted) _onJobComplete();
+            });
+          }
         },
         onError: (_) {
-          if (_sending && mounted) _onJobComplete();
+          if (_sending && mounted) {
+            Future.delayed(const Duration(milliseconds: 1500), () {
+              if (_sending && mounted) _onJobComplete();
+            });
+          }
         },
       );
     }).catchError((_) {
