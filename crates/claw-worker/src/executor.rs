@@ -45,7 +45,7 @@ pub async fn dispatch_execute(
 ) -> Result<ExecutionResult, String> {
     match backend {
         ExecutionBackend::Local => {
-            local_execute_job(job, working_dir, anthropic_api_key, system_prompt, log_tx, cancel).await
+            local_execute_job(job, working_dir, anthropic_api_key, system_prompt, credential_env_vars, log_tx, cancel).await
         }
         ExecutionBackend::Docker => {
             let config = docker_config.ok_or("Docker config not available")?;
@@ -185,6 +185,7 @@ pub async fn local_execute_job(
     working_dir: &std::path::Path,
     anthropic_api_key: Option<&str>,
     system_prompt: Option<&str>,
+    extra_env: &std::collections::HashMap<String, String>,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
@@ -223,6 +224,11 @@ pub async fn local_execute_job(
     // Set Anthropic API key if available (bypasses OAuth)
     if let Some(key) = anthropic_api_key {
         cmd.env("ANTHROPIC_API_KEY", key);
+    }
+
+    // Extra environment variables (e.g. CLAW_API_URL, CLAW_SESSION for chat API access)
+    for (k, v) in extra_env {
+        cmd.env(k, v);
     }
 
     cmd.current_dir(working_dir);

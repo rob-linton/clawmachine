@@ -76,6 +76,13 @@ pub async fn ensure_container(
         args.push(format!("ANTHROPIC_API_KEY={}", key));
     }
 
+    // Network — allow chat containers to reach the API server
+    let network = std::env::var("CLAW_DOCKER_NETWORK").unwrap_or_else(|_| "bridge".to_string());
+    args.push("--network".into());
+    args.push(network);
+    // Linux compatibility: host.docker.internal is automatic on macOS but needs explicit mapping on Linux
+    args.push("--add-host=host.docker.internal:host-gateway".into());
+
     // Credential mounts — use same DinD translation as docker_execute_job
     for mount in &config.credential_mounts {
         let host = translate_credential_host_path(&mount.host_path);
@@ -144,8 +151,24 @@ pub async fn execute_chat_message(
     cmd_parts.push("--max-budget-usd".into());
     cmd_parts.push("10".into());
 
+    // Mint a per-message session token so Claude can call the Claw Machine API
+    // as the logged-in user. Written into the runner script (not docker run -e)
+    // so the token is fresh on every message even when the container is reused.
+    let mut api_env_lines = String::new();
+    if let Ok(Some(session)) = claw_redis::get_chat_session(pool, chat_id).await {
+        if let Ok(token) = claw_redis::create_session(pool, &session.user_id).await {
+            let api_url = std::env::var("CLAW_CHAT_API_URL")
+                .unwrap_or_else(|_| "http://host.docker.internal:8080".to_string());
+            api_env_lines = format!(
+                "export CLAW_API_URL={}\nexport CLAW_SESSION={}\n",
+                shell_escape(&api_url), shell_escape(&token),
+            );
+            tracing::debug!(chat_id = %chat_id, user = %session.user_id, "Minted API session token for chat");
+        }
+    }
+
     // Write runner script (avoids CLI arg limits for long messages)
-    let script = format!("#!/bin/bash\ncd /workspace\nexec {}", cmd_parts.join(" "));
+    let script = format!("#!/bin/bash\n{}cd /workspace\nexec {}", api_env_lines, cmd_parts.join(" "));
     let script_path = checkout.join(".claw-chat-run.sh");
     tokio::fs::write(&script_path, &script).await
         .map_err(|e| format!("Failed to write runner script: {e}"))?;
@@ -533,7 +556,197 @@ async fn deploy_tool_skill_to_workspace(pool: &Pool, checkout: &Path, tool_id: &
     tokio::fs::write(skill_dir.join("SKILL.md"), &skill_md).await.ok();
 }
 
+/// Deploy the built-in Claw Machine API skill to the chat workspace.
+/// This gives Claude Code the knowledge and credentials to call the API.
+pub async fn deploy_api_skill(workspace_id: Uuid) {
+    let checkout = checkout_path(workspace_id);
+    let skill_dir = checkout.join(".claude").join("skills").join("claw-api");
+    // Always overwrite — the skill content may have been updated
+    tokio::fs::create_dir_all(&skill_dir).await.ok();
+    tokio::fs::write(skill_dir.join("SKILL.md"), API_SKILL_CONTENT).await.ok();
+}
+
 fn checkout_path(workspace_id: Uuid) -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| "/tmp".into())
         .join(".claw").join("checkouts").join(workspace_id.to_string())
 }
+
+const API_SKILL_CONTENT: &str = r##"---
+name: Claw Machine API
+description: Access the Claw Machine API to manage jobs, skills, tools, workspaces, crons, and pipelines
+---
+
+# Claw Machine API
+
+You have access to the Claw Machine API. Use it to manage jobs, skills, tools, workspaces, schedules, and pipelines on behalf of the user.
+
+## Authentication
+
+Two environment variables are set automatically:
+- `CLAW_API_URL` — base URL of the API server
+- `CLAW_SESSION` — your session token (scoped to the logged-in user)
+
+Include the session cookie on every request:
+
+```bash
+curl -s -b "claw_session=$CLAW_SESSION" "$CLAW_API_URL/api/v1/..."
+```
+
+For POST/PUT requests add `-H "Content-Type: application/json"` and `-d '{...}'`.
+
+Use `jq` for readable output: `... | jq .`
+
+## Verify Access
+
+Before making API calls, verify your authentication:
+
+```bash
+curl -s -b "claw_session=$CLAW_SESSION" "$CLAW_API_URL/api/v1/auth/me" | jq .
+```
+
+## IMPORTANT RESTRICTIONS
+
+- **DO NOT** call any `/api/v1/chat/*` endpoints — these are for the chat system itself and calling them could create infinite loops.
+- **DO NOT** submit jobs targeting this chat workspace — it could cause lock contention.
+- When creating jobs, use a different workspace or let the system assign one.
+
+## API Reference
+
+### System Status
+- `GET /api/v1/status` — health check, queue depths, worker count
+
+### Jobs
+- `POST /api/v1/jobs` — submit a new job
+  ```json
+  {"prompt": "...", "workspace_id": "uuid", "skill_ids": [], "model": "sonnet", "priority": "normal", "tags": []}
+  ```
+- `GET /api/v1/jobs` — list jobs (`?limit=N&offset=N&status=pending|running|completed|failed`)
+- `GET /api/v1/jobs/{id}` — get job details
+- `GET /api/v1/jobs/{id}/result` — get job result text
+- `GET /api/v1/jobs/{id}/logs` — get execution logs
+- `POST /api/v1/jobs/{id}/cancel` — cancel a running job
+- `DELETE /api/v1/jobs/{id}` — delete a job
+
+### Skills
+- `GET /api/v1/skills` — list all skills
+- `POST /api/v1/skills` — create a skill
+  ```json
+  {"id": "my-skill", "name": "My Skill", "content": "# Instructions\n...", "description": "What it does", "tags": ["tag1"]}
+  ```
+- `GET /api/v1/skills/{id}` — get skill details
+- `PUT /api/v1/skills/{id}` — update a skill (same body as create)
+- `DELETE /api/v1/skills/{id}` — delete a skill
+- `POST /api/v1/skills/install-from-url` — install from git/ZIP URL: `{"url": "https://..."}`
+
+### Tools
+- `GET /api/v1/tools` — list all tools
+- `POST /api/v1/tools` — create a tool definition
+- `GET /api/v1/tools/{id}` — get tool details
+- `PUT /api/v1/tools/{id}` — update a tool
+- `DELETE /api/v1/tools/{id}` — delete a tool
+- `POST /api/v1/tools/install-from-url` — install from git/ZIP URL: `{"url": "https://..."}`
+
+### Workspaces
+- `GET /api/v1/workspaces` — list workspaces
+- `POST /api/v1/workspaces` — create a workspace
+  ```json
+  {"name": "...", "description": "...", "persistence_mode": "persistent", "skill_ids": [], "tool_ids": []}
+  ```
+- `GET /api/v1/workspaces/{id}` — get workspace details
+- `PUT /api/v1/workspaces/{id}` — update workspace
+- `DELETE /api/v1/workspaces/{id}` — delete workspace
+- `GET /api/v1/workspaces/{id}/files` — list files
+- `GET /api/v1/workspaces/{id}/files/{path}` — read a file
+- `PUT /api/v1/workspaces/{id}/files/{path}` — write a file: `{"content": "..."}`
+- `DELETE /api/v1/workspaces/{id}/files/{path}` — delete a file
+- `POST /api/v1/workspaces/{id}/fork` — fork a workspace
+- `GET /api/v1/workspaces/{id}/history` — git log
+- `GET /api/v1/workspaces/{id}/events` — event timeline
+
+### Job Templates
+- `GET /api/v1/job-templates` — list templates
+- `POST /api/v1/job-templates` — create a template
+  ```json
+  {"name": "...", "prompt": "...", "skill_ids": [], "tool_ids": [], "workspace_id": "uuid", "model": "sonnet"}
+  ```
+- `GET /api/v1/job-templates/{id}` — get template
+- `PUT /api/v1/job-templates/{id}` — update template
+- `DELETE /api/v1/job-templates/{id}` — delete template
+- `POST /api/v1/job-templates/{id}/run` — run template as a job
+
+### Cron Schedules
+- `GET /api/v1/crons` — list schedules
+- `POST /api/v1/crons` — create a schedule
+  ```json
+  {"name": "...", "schedule": "0 9 * * *", "template_id": "uuid", "enabled": true}
+  ```
+- `GET /api/v1/crons/{id}` — get schedule
+- `PUT /api/v1/crons/{id}` — update schedule
+- `DELETE /api/v1/crons/{id}` — delete schedule
+- `POST /api/v1/crons/{id}/trigger` — trigger immediately
+
+### Pipelines
+- `GET /api/v1/pipelines` — list pipelines
+- `POST /api/v1/pipelines` — create a pipeline
+  ```json
+  {"name": "...", "steps": [{"name": "Step 1", "template_id": "uuid"}]}
+  ```
+- `GET /api/v1/pipelines/{id}` — get pipeline
+- `PUT /api/v1/pipelines/{id}` — update pipeline
+- `DELETE /api/v1/pipelines/{id}` — delete pipeline
+- `POST /api/v1/pipelines/{id}/run` — run pipeline
+- `GET /api/v1/pipeline-runs` — list runs
+- `GET /api/v1/pipeline-runs/{id}` — get run details
+
+### Credentials
+- `GET /api/v1/credentials` — list credentials (values masked)
+- `POST /api/v1/credentials` — create credential
+- `PUT /api/v1/credentials/{id}` — update credential values
+- `DELETE /api/v1/credentials/{id}` — delete credential
+
+### Configuration
+- `GET /api/v1/config` — get all system config
+- `PUT /api/v1/config` — update config (partial merge)
+- `GET /api/v1/config/{key}` — get single value
+- `PUT /api/v1/config/{key}` — set single value
+
+### Docker Management
+- `GET /api/v1/docker/status` — Docker daemon status
+- `GET /api/v1/docker/images` — list sandbox images
+
+### Catalog
+- `POST /api/v1/catalog/sync` — sync skills/tools from catalog repo
+
+## Examples
+
+### List recent jobs
+```bash
+curl -s -b "claw_session=$CLAW_SESSION" "$CLAW_API_URL/api/v1/jobs?limit=5" | jq '.[] | {id, status, prompt: .prompt[:60]}'
+```
+
+### Submit a job
+```bash
+curl -s -b "claw_session=$CLAW_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Write a hello world Python script", "model": "sonnet"}' \
+  "$CLAW_API_URL/api/v1/jobs" | jq .
+```
+
+### Check job result
+```bash
+curl -s -b "claw_session=$CLAW_SESSION" "$CLAW_API_URL/api/v1/jobs/JOB_ID/result" | jq .
+```
+
+### Create a skill
+```bash
+curl -s -b "claw_session=$CLAW_SESSION" \
+  -H "Content-Type: application/json" \
+  -d '{"id": "my-skill", "name": "My Skill", "content": "# Instructions\nDo the thing.", "description": "A custom skill"}' \
+  "$CLAW_API_URL/api/v1/skills" | jq .
+```
+
+### List workspaces
+```bash
+curl -s -b "claw_session=$CLAW_SESSION" "$CLAW_API_URL/api/v1/workspaces" | jq '.[] | {id, name, persistence_mode}'
+```
+"##;

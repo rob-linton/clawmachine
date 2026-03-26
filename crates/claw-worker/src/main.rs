@@ -349,8 +349,9 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
 
                                 match session_container::ensure_container(&pool, chat_id, ws_id, dc, raw_api_key.as_deref()).await {
                                     Ok(container_name) => {
-                                        // Pre-exec: refresh available skills/tools for Claude
+                                        // Pre-exec: refresh available skills/tools for Claude + deploy API skill
                                         session_container::refresh_available_catalog(&pool, ws_id).await;
+                                        session_container::deploy_api_skill(ws_id).await;
 
                                         // Read raw user message from file (API writes it before job submission).
                                         // job.prompt contains assembled history for the fallback path;
@@ -641,6 +642,27 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                 }
                                 Err(e) => {
                                     tracing::warn!(tool_id = %tool.id, credential_id = %cred_id, error = %e, "Failed to decrypt credential");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 5b. For chat jobs on local backend: deploy API skill + set env vars
+                if is_chat_job && backend == executor::ExecutionBackend::Local {
+                    if let Some(ws_id) = job.workspace_id {
+                        session_container::deploy_api_skill(ws_id).await;
+                    }
+                    // Mint a session token for the user so Claude can call the API
+                    if let Some(chat_tag) = job.tags.iter().find(|t| t.starts_with("chat:")) {
+                        if let Ok(chat_id) = chat_tag.strip_prefix("chat:").unwrap_or("").parse::<uuid::Uuid>() {
+                            if let Ok(Some(session)) = claw_redis::get_chat_session(&pool, chat_id).await {
+                                if let Ok(token) = claw_redis::create_session(&pool, &session.user_id).await {
+                                    let api_url = std::env::var("CLAW_CHAT_API_URL")
+                                        .or_else(|_| std::env::var("CLAW_API_URL"))
+                                        .unwrap_or_else(|_| "http://127.0.0.1:8080".to_string());
+                                    credential_env_vars.insert("CLAW_API_URL".to_string(), api_url);
+                                    credential_env_vars.insert("CLAW_SESSION".to_string(), token);
                                 }
                             }
                         }

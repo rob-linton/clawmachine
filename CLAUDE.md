@@ -163,6 +163,8 @@ Each user gets one chat session tied to a private persistent workspace. Messages
 
 **Fallback**: If Docker backend is not active, chat jobs fall through to the standard job execution path with server-side context assembly (sliding window of recent messages + summaries of older ones).
 
+**Chat API access**: The chat Claude Code session can call the Claw Machine API as the logged-in user. Per-message, the worker mints a fresh session token via `claw_redis::create_session()` and injects `CLAW_API_URL` and `CLAW_SESSION` as env vars into the runner script. A built-in skill at `.claude/skills/claw-api/SKILL.md` provides API documentation and curl examples. Chat endpoints (`/api/v1/chat/*`) are excluded from the skill to prevent recursive loops. Session containers use `--network` (from `CLAW_DOCKER_NETWORK`) and `--add-host=host.docker.internal:host-gateway` for API connectivity.
+
 ## Chat Redis Keys
 
 ```
@@ -365,6 +367,8 @@ Every phase must be validated end-to-end before proceeding. After writing code, 
 | `CLAW_HOST_CLAUDE_HOME` | `~/.claude` | Host path for Claude credentials (Docker-in-Docker volume mapping) |
 | `CLAW_SECRET_KEY` | (unset) | Encryption key for tool credentials (32-byte hex, base64, or passphrase). Required for credential storage |
 | `ANTHROPIC_API_KEY` | (unset) | Anthropic API key. If set, bypasses OAuth entirely. Also settable via Settings UI (Redis config `anthropic_api_key` takes priority over env var) |
+| `CLAW_CHAT_API_URL` | (unset) | API URL for chat containers to reach the API (e.g., `http://api:8080` in Docker Compose). Falls back to `host.docker.internal:8080` |
+| `CLAW_DOCKER_NETWORK` | `bridge` | Docker network for chat session containers (e.g., `claw_default` in Docker Compose) |
 
 Most new configuration is stored in Redis (`claw:config:*`) and managed from the Settings screen. Env vars are only used as bootstrap fallbacks.
 

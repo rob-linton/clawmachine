@@ -62,6 +62,9 @@ services:
       CLAW_EXECUTION_BACKEND: "${CLAW_EXECUTION_BACKEND:-local}"
       RUST_LOG: "${RUST_LOG:-info,claw_worker=debug}"
       HOME: /home/claw
+      # Chat API access: URL and network for chat containers to reach the API
+      CLAW_CHAT_API_URL: "http://api:8080"
+      CLAW_DOCKER_NETWORK: "claw_default"
       # Docker-in-Docker: host path for volume mounts into sandbox containers
       CLAW_HOST_DATA_DIR: "${CLAW_DATA_DIR:-~/.claw-data}"
       CLAW_HOST_CLAUDE_HOME: "${CLAUDE_HOME:-~/.claude}"

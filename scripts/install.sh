@@ -165,6 +165,8 @@ services:
       CLAW_EXECUTION_BACKEND: "\${CLAW_EXECUTION_BACKEND:-docker}"
       RUST_LOG: "\${RUST_LOG:-info}"
       HOME: /home/claw
+      CLAW_CHAT_API_URL: "http://api:8080"
+      CLAW_DOCKER_NETWORK: "claw_default"
       CLAW_HOST_DATA_DIR: "\${CLAW_DATA_DIR}"
       CLAW_HOST_CLAUDE_HOME: "\${CLAUDE_HOME}"
     depends_on:
