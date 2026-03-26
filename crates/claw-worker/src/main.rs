@@ -327,6 +327,25 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                 let seq: u32 = seq_tag.and_then(|t| t.strip_prefix("chat_seq:")).and_then(|s| s.parse().ok()).unwrap_or(1);
                                 let is_first = seq == 1;
 
+                                // Acquire per-chat execution lock — only one message at a time
+                                // (--continue requires sequential execution)
+                                let lock_ttl = job.timeout_secs.unwrap_or(600) + 30;
+                                match claw_redis::try_acquire_chat_lock(&pool, chat_id, job_id, lock_ttl).await {
+                                    Ok(false) => {
+                                        // Another message is executing — re-queue with short backoff
+                                        tracing::debug!(job_id = %job_id, chat_id = %chat_id, "Chat lock held, re-queuing");
+                                        claw_redis::requeue_chat_job(&pool, job_id).await.ok();
+                                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(job_id = %job_id, error = %e, "Chat lock acquisition failed");
+                                        claw_redis::fail_job(&pool, job_id, &format!("Lock error: {e}")).await.ok();
+                                        continue;
+                                    }
+                                    Ok(true) => {} // Lock acquired, proceed
+                                }
+
                                 tracing::info!(job_id = %job_id, chat_id = %chat_id, seq, "Chat via session container");
 
                                 match session_container::ensure_container(&pool, chat_id, ws_id, dc, raw_api_key.as_deref()).await {
@@ -361,6 +380,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                     }
                                                 }
                                                 tracing::info!(job_id = %job_id, duration_ms = r.duration_ms, "Chat completed");
+                                                claw_redis::release_chat_lock(&pool, chat_id, job_id).await.ok();
 
                                                 // Post-exec: extract artifacts + check install requests
                                                 session_container::extract_artifacts(ws_id, seq, &r.result_text).await;
@@ -396,6 +416,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                             }
                                             Err(e) => {
                                                 tracing::error!(job_id = %job_id, error = %e, "Chat execution failed");
+                                                claw_redis::release_chat_lock(&pool, chat_id, job_id).await.ok();
                                                 let is_terminal = claw_redis::fail_job(&pool, job_id, &e).await.ok() == Some(false);
                                                 claw_redis::delete_chat_container(&pool, chat_id).await.ok();
                                                 // On terminal failure, store error as assistant message so UI shows it

@@ -79,6 +79,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     try {
       final api = ref.read(apiClientProvider);
       final messages = await api.getChatMessages(limit: 200);
+      // Sort: by seq, then user before assistant/task within same seq
+      messages.sort((a, b) {
+        final seqA = (a['seq'] as num?)?.toInt() ?? 0;
+        final seqB = (b['seq'] as num?)?.toInt() ?? 0;
+        if (seqA != seqB) return seqA.compareTo(seqB);
+        // Within same seq: user first, then assistant/task
+        final roleOrder = {'user': 0, 'assistant': 1, 'task': 1};
+        return (roleOrder[a['role']] ?? 2).compareTo(roleOrder[b['role']] ?? 2);
+      });
       if (mounted) {
         setState(() => _messages = messages);
       }

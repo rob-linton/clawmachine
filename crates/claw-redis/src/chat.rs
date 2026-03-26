@@ -185,6 +185,53 @@ pub async fn update_message_summary(pool: &Pool, chat_id: Uuid, seq: u32, role: 
     Ok(())
 }
 
+// --- Chat Execution Lock ---
+
+/// Try to acquire the chat execution lock (only one message at a time per chat).
+/// Returns true if lock acquired, false if another message is executing.
+pub async fn try_acquire_chat_lock(pool: &Pool, chat_id: Uuid, job_id: Uuid, ttl_secs: u64) -> Result<bool, RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("{}{}:exec_lock", CHAT_PREFIX, chat_id);
+    // SETNX with TTL via Lua for atomicity
+    let script = redis::Script::new(
+        r#"
+        if redis.call('SETNX', KEYS[1], ARGV[1]) == 1 then
+            redis.call('EXPIRE', KEYS[1], ARGV[2])
+            return 1
+        end
+        return 0
+        "#,
+    );
+    let result: i32 = script
+        .key(&key)
+        .arg(job_id.to_string())
+        .arg(ttl_secs)
+        .invoke_async(&mut *conn)
+        .await?;
+    Ok(result == 1)
+}
+
+/// Release the chat execution lock.
+pub async fn release_chat_lock(pool: &Pool, chat_id: Uuid, job_id: Uuid) -> Result<(), RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("{}{}:exec_lock", CHAT_PREFIX, chat_id);
+    // Only release if we hold it (CAS)
+    let script = redis::Script::new(
+        r#"
+        if redis.call('GET', KEYS[1]) == ARGV[1] then
+            return redis.call('DEL', KEYS[1])
+        end
+        return 0
+        "#,
+    );
+    let _: i32 = script
+        .key(&key)
+        .arg(job_id.to_string())
+        .invoke_async(&mut *conn)
+        .await?;
+    Ok(())
+}
+
 // --- Streaming ---
 
 /// Publish a chat stream chunk to Redis pub/sub for real-time UI display.

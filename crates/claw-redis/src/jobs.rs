@@ -176,6 +176,33 @@ pub async fn complete_job(
     Ok(())
 }
 
+/// Re-queue a running job back to pending (for chat lock contention).
+pub async fn requeue_chat_job(pool: &Pool, job_id: Uuid) -> Result<(), RedisError> {
+    let mut conn = pool.get().await?;
+    let job_key = format!("claw:job:{}", job_id);
+    let job_json: String = conn.get(&job_key).await?;
+    let mut job: Job = serde_json::from_str(&job_json)?;
+    job.status = JobStatus::Pending;
+    let updated = serde_json::to_string(&job)?;
+    // Move from running back to pending queue
+    let script = redis::Script::new(
+        r#"
+        redis.call('SET', KEYS[1], ARGV[1])
+        redis.call('SREM', 'claw:queue:running', ARGV[2])
+        redis.call('ZADD', 'claw:queue:pending', ARGV[3], ARGV[2])
+        return 1
+        "#,
+    );
+    let _: i32 = script
+        .key(&job_key)
+        .arg(&updated)
+        .arg(job_id.to_string())
+        .arg(job.priority as f64)
+        .invoke_async(&mut *conn)
+        .await?;
+    Ok(())
+}
+
 /// Mark a job as failed with an error message.
 /// If the job has retries remaining (max 3), it is re-queued instead.
 /// Returns true if the job was re-queued for retry, false if terminally failed.
