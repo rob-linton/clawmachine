@@ -150,41 +150,51 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (stream == null) return;
 
       String buffer = '';
-      _streamSub = stream.listen((chunk) {
-        if (!mounted) return;
-        buffer += utf8.decode(chunk);
+      _streamSub = stream.listen(
+        (chunk) {
+          if (!mounted) return;
+          buffer += utf8.decode(chunk);
 
-        while (buffer.contains('\n\n')) {
-          final idx = buffer.indexOf('\n\n');
-          final block = buffer.substring(0, idx);
-          buffer = buffer.substring(idx + 2);
+          while (buffer.contains('\n\n')) {
+            final idx = buffer.indexOf('\n\n');
+            final block = buffer.substring(0, idx);
+            buffer = buffer.substring(idx + 2);
 
-          String? data;
-          for (final line in block.split('\n')) {
-            if (line.startsWith('data: ')) data = line.substring(6);
-          }
-          if (data == null) continue;
-
-          try {
-            final parsed = json.decode(data) as Map<String, dynamic>;
-            if (parsed['type'] == 'text' && parsed['content'] != null) {
-              // Append text to the last (assistant) message
-              setState(() {
-                if (_messages.isNotEmpty) {
-                  final last = _messages.last;
-                  if (last['role'] == 'assistant') {
-                    last['content'] = (last['content'] as String? ?? '') + parsed['content'];
-                    last['_thinking'] = false;
-                  }
-                }
-              });
-              _scrollToBottom();
+            String? data;
+            for (final line in block.split('\n')) {
+              if (line.startsWith('data: ')) data = line.substring(6);
             }
-          } catch (_) {}
-        }
-      });
+            if (data == null) continue;
+
+            try {
+              final parsed = json.decode(data) as Map<String, dynamic>;
+              if (parsed['type'] == 'text' && parsed['content'] != null) {
+                setState(() {
+                  if (_messages.isNotEmpty) {
+                    final last = _messages.last;
+                    if (last['role'] == 'assistant') {
+                      last['content'] = (last['content'] as String? ?? '') + parsed['content'];
+                      last['_thinking'] = false;
+                    }
+                  }
+                });
+                _scrollToBottom();
+              } else if (parsed['type'] == 'done') {
+                _onJobComplete();
+              }
+            } catch (_) {}
+          }
+        },
+        onDone: () {
+          // Stream closed = Claude finished. Trigger completion.
+          if (_sending && mounted) _onJobComplete();
+        },
+        onError: (_) {
+          if (_sending && mounted) _onJobComplete();
+        },
+      );
     }).catchError((_) {
-      // Stream connection failed — fall back to SSE job event completion
+      // Stream connection failed — SSE job events are the fallback
     });
   }
 
