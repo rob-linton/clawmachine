@@ -153,6 +153,8 @@ DELETE /api/v1/chat                    — delete chat session + workspace
 GET    /api/v1/chat/search?q=keyword   — full-text search message history
 GET    /api/v1/chat/stream             — SSE stream of assistant text chunks (real-time)
 GET    /api/v1/chat/export            — download chat as markdown file
+POST   /api/v1/chat/tasks             — submit background task {content, model?} (runs in forked workspace)
+GET    /api/v1/chat/artifacts          — list extracted code artifacts from conversation
 ```
 
 Each user gets one chat session tied to a private persistent workspace. Messages are submitted as high-priority jobs. The worker detects chat jobs via `chat:` and `chat_seq:` tags and routes them through a **persistent session container** (`docker exec` into a long-lived container) with `claude -p --continue` for native conversation context. Both user and assistant messages are also written to `.chat/messages/{seq}-{role}.md` in the workspace.

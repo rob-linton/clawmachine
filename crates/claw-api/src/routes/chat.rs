@@ -326,25 +326,8 @@ async fn submit_task(
     };
     claw_redis::add_chat_message(&state.pool, chat_id, &task_msg).await.ok();
 
-    // Fork the workspace for the task
-    let fork_resp = reqwest::Client::new()
-        .post(format!("http://127.0.0.1:{}/api/v1/workspaces/{}/fork",
-            std::env::var("CLAW_API_PORT").unwrap_or_else(|_| "8080".into()),
-            session.workspace_id))
-        .json(&serde_json::json!({"name": format!("task-{}", seq), "persistence": "ephemeral"}))
-        .send().await;
-
-    let fork_ws_id = match fork_resp {
-        Ok(resp) if resp.status().is_success() => {
-            match resp.json::<serde_json::Value>().await {
-                Ok(v) => v.get("id").and_then(|i| i.as_str()).and_then(|s| s.parse::<uuid::Uuid>().ok()),
-                Err(_) => None,
-            }
-        }
-        _ => None,
-    };
-
-    let workspace_id = fork_ws_id.unwrap_or(session.workspace_id);
+    // Task runs in the same workspace (standard job path handles workspace locking)
+    let workspace_id = session.workspace_id;
     let model = req.model.or_else(|| Some(session.model.clone()));
 
     let job_req = claw_models::CreateJobRequest {
