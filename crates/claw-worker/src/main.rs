@@ -333,9 +333,9 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                 match claw_redis::try_acquire_chat_lock(&pool, chat_id, job_id, lock_ttl).await {
                                     Ok(false) => {
                                         // Another message is executing — re-queue with short backoff
-                                        tracing::debug!(job_id = %job_id, chat_id = %chat_id, "Chat lock held, re-queuing");
+                                        tracing::info!(job_id = %job_id, chat_id = %chat_id, "Chat lock held, re-queuing");
                                         claw_redis::requeue_chat_job(&pool, job_id).await.ok();
-                                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                                         continue;
                                     }
                                     Err(e) => {
