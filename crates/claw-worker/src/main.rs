@@ -315,6 +315,9 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                 }
 
                 // CHAT FAST PATH: route chat jobs through session container
+                // Tasks (tagged "task") skip this — they use the standard job path for parallelism
+                let is_task = job.tags.iter().any(|t| t == "task");
+                if !is_task {
                 if let Some(chat_tag) = job.tags.iter().find(|t| t.starts_with("chat:")) {
                     if let Ok(chat_id) = chat_tag.strip_prefix("chat:").unwrap_or("").parse::<uuid::Uuid>() {
                         if backend == executor::ExecutionBackend::Docker {
@@ -421,6 +424,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                         }
                     }
                 }
+                } // end !is_task — tasks fall through to standard job path
 
                 // 1. Resolve workspace (if workspace_id set)
                 let workspace = if let Some(ws_id) = job.workspace_id {
