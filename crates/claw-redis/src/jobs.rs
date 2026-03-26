@@ -177,6 +177,7 @@ pub async fn complete_job(
 }
 
 /// Re-queue a running job back to pending (for chat lock contention).
+/// Uses the same per-priority list queues as the original submit_job.
 pub async fn requeue_chat_job(pool: &Pool, job_id: Uuid) -> Result<(), RedisError> {
     let mut conn = pool.get().await?;
     let job_key = format!("claw:job:{}", job_id);
@@ -184,22 +185,24 @@ pub async fn requeue_chat_job(pool: &Pool, job_id: Uuid) -> Result<(), RedisErro
     let mut job: Job = serde_json::from_str(&job_json)?;
     job.status = JobStatus::Pending;
     let updated = serde_json::to_string(&job)?;
-    // Move from running back to pending queue
+    let queue_key = format!("claw:queue:pending:{}", job.priority);
+    // Move from running back to pending list queue (RPUSH to end, so it runs after current)
     let script = redis::Script::new(
         r#"
         redis.call('SET', KEYS[1], ARGV[1])
         redis.call('SREM', 'claw:queue:running', ARGV[2])
-        redis.call('ZADD', 'claw:queue:pending', ARGV[3], ARGV[2])
+        redis.call('RPUSH', KEYS[2], ARGV[2])
         return 1
         "#,
     );
     let _: i32 = script
         .key(&job_key)
+        .key(&queue_key)
         .arg(&updated)
         .arg(job_id.to_string())
-        .arg(job.priority as f64)
         .invoke_async(&mut *conn)
         .await?;
+    tracing::info!(job_id = %job_id, priority = job.priority, "Chat job re-queued");
     Ok(())
 }
 
