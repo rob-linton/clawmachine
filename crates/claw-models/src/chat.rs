@@ -41,6 +41,8 @@ pub struct ChatMessage {
     pub seq: u32,
     pub role: String,
     pub content: String,
+    #[serde(default = "default_status")]
+    pub status: String,
     #[serde(default)]
     pub summary: Option<String>,
     #[serde(default)]
@@ -53,7 +55,13 @@ pub struct ChatMessage {
     pub token_estimate: u32,
     #[serde(default)]
     pub files_written: Vec<String>,
+    #[serde(default)]
+    pub artifacts: Vec<u32>,
     pub timestamp: DateTime<Utc>,
+}
+
+fn default_status() -> String {
+    "complete".to_string()
 }
 
 /// Request to send a new chat message.

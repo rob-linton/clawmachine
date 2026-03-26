@@ -342,7 +342,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                         seq, role: "assistant".to_string(), content: r.result_text.clone(),
                                                         summary: None, job_id: Some(job_id), cost_usd: Some(r.cost_usd),
                                                         model: job.model.clone(), token_estimate: (r.result_text.len() / 4).max(1) as u32,
-                                                        files_written: Vec::new(), timestamp: chrono::Utc::now(),
+                                                        files_written: Vec::new(), artifacts: Vec::new(), status: "complete".to_string(), timestamp: chrono::Utc::now(),
                                                     };
                                                     claw_redis::add_chat_message(&pool, chat_id, &msg).await.ok();
                                                     let msgs_dir = dirs::home_dir().unwrap_or_else(|| "/tmp".into())
@@ -401,7 +401,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                         content: format!("Error: {}", e),
                                                         summary: None, job_id: Some(job_id), cost_usd: None,
                                                         model: None, token_estimate: 0,
-                                                        files_written: Vec::new(), timestamp: chrono::Utc::now(),
+                                                        files_written: Vec::new(), artifacts: Vec::new(), status: "complete".to_string(), timestamp: chrono::Utc::now(),
                                                     };
                                                     claw_redis::add_chat_message(&pool, chat_id, &err_msg).await.ok();
                                                 }
@@ -752,6 +752,8 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                         model: job.model.clone(),
                                         token_estimate: (r.result_text.len() / 4).max(1) as u32,
                                         files_written: Vec::new(),
+                                        artifacts: Vec::new(),
+                                        status: "complete".to_string(),
                                         timestamp: chrono::Utc::now(),
                                     };
                                     if let Err(e) = claw_redis::add_chat_message(&pool, chat_id, &assistant_msg).await {

@@ -137,16 +137,12 @@ pub async fn get_all_chat_messages(pool: &Pool, chat_id: Uuid) -> Result<Vec<Cha
 }
 
 /// Get the next sequence number for a chat.
-/// Finds the highest seq in the sorted set and adds 1.
+/// Uses atomic INCR on a dedicated counter key — safe for rapid concurrent sends.
 pub async fn next_chat_seq(pool: &Pool, chat_id: Uuid) -> Result<u32, RedisError> {
     let mut conn = pool.get().await?;
-    let messages_key = format!("{}{}:messages", CHAT_PREFIX, chat_id);
-    // Get the highest-scored member
-    let top: Vec<(String, f64)> = conn.zrevrange_withscores(&messages_key, 0, 0).await?;
-    match top.first() {
-        Some((_, score)) => Ok(*score as u32 + 1),
-        None => Ok(1),
-    }
+    let counter_key = format!("{}{}:seq_counter", CHAT_PREFIX, chat_id);
+    let seq: u32 = conn.incr(&counter_key, 1).await?;
+    Ok(seq)
 }
 
 /// Truncate messages at and after a given seq (for retry/edit).

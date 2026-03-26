@@ -21,11 +21,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   List<Map<String, dynamic>> _messages = [];
   Map<String, dynamic>? _session;
   bool _loading = true;
-  bool _sending = false;
   String? _error;
-  String? _pendingJobId;
+  final Map<String, int> _pendingJobs = {}; // job_id → seq
   String _selectedModel = 'sonnet';
   StreamSubscription? _eventSub;
+  StreamSubscription? _streamSub;
 
   @override
   void initState() {
@@ -33,10 +33,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _initChat();
     // Listen for job completion via SSE
     _eventSub = ref.read(eventServiceProvider).jobUpdates.listen((event) {
-      if (_pendingJobId != null && event['job_id'] == _pendingJobId) {
+      final jobId = event['job_id'] as String?;
+      if (jobId != null && _pendingJobs.containsKey(jobId)) {
         final status = event['status'] as String?;
         if (status == 'completed' || status == 'failed') {
-          _onJobComplete();
+          _onJobComplete(jobId);
         }
       }
     });
@@ -47,7 +48,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     _inputController.dispose();
     _scrollController.dispose();
     _eventSub?.cancel();
-    _cancelStream();
+    _streamSub?.cancel();
     super.dispose();
   }
 
@@ -83,47 +84,50 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   Future<void> _sendMessage() async {
     final text = _inputController.text.trim();
-    if (text.isEmpty || _sending) return;
+    if (text.isEmpty) return;
 
     _inputController.clear();
-    setState(() => _sending = true);
 
-    // Optimistically add user message
-    final optimisticMsg = {
-      'seq': (_messages.isEmpty ? 1 : (_messages.last['seq'] as num).toInt() + 1),
-      'role': 'user',
-      'content': text,
-      'timestamp': DateTime.now().toIso8601String(),
-    };
-    setState(() => _messages.add(optimisticMsg));
+    // Optimistic seq (will be corrected by server)
+    final optimisticSeq = (_messages.isEmpty ? 1 : (_messages.last['seq'] as num).toInt() + 1);
+
+    // Add user message immediately
+    setState(() {
+      _messages.add({
+        'seq': optimisticSeq,
+        'role': 'user',
+        'content': text,
+        'status': 'complete',
+        'timestamp': DateTime.now().toIso8601String(),
+      });
+      // Add assistant placeholder
+      _messages.add({
+        'seq': optimisticSeq,
+        'role': 'assistant',
+        'content': '',
+        'status': 'pending',
+        'timestamp': DateTime.now().toIso8601String(),
+        '_thinking': true,
+      });
+    });
     _scrollToBottom();
 
     try {
       final api = ref.read(apiClientProvider);
       final result = await api.sendChatMessage(text, model: _selectedModel);
       final jobId = result['job_id'] as String?;
+      final seq = (result['seq'] as num?)?.toInt() ?? optimisticSeq;
 
-      // Add a "thinking" placeholder
-      setState(() {
-        _messages.add({
-          'seq': optimisticMsg['seq'],
-          'role': 'assistant',
-          'content': '',
-          'job_id': jobId,
-          'timestamp': DateTime.now().toIso8601String(),
-          '_thinking': true,
-        });
-      });
-      _scrollToBottom();
-
-      // Subscribe to chat stream for progressive text display
-      _pendingJobId = jobId;
-      _startStreamSubscription();
+      if (jobId != null) {
+        _pendingJobs[jobId] = seq;
+        // Start streaming for this message
+        _startStreamSubscription(jobId);
+      }
     } catch (e) {
+      // Remove the optimistic messages
       setState(() {
-        _sending = false;
-        _pendingJobId = null;
-        _messages.removeLast(); // remove optimistic
+        _messages.removeWhere((m) => m['seq'] == optimisticSeq && m['_thinking'] == true);
+        _messages.removeWhere((m) => m['seq'] == optimisticSeq && m['role'] == 'user' && m['content'] == text);
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -133,14 +137,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  StreamSubscription? _streamSub;
-
-  void _startStreamSubscription() {
+  void _startStreamSubscription(String jobId) {
+    // Only one stream subscription at a time (chat messages are sequential)
     _streamSub?.cancel();
     final api = ref.read(apiClientProvider);
     final streamUrl = api.chatStreamUrl;
 
-    // Connect to SSE chat stream for progressive text
     final dio = Dio(BaseOptions(extra: {'withCredentials': true}));
     dio.get<ResponseBody>(
       streamUrl,
@@ -169,49 +171,53 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             try {
               final parsed = json.decode(data) as Map<String, dynamic>;
               if (parsed['type'] == 'text' && parsed['content'] != null) {
+                // Find the latest pending assistant message and append text
                 setState(() {
-                  if (_messages.isNotEmpty) {
-                    final last = _messages.last;
-                    if (last['role'] == 'assistant') {
-                      last['content'] = (last['content'] as String? ?? '') + parsed['content'];
-                      last['_thinking'] = false;
+                  for (int i = _messages.length - 1; i >= 0; i--) {
+                    if (_messages[i]['role'] == 'assistant' && _messages[i]['_thinking'] == true) {
+                      _messages[i]['content'] = (_messages[i]['content'] as String? ?? '') + parsed['content'];
+                      _messages[i]['_thinking'] = false; // Show text, not spinner
+                      break;
                     }
                   }
                 });
                 _scrollToBottom();
               } else if (parsed['type'] == 'done') {
-                _onJobComplete();
+                _onJobComplete(jobId);
               }
             } catch (_) {}
           }
         },
         onDone: () {
-          // Stream closed = Claude finished. Just reset the spinner.
-          // Don't refresh messages yet — the worker may still be storing
-          // the response in Redis. The full refresh happens after a delay
-          // to let the worker catch up.
-          if (_sending && mounted) {
+          // Stream closed — give the worker time to store, then refresh
+          if (mounted && _pendingJobs.containsKey(jobId)) {
             Future.delayed(const Duration(milliseconds: 1500), () {
-              if (_sending && mounted) _onJobComplete();
+              if (mounted && _pendingJobs.containsKey(jobId)) _onJobComplete(jobId);
             });
           }
         },
         onError: (_) {
-          if (_sending && mounted) {
+          if (mounted && _pendingJobs.containsKey(jobId)) {
             Future.delayed(const Duration(milliseconds: 1500), () {
-              if (_sending && mounted) _onJobComplete();
+              if (mounted && _pendingJobs.containsKey(jobId)) _onJobComplete(jobId);
             });
           }
         },
       );
-    }).catchError((_) {
-      // Stream connection failed — SSE job events are the fallback
-    });
+    }).catchError((_) {});
   }
 
-  void _cancelStream() {
+  Future<void> _onJobComplete(String jobId) async {
+    _pendingJobs.remove(jobId);
     _streamSub?.cancel();
     _streamSub = null;
+    await _refreshMessages();
+    try {
+      final api = ref.read(apiClientProvider);
+      final session = await api.getChat();
+      if (mounted) setState(() => _session = session);
+    } catch (_) {}
+    _scrollToBottom();
   }
 
   Future<void> _retryMessage(int seq) async {
@@ -220,9 +226,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final userMsg = _messages.where((m) => m['seq'] == seq && m['role'] == 'user').firstOrNull;
       if (userMsg == null) return;
 
-      // Truncate history at this seq (removes assistant response and everything after)
       await api.retryChatMessage(seq);
-      // Re-send the user message
       await api.sendChatMessage(userMsg['content'] as String, model: _selectedModel);
       await _refreshMessages();
     } catch (e) {
@@ -232,20 +236,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
       }
     }
-  }
-
-  Future<void> _onJobComplete() async {
-    _pendingJobId = null;
-    _cancelStream();
-    await _refreshMessages();
-    // Refresh session for cost update
-    try {
-      final api = ref.read(apiClientProvider);
-      final session = await api.getChat();
-      if (mounted) setState(() => _session = session);
-    } catch (_) {}
-    if (mounted) setState(() => _sending = false);
-    _scrollToBottom();
   }
 
   void _scrollToBottom() {
@@ -282,6 +272,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final totalCost = (_session?['total_cost_usd'] as num?)?.toDouble() ?? 0.0;
     final messageCount = _messages.length;
+    final hasPending = _pendingJobs.isNotEmpty;
 
     return Column(
       children: [
@@ -354,10 +345,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     final msg = _messages[index];
                     final isAssistant = msg['role'] == 'assistant';
                     final seq = (msg['seq'] as num?)?.toInt() ?? 0;
+                    final isPending = msg['_thinking'] == true || msg['status'] == 'pending';
                     return _MessageBubble(
                       message: msg,
-                      isThinking: msg['_thinking'] == true,
-                      onRetry: isAssistant && !_sending && seq > 0
+                      isThinking: isPending && (msg['content'] as String? ?? '').isEmpty,
+                      onRetry: isAssistant && !isPending && seq > 0
                           ? () => _retryMessage(seq)
                           : null,
                     );
@@ -365,7 +357,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
         ),
 
-        // Input bar
+        // Input bar — ALWAYS enabled (non-blocking)
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
@@ -385,9 +377,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           controller: _inputController,
                           maxLines: 5,
                           minLines: 1,
-                          enabled: !_sending,
                           decoration: InputDecoration(
-                            hintText: _sending ? 'Waiting for response...' : 'Type a message...',
+                            hintText: hasPending ? 'Type another message...' : 'Type a message...',
                             border: const OutlineInputBorder(),
                             contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                           ),
@@ -398,12 +389,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       SizedBox(
                         height: 48,
                         child: FilledButton.icon(
-                          onPressed: _sending ? null : _sendMessage,
-                          icon: _sending
-                              ? const SizedBox(
-                                  width: 16, height: 16,
-                                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                              : const Icon(Icons.send),
+                          onPressed: _sendMessage,
+                          icon: const Icon(Icons.send),
                           label: const Text('Send'),
                         ),
                       ),
@@ -427,6 +414,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           textStyle: WidgetStatePropertyAll(Theme.of(context).textTheme.bodySmall),
                         ),
                       ),
+                      if (hasPending) ...[
+                        const SizedBox(width: 12),
+                        SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.grey.shade500)),
+                        const SizedBox(width: 6),
+                        Text('${_pendingJobs.length} pending', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade500)),
+                      ],
                     ],
                   ),
                 ],

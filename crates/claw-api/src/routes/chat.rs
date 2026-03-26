@@ -161,12 +161,14 @@ async fn send_message(
         seq,
         role: "user".to_string(),
         content: req.content.clone(),
+        status: "complete".to_string(),
         summary: None,
         job_id: None,
         cost_usd: None,
         model: None,
         token_estimate: estimate_tokens(&req.content),
         files_written: Vec::new(),
+        artifacts: Vec::new(),
         timestamp: chrono::Utc::now(),
     };
     if let Err(e) = claw_redis::add_chat_message(&state.pool, chat_id, &user_msg).await {
