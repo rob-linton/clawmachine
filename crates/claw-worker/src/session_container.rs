@@ -18,6 +18,7 @@ pub async fn ensure_container(
     chat_id: Uuid,
     workspace_id: Uuid,
     config: &DockerConfig,
+    api_key: Option<&str>,
 ) -> Result<String, String> {
     let container_name = format!("claw-chat-{}", chat_id);
 
@@ -68,6 +69,12 @@ pub async fn ensure_container(
         "-e".into(), "HOME=/home/claw".into(),
         "-v".into(), format!("{}:/workspace", host_checkout),
     ];
+
+    // API key fallback (if OAuth is expired and can't refresh)
+    if let Some(key) = api_key {
+        args.push("-e".into());
+        args.push(format!("ANTHROPIC_API_KEY={}", key));
+    }
 
     // Credential mounts — use same DinD translation as docker_execute_job
     for mount in &config.credential_mounts {

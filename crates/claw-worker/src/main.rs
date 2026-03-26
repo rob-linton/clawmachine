@@ -305,8 +305,12 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                     "Job claimed, executing"
                 );
 
-                // Pre-job OAuth token check (use raw_api_key for bypass check, not the filtered one)
-                if let Err(e) = token_refresh::ensure_token_fresh(raw_api_key.as_deref()).await {
+                // Pre-job OAuth token check
+                // For chat jobs: always try OAuth refresh (session containers use OAuth directly)
+                // For regular jobs: skip refresh if API key is available
+                let is_chat_job = job.tags.iter().any(|t| t.starts_with("chat:"));
+                let refresh_key = if is_chat_job { None } else { raw_api_key.as_deref() };
+                if let Err(e) = token_refresh::ensure_token_fresh(refresh_key).await {
                     tracing::warn!(job_id = %job_id, error = %e, "Token refresh failed — job may fail if expired");
                 }
 
@@ -322,7 +326,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
 
                                 tracing::info!(job_id = %job_id, chat_id = %chat_id, seq, "Chat via session container");
 
-                                match session_container::ensure_container(&pool, chat_id, ws_id, dc).await {
+                                match session_container::ensure_container(&pool, chat_id, ws_id, dc, raw_api_key.as_deref()).await {
                                     Ok(container_name) => {
                                         // Pre-exec: refresh available skills/tools for Claude
                                         session_container::refresh_available_catalog(&pool, ws_id).await;
@@ -388,8 +392,19 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                             }
                                             Err(e) => {
                                                 tracing::error!(job_id = %job_id, error = %e, "Chat execution failed");
-                                                claw_redis::fail_job(&pool, job_id, &e).await.ok();
+                                                let is_terminal = claw_redis::fail_job(&pool, job_id, &e).await.ok() == Some(false);
                                                 claw_redis::delete_chat_container(&pool, chat_id).await.ok();
+                                                // On terminal failure, store error as assistant message so UI shows it
+                                                if is_terminal && seq > 0 {
+                                                    let err_msg = claw_models::ChatMessage {
+                                                        seq, role: "assistant".to_string(),
+                                                        content: format!("Error: {}", e),
+                                                        summary: None, job_id: Some(job_id), cost_usd: None,
+                                                        model: None, token_estimate: 0,
+                                                        files_written: Vec::new(), timestamp: chrono::Utc::now(),
+                                                    };
+                                                    claw_redis::add_chat_message(&pool, chat_id, &err_msg).await.ok();
+                                                }
                                                 let event = serde_json::json!({"type": "job_update", "job_id": job_id.to_string(), "status": "failed"});
                                                 claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
                                             }
