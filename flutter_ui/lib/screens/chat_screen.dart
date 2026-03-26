@@ -18,6 +18,7 @@ class ChatScreen extends ConsumerStatefulWidget {
 
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _inputController = TextEditingController();
+  final _inputFocusNode = FocusNode();
   final _scrollController = ScrollController();
   List<Map<String, dynamic>> _messages = [];
   Map<String, dynamic>? _session;
@@ -49,6 +50,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   @override
   void dispose() {
     _inputController.dispose();
+    _inputFocusNode.dispose();
     _scrollController.dispose();
     _eventSub?.cancel();
     _streamSub?.cancel();
@@ -109,6 +111,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final text = _inputController.text.trim();
     if (text.isEmpty) return;
     _inputController.clear();
+    _inputFocusNode.requestFocus();
 
     final optimisticSeq = (_messages.isEmpty ? 1 : (_messages.last['seq'] as num).toInt() + 1);
     setState(() {
@@ -149,6 +152,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
 
     _inputController.clear();
+    _inputFocusNode.requestFocus();
 
     // Optimistic seq (will be corrected by server)
     final optimisticSeq = (_messages.isEmpty ? 1 : (_messages.last['seq'] as num).toInt() + 1);
@@ -469,16 +473,28 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
                       Expanded(
-                        child: TextField(
-                          controller: _inputController,
-                          maxLines: 5,
-                          minLines: 1,
-                          decoration: InputDecoration(
-                            hintText: hasPending ? 'Type another message...' : 'Type a message...',
-                            border: const OutlineInputBorder(),
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        child: Focus(
+                          onKeyEvent: (node, event) {
+                            if (event is KeyDownEvent &&
+                                event.logicalKey == LogicalKeyboardKey.enter &&
+                                !HardwareKeyboard.instance.isShiftPressed) {
+                              _sendMessage();
+                              return KeyEventResult.handled; // Consume Enter — no newline
+                            }
+                            return KeyEventResult.ignored; // Let Shift+Enter through as newline
+                          },
+                          child: TextField(
+                            controller: _inputController,
+                            focusNode: _inputFocusNode,
+                            autofocus: true,
+                            maxLines: 5,
+                            minLines: 1,
+                            decoration: InputDecoration(
+                              hintText: hasPending ? 'Type another message...' : 'Type a message...',
+                              border: const OutlineInputBorder(),
+                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                            ),
                           ),
-                          onSubmitted: (_) => _sendMessage(),
                         ),
                       ),
                       const SizedBox(width: 8),
