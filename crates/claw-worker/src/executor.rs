@@ -125,8 +125,16 @@ impl StreamState {
     }
 
     /// Build the final result text and extract cost.
-    pub fn finalize(mut self) -> (String, f64) {
-        if self.result_text.is_empty() && !self.assistant_texts.is_empty() {
+    /// When `prefer_assistant` is true, use assistant text chunks (the actual response)
+    /// instead of the result event text (which is a summary in stream-json format).
+    pub fn finalize(mut self, prefer_assistant: bool) -> (String, f64) {
+        let use_assistant = if prefer_assistant {
+            !self.assistant_texts.is_empty()
+        } else {
+            self.result_text.is_empty() && !self.assistant_texts.is_empty()
+        };
+
+        if use_assistant {
             let mut parts: Vec<String> = Vec::new();
             parts.push(self.assistant_texts.join("\n\n"));
 
@@ -277,7 +285,7 @@ pub async fn local_execute_job(
         ));
     }
 
-    let (result_text, cost_usd) = state.finalize();
+    let (result_text, cost_usd) = state.finalize(false);
 
     Ok(ExecutionResult {
         result_text,

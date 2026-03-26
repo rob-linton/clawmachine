@@ -352,9 +352,18 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                         // Pre-exec: refresh available skills/tools for Claude
                                         session_container::refresh_available_catalog(&pool, ws_id).await;
 
+                                        // Read raw user message from file (API writes it before job submission).
+                                        // job.prompt contains assembled history for the fallback path;
+                                        // the session container path uses --continue so only needs the raw message.
+                                        let user_msg_path = dirs::home_dir().unwrap_or_else(|| "/tmp".into())
+                                            .join(".claw/checkouts").join(ws_id.to_string())
+                                            .join(".chat/messages").join(format!("{:04}-user.md", seq));
+                                        let user_message = tokio::fs::read_to_string(&user_msg_path).await
+                                            .unwrap_or_else(|_| job.prompt.clone());
+
                                         let (log_tx, _log_rx) = tokio::sync::mpsc::channel(256);
                                         match session_container::execute_chat_message(
-                                            &pool, chat_id, &container_name, ws_id, &job.prompt, job.model.as_deref(), is_first, log_tx
+                                            &pool, chat_id, &container_name, ws_id, &user_message, job.model.as_deref(), is_first, seq, log_tx
                                         ).await {
                                             Ok(r) => {
                                                 claw_redis::complete_job(&pool, job_id, &r.result_text, r.cost_usd, r.duration_ms).await.ok();

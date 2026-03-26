@@ -81,6 +81,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     try {
       final api = ref.read(apiClientProvider);
       final messages = await api.getChatMessages(limit: 200);
+
+      // Preserve optimistic messages not yet stored on server
+      final serverKeys = messages.map((m) => '${m['seq']}_${m['role']}').toSet();
+      final optimistic = _messages.where((m) =>
+        !serverKeys.contains('${m['seq']}_${m['role']}') &&
+        (m['_thinking'] == true || m['status'] == 'pending')
+      ).toList();
+      messages.addAll(optimistic);
+
       // Sort: by seq, then user before assistant/task within same seq
       messages.sort((a, b) {
         final seqA = (a['seq'] as num?)?.toInt() ?? 0;
@@ -237,19 +246,34 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             try {
               final parsed = json.decode(data) as Map<String, dynamic>;
               if (parsed['type'] == 'text' && parsed['content'] != null) {
-                // Find the latest pending assistant message and append text
+                final eventSeq = (parsed['seq'] as num?)?.toInt();
+                // Find the matching assistant message by seq (or latest pending)
                 setState(() {
                   for (int i = _messages.length - 1; i >= 0; i--) {
-                    if (_messages[i]['role'] == 'assistant' && _messages[i]['_thinking'] == true) {
-                      _messages[i]['content'] = (_messages[i]['content'] as String? ?? '') + parsed['content'];
-                      _messages[i]['_thinking'] = false; // Show text, not spinner
+                    final msg = _messages[i];
+                    if (msg['role'] != 'assistant') continue;
+                    final msgSeq = (msg['seq'] as num?)?.toInt();
+                    // Match by seq if available, otherwise fall back to latest pending
+                    if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
+                    if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
+                      msg['content'] = (msg['content'] as String? ?? '') + parsed['content'];
+                      msg['_thinking'] = false;
                       break;
                     }
                   }
                 });
                 _scrollToBottom();
               } else if (parsed['type'] == 'done') {
-                _onJobComplete(jobId);
+                _streamSub?.cancel();
+                _streamSub = null;
+                // Delayed fallback: the job SSE event should trigger refresh
+                // after the worker stores the message, but if it's missed
+                // (e.g. SSE reconnection), refresh after a short delay.
+                Future.delayed(const Duration(milliseconds: 3000), () {
+                  if (mounted && _pendingJobs.containsKey(jobId)) {
+                    _onJobComplete(jobId);
+                  }
+                });
               }
             } catch (_) {}
           }

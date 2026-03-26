@@ -116,6 +116,7 @@ pub async fn execute_chat_message(
     user_message: &str,
     model: Option<&str>,
     is_first_message: bool,
+    seq: u32,
     log_tx: mpsc::Sender<String>,
 ) -> Result<ExecutionResult, String> {
     let checkout = checkout_path(workspace_id);
@@ -191,7 +192,7 @@ pub async fn execute_chat_message(
                             if item.get("type").and_then(|t| t.as_str()) == Some("text") {
                                 if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
                                     if !text.is_empty() {
-                                        let chunk = serde_json::json!({"type": "text", "content": text});
+                                        let chunk = serde_json::json!({"type": "text", "content": text, "seq": seq});
                                         claw_redis::publish_chat_stream(pool, &stream_channel, &chunk.to_string()).await.ok();
                                     }
                                 }
@@ -199,7 +200,7 @@ pub async fn execute_chat_message(
                         }
                     }
                 } else if val.get("type").and_then(|t| t.as_str()) == Some("result") {
-                    let done = serde_json::json!({"type": "done"});
+                    let done = serde_json::json!({"type": "done", "seq": seq});
                     claw_redis::publish_chat_stream(pool, &stream_channel, &done.to_string()).await.ok();
                 }
             }
@@ -217,7 +218,7 @@ pub async fn execute_chat_message(
             exit.code().unwrap_or(-1), stderr_output.trim()));
     }
 
-    let (result_text, cost_usd) = state.finalize();
+    let (result_text, cost_usd) = state.finalize(true);
     Ok(ExecutionResult { result_text, cost_usd, duration_ms })
 }
 
