@@ -171,6 +171,7 @@ claw:chat:{chat_id}:messages           — Sorted set (score=seq) of JSON ChatMe
 claw:chat:{chat_id}:container          — JSON session container info {container_name, started_at}
 claw:chat:{chat_id}:stream             — Pub/sub channel for real-time assistant text chunks
 claw:chat:{chat_id}:seq_counter        — Atomic sequence counter (INCR per message)
+claw:chat:{chat_id}:exec_lock          — Per-chat execution lock (SETNX, ensures sequential --continue)
 claw:user:{username}:default_chat      — User's chat_id (one per user)
 ```
 
