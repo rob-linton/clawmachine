@@ -554,7 +554,7 @@ fn parse_consolidation_result(raw: &str) -> Option<Vec<NotebookOp>> {
     if let Ok(r) = serde_json::from_str::<ConsolidationResult>(&stripped) {
         return Some(r.ops);
     }
-    tracing::warn!("Failed to parse consolidation result");
+    tracing::warn!("Failed to parse consolidation result: {}", &raw[..raw.len().min(500)]);
     None
 }
 
