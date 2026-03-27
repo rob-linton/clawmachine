@@ -14,12 +14,13 @@ CLI / API / Cron / Webhooks
 
 ## Why Claw Machine?
 
+- **Interactive chat with infinite memory** — Each user gets a persistent AI colleague that maintains its own notebook, learns your preferences, tracks your projects, and develops genuine understanding over time. Unlike typical AI memory (flat fact extraction), the system uses a cognitive pipeline that reflects on conversations, anticipates your needs, and consolidates knowledge while idle — like a colleague who thinks about your work between meetings.
 - **Docker isolation** — Every job runs in its own sandbox container with memory, CPU, and network limits. No job can affect the host or other jobs.
 - **Git-backed workspaces** — Workspaces are versioned with git. Fork workspaces, revert to any commit, create snapshots, and track full history.
 - **Pipelines** — Chain jobs together. Each step passes context to the next. Results from step 1 become input for step 2.
 - **Schedules** — Run jobs on cron schedules. Generate daily reports, run nightly analysis, poll APIs on intervals.
 - **Real-time streaming** — Watch Claude work in real-time via the web dashboard. Logs stream as they're produced.
-- **Web dashboard** — Manage everything from a browser: submit jobs, browse workspace files, view rendered markdown reports, download results.
+- **Web dashboard** — Manage everything from a browser: submit jobs, browse workspace files, chat with Claude, view reports, download results.
 
 ## Install (Production)
 
@@ -129,6 +130,67 @@ Run jobs on cron schedules:
 ```
 
 The scheduler checks every 30 seconds and fires jobs when due. Deduplication prevents overlapping runs — if the previous job is still running, the next fire is skipped.
+
+### Interactive Chat with Infinite Memory
+
+Each user gets a persistent AI assistant that **never forgets**. Chat naturally, and the system builds a lasting understanding of who you are, what you're working on, and how you like to work.
+
+```
+You: Can you help me fix the auth bug Alice found?
+
+Claude: I remember — Alice flagged the JWT refresh issue last Tuesday (see
+.notebook/topics/authentication.md). You chose JWT over sessions three weeks
+ago because of the microservice architecture. Let me look at the token
+rotation code...
+```
+
+**Why we can do this better than anyone else:**
+
+Most AI memory systems are limited to prompt injection — they prepend facts to the system prompt and hope for the best. Claw Machine controls the **entire execution environment**. We own the workspace filesystem, the CLAUDE.md file, the Docker container, and the background processing pipeline. This gives us three levers nobody else has:
+
+1. **We rewrite CLAUDE.md before every message.** Claude Code re-reads it on each invocation. We dynamically assemble it with temporal context, the user's profile, importance-scored memories, and anticipation notes. Claude doesn't experience this as "retrieval" — it experiences it as innate knowledge.
+
+2. **The workspace is the brain.** Claude reads and writes `.notebook/` files naturally — the same way it already knows how to use files. We persist those files to Redis between sessions and restore them on demand. Claude's memory isn't a database it queries; it's a notebook on its desk.
+
+3. **We run background processes between messages.** After each exchange, a cognitive pipeline extracts knowledge. On idle, a consolidation pass refines and synthesizes. No other chat system thinks while you're away.
+
+**How it works:**
+
+The chat runs Claude Code in persistent Docker session containers with `--continue` for native conversation context. Between messages, the system maintains a three-tier memory architecture:
+
+```
+┌─────────────────────────────────────────────────┐
+│  Tier 1: CLAUDE.md — rewritten every message    │
+│  Temporal context, user profile, top memories   │
+├─────────────────────────────────────────────────┤
+│  Tier 2: .notebook/ — workspace files           │
+│  Structured notes Claude reads and writes       │
+├─────────────────────────────────────────────────┤
+│  Tier 3: Redis — full message archive           │
+│  Summaries, mood history, anticipation          │
+└─────────────────────────────────────────────────┘
+```
+
+**The notebook** — Claude maintains structured notes like a real colleague: `about-user.md`, `active-projects.md`, `decisions.md`, `people.md`, `timeline.md`, and topic-specific deep notes. These persist across sessions and survive chat deletion.
+
+**Cognitive pipeline** — After each message, a background process analyzes the exchange in four stages: extract facts, connect to existing knowledge, assess conversation mood, and anticipate what you'll need next. Results are injected into the next message's context.
+
+**Container restart recovery** — When the Docker container is recycled, the system detects it and injects a "Previously On..." narrative so Claude picks up seamlessly. The notebook is restored from Redis, and the dynamic CLAUDE.md provides full context.
+
+**Temporal awareness** — Claude knows today's date, how long you've been chatting, when your last session was, and upcoming deadlines from your timeline.
+
+**What makes this different from other AI memory systems:**
+
+| Feature | Typical AI Memory | Claw Machine |
+|---------|-------------------|--------------|
+| Storage | Flat key-value facts | Structured notebook (decisions, people, projects, timeline) |
+| Context | Static system prompt | Dynamic CLAUDE.md rewritten every message with time-aware context |
+| Memory source | System extracts facts | Bidirectional — Claude writes notes + system extracts + idle consolidation refines |
+| Between messages | Nothing | Consolidation pass: merge notes, synthesize understanding, archive stale entries |
+| After downtime | Context lost | "Previously On..." narrative recap with zero disruption |
+| Session deletion | Memory lost | Notebook survives — it's per-user, not per-session |
+
+See [Documents/PersonalAI.md](Documents/PersonalAI.md) for the full architecture.
 
 ## Dashboard
 
