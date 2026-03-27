@@ -102,9 +102,13 @@ pub async fn ensure_summarizer_container(config: &DockerConfig) -> Result<String
         return Err(format!("Summarizer docker run failed: {}", String::from_utf8_lossy(&output.stderr)));
     }
 
-    // Create the working directory inside the container
+    // Create the working directory inside the container with correct ownership.
+    // Use bash -c to mkdir + chmod in one exec (the --user flag makes exec run as claw user,
+    // but the dir may need to be created as root first if /tmp has restrictive perms).
+    // Use -u 0 to run as root, then chown to the container user.
     Command::new("docker")
-        .args(["exec", &container_name, "mkdir", "-p", "/tmp/summarizer"])
+        .args(["exec", "-u", "0", &container_name, "bash", "-c",
+               &format!("mkdir -p /tmp/summarizer && chown {}:{} /tmp/summarizer", uid, gid)])
         .output().await.ok();
 
     tracing::info!(container = %container_name, "Summarizer container started");
@@ -112,6 +116,8 @@ pub async fn ensure_summarizer_container(config: &DockerConfig) -> Result<String
 }
 
 /// Execute a prompt in the summarizer container using a unique subdirectory.
+/// Uses base64 encoding to transfer the prompt (avoids stdin piping and docker cp
+/// path issues in Docker-in-Docker environments).
 async fn run_in_summarizer(container: &str, prompt: &str, model: &str) -> Option<String> {
     // Validate model to prevent shell injection — only allow known model names
     let safe_model = match model {
@@ -123,48 +129,73 @@ async fn run_in_summarizer(container: &str, prompt: &str, model: &str) -> Option
     };
     let subdir = format!("/tmp/summarizer/{}", uuid::Uuid::new_v4());
 
-    // Write prompt to a file to avoid shell escaping issues
-    let prompt_file = format!("{}/prompt.txt", subdir);
+    // Write prompt and runner script to the container via base64 + docker exec.
+    // We write a bash script that reads the prompt from a file, avoiding shell
+    // escaping issues with $(cat) expansion and special characters in the prompt.
+    use base64::Engine;
+    let b64_prompt = base64::engine::general_purpose::STANDARD.encode(prompt.as_bytes());
 
-    // Write the prompt file first
-    let write_output = Command::new("docker")
-        .args(["exec", container, "bash", "-c", &format!("mkdir -p {subdir} && cat > {prompt_file}", subdir = subdir, prompt_file = prompt_file)])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn();
-
-    match write_output {
-        Ok(mut child) => {
-            if let Some(mut stdin) = child.stdin.take() {
-                use tokio::io::AsyncWriteExt;
-                stdin.write_all(prompt.as_bytes()).await.ok();
-                drop(stdin);
-            }
-            child.wait().await.ok();
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "Failed to write prompt file to summarizer");
-            return None;
-        }
-    }
-
-    // Run claude -p with the prompt file
-    let run_script = format!(
-        "cd {subdir} && claude -p \"$(cat prompt.txt)\" --model {model} --output-format text --max-turns 1 2>/dev/null; EXIT=$?; rm -rf {subdir}; exit $EXIT",
+    // Build the runner script content (this is safe — no user input in the script itself)
+    let runner_script = format!(
+        "#!/bin/bash\ncd {subdir}\nclaude -p \"$(cat prompt.txt)\" --model {model} --output-format text\n",
         subdir = subdir,
         model = safe_model,
     );
+    let b64_script = base64::engine::general_purpose::STANDARD.encode(runner_script.as_bytes());
 
-    let output = Command::new("docker")
-        .args(["exec", container, "bash", "-c", &run_script])
+    // Write both files in one docker exec call
+    let setup_cmd = format!(
+        "mkdir -p {subdir} && echo '{b64_prompt}' | base64 -d > {subdir}/prompt.txt && echo '{b64_script}' | base64 -d > {subdir}/run.sh && chmod +x {subdir}/run.sh",
+        subdir = subdir,
+        b64_prompt = b64_prompt,
+        b64_script = b64_script,
+    );
+
+    let write_result = Command::new("docker")
+        .args(["exec", container, "bash", "-c", &setup_cmd])
+        .output().await;
+
+    match &write_result {
+        Err(e) => {
+            tracing::warn!(error = %e, "Failed to write prompt to summarizer container");
+            return None;
+        }
+        Ok(out) if !out.status.success() => {
+            tracing::warn!(
+                stderr = %String::from_utf8_lossy(&out.stderr).chars().take(200).collect::<String>(),
+                "Summarizer prompt write failed"
+            );
+            return None;
+        }
+        _ => {}
+    }
+
+    // Execute the runner script (not the prompt directly — avoids shell expansion issues)
+    let output = match Command::new("docker")
+        .args(["exec", container, "bash", &format!("{}/run.sh", subdir)])
         .output()
         .await
-        .ok()?;
+    {
+        Ok(out) => out,
+        Err(e) => {
+            tracing::warn!(error = %e, "Summarizer docker exec failed");
+            // Clean up
+            Command::new("docker")
+                .args(["exec", container, "rm", "-rf", &subdir])
+                .output().await.ok();
+            return None;
+        }
+    };
+
+    // Clean up the subdir
+    Command::new("docker")
+        .args(["exec", container, "rm", "-rf", &subdir])
+        .output().await.ok();
 
     if !output.status.success() {
         tracing::warn!(
             exit_code = ?output.status.code(),
+            stdout = %String::from_utf8_lossy(&output.stdout).chars().take(200).collect::<String>(),
             stderr = %String::from_utf8_lossy(&output.stderr).chars().take(200).collect::<String>(),
             "Summarizer claude -p failed"
         );
@@ -172,7 +203,14 @@ async fn run_in_summarizer(container: &str, prompt: &str, model: &str) -> Option
     }
 
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        let stderr_text = String::from_utf8_lossy(&output.stderr);
+        tracing::warn!(stderr = %stderr_text.chars().take(300).collect::<String>(), "Summarizer returned empty output");
+        None
+    } else {
+        tracing::info!(output_len = text.len(), "Summarizer call succeeded");
+        Some(text)
+    }
 }
 
 /// Run the full cognitive pipeline on a chat exchange.

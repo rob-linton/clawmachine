@@ -482,6 +482,7 @@ dependencies = [
 name = "claw-worker"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "chrono",
  "claw-models",
  "claw-redis",
