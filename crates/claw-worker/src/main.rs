@@ -525,6 +525,11 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                         if seq % 10 == 0 && seq > 0 {
                                                             summarizer::update_rolling_summary(&container, &pool_bg, chat_id, ws_id).await.ok();
                                                         }
+
+                                                        // Session digest every 30 messages
+                                                        if seq % 30 == 0 && seq > 0 {
+                                                            summarizer::generate_session_digest(&pool_bg, &username_bg, chat_id, &container).await.ok();
+                                                        }
                                                     }
                                                 });
                                             }

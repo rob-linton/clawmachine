@@ -283,6 +283,7 @@ pub async fn cleanup_idle_containers(pool: &Pool, timeout_secs: u64) {
                 // Uses the summarizer container, not the chat container being shut down
                 if let Ok(summarizer) = crate::summarizer::ensure_summarizer_container(&dc).await {
                     crate::summarizer::consolidate_notebook(pool, &session.user_id, &summarizer).await.ok();
+                    crate::summarizer::generate_session_digest(pool, &session.user_id, chat_id, &summarizer).await.ok();
                 }
 
                 let checkout = checkout_path(session.workspace_id);
@@ -762,7 +763,7 @@ pub async fn deploy_dynamic_claude_md(
         let mut scored: Vec<(String, f64, String)> = Vec::new();
         for path in &files {
             // Skip files already shown in dedicated sections
-            if path == "about-user.md" || path == "active-projects.md" || path == "README.md" || path == "scratch.md" {
+            if path == "about-user.md" || path == "active-projects.md" || path == "README.md" || path == "scratch.md" || path.starts_with("sessions/") {
                 continue;
             }
             if let Ok(Some(entry)) = claw_redis::memory::get_notebook_entry(pool, username, path).await {
@@ -786,10 +787,34 @@ pub async fn deploy_dynamic_claude_md(
         }
     }
 
-    // 7. Notebook instructions
+    // 7. Session index (past conversation digests)
+    if let Ok(files) = claw_redis::memory::list_notebook_files(pool, username).await {
+        let mut session_files: Vec<String> = files.into_iter()
+            .filter(|p| p.starts_with("sessions/"))
+            .collect();
+        session_files.sort();
+        session_files.reverse(); // newest first
+        let entries: Vec<String> = session_files.iter().take(10).filter_map(|path| {
+            // Extract date and slug from "sessions/2026-03-25-auth-middleware.md"
+            let name = path.strip_prefix("sessions/")?.strip_suffix(".md")?;
+            let (date, slug) = name.split_once('-').and_then(|_| {
+                // Date is first 10 chars (YYYY-MM-DD), slug is the rest
+                if name.len() > 11 { Some((&name[..10], &name[11..])) } else { None }
+            })?;
+            Some(format!("- {}: {} — read `.notebook/{}` for details", date, slug, path))
+        }).collect();
+        if !entries.is_empty() {
+            sections.push(format!(
+                "## Past Conversations\nSession digests are available for recall:\n{}\n\nWhen the user references a past conversation, read the relevant digest file for full context.",
+                entries.join("\n")
+            ));
+        }
+    }
+
+    // 8. Notebook instructions
     sections.push(NOTEBOOK_INSTRUCTIONS.to_string());
 
-    // 8. Conversation history pointers
+    // 9. Conversation history pointers
     sections.push(CONVERSATION_HISTORY_INSTRUCTIONS.to_string());
 
     // Write to workspace
@@ -862,9 +887,11 @@ You have a persistent notebook at `.notebook/` in this workspace.
 const CONVERSATION_HISTORY_INSTRUCTIONS: &str = r#"## Conversation History
 
 - **Recent messages** are in your conversation context (via --continue)
+- **Session digests**: `.notebook/sessions/` — narrative recaps of past conversations by date/topic
 - **Full message history**: `.chat/messages/` (searchable with `grep -rl "keyword" .chat/messages/`)
 - **Rolling summary**: `.chat/summary.md`
-- When the user references something you don't immediately recall, search .chat/messages/"#;
+
+When the user references a past conversation ("remember when we discussed..."), read the relevant session digest first, then search .chat/messages/ for detail if needed."#;
 
 // =============================================================================
 // Rehydration ("Previously On...")

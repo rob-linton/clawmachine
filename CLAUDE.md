@@ -454,7 +454,7 @@ claw:workspace:{uuid}:children     — Set of child workspace UUIDs (for lineage
 ```
 claw:user:{username}:notebook              — Set of notebook file paths (e.g., "about-user.md", "topics/auth.md")
 claw:user:{username}:notebook:{path}       — JSON NotebookEntry {content, summary, created, updated, access_count, last_accessed}
-claw:user:{username}:notebook_meta         — JSON NotebookMeta {total_entries, last_consolidation, mood_history, anticipation}
+claw:user:{username}:notebook_meta         — JSON NotebookMeta {total_entries, last_consolidation, last_digest_seq, mood_history, anticipation}
 ```
 
 Per-user persistent notebook that survives chat deletion and container restarts. Deployed to `.notebook/` in the chat workspace before each message. Changes Claude makes to `.notebook/` are harvested back to Redis after each message. A cognitive pipeline (summarizer container) extracts facts, tracks mood, and generates anticipation notes after each exchange. Consolidation runs on idle container cleanup.

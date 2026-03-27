@@ -25,6 +25,8 @@ pub struct NotebookMeta {
     pub total_entries: u32,
     pub last_consolidation: Option<DateTime<Utc>>,
     #[serde(default)]
+    pub last_digest_seq: Option<u32>,
+    #[serde(default)]
     pub mood_history: Vec<MoodEntry>,
     #[serde(default)]
     pub anticipation: Option<String>,
@@ -172,6 +174,10 @@ pub async fn build_notebook_index(pool: &Pool, username: &str) -> Result<String,
     let files = list_notebook_files(pool, username).await?;
     let mut lines = Vec::new();
     for path in &files {
+        // Exclude session digests from notebook index — they have their own section in CLAUDE.md
+        if path.starts_with("sessions/") {
+            continue;
+        }
         if let Some(entry) = get_notebook_entry(pool, username, path).await? {
             lines.push(format!("- {} — {}", path, entry.summary));
         }

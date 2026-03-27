@@ -357,6 +357,87 @@ pub async fn update_rolling_summary(
     Ok(())
 }
 
+/// Generate a session digest — a narrative recap of recent conversation exchanges.
+/// Stored as `.notebook/sessions/{date}-{slug}.md` for later recall.
+/// Called during idle cleanup (after consolidation) and every 30 messages.
+pub async fn generate_session_digest(
+    pool: &deadpool_redis::Pool,
+    username: &str,
+    chat_id: uuid::Uuid,
+    container: &str,
+) -> Result<(), String> {
+    let meta = claw_redis::memory::get_notebook_meta(pool, username).await
+        .ok().flatten().unwrap_or_default();
+    let last_seq = meta.last_digest_seq.unwrap_or(0);
+
+    let msgs = claw_redis::get_all_chat_messages(pool, chat_id).await
+        .map_err(|e| format!("Failed to load messages: {e}"))?;
+
+    // Only process messages since last digest
+    let new_msgs: Vec<_> = msgs.iter().filter(|m| m.seq > last_seq).collect();
+    if new_msgs.len() < 4 {
+        return Ok(()); // Not enough new exchanges to digest
+    }
+
+    let max_seq = new_msgs.iter().map(|m| m.seq).max().unwrap_or(last_seq);
+
+    // Build input from summaries, falling back to truncated content
+    let lines: Vec<String> = new_msgs.iter().map(|m| {
+        let desc = match m.summary.as_deref() {
+            Some(s) => s.to_string(),
+            None => truncate(&m.content, 500),
+        };
+        format!("[{}] {} {}: {}", m.seq, m.timestamp.format("%Y-%m-%d %H:%M"), m.role, desc)
+    }).collect();
+
+    let prompt = format!(
+        r#"Here are summaries of recent conversation exchanges (since last digest):
+
+{lines}
+
+Write a conversation digest covering this session. Include:
+- What topics were discussed
+- Key decisions made and their rationale
+- Code or features built
+- Problems solved or still open
+- Important context that would help recall this conversation later
+
+Format as natural narrative prose, ~200-400 words. Start with a one-line title.
+Output JSON: {{"title_slug": "kebab-case-3-5-words", "digest": "the narrative text"}}"#,
+        lines = lines.join("\n"),
+    );
+
+    let result_raw = run_in_summarizer(container, &prompt, "sonnet").await
+        .ok_or_else(|| "Session digest generation failed".to_string())?;
+
+    if let Some((slug, digest)) = parse_digest_result(&result_raw) {
+        let date = chrono::Utc::now().format("%Y-%m-%d");
+        let path = format!("sessions/{}-{}.md", date, slug);
+        let summary: String = digest.lines().next().unwrap_or(&digest).chars().take(100).collect();
+
+        let entry = claw_redis::memory::NotebookEntry {
+            content: digest,
+            summary,
+            created: chrono::Utc::now(),
+            updated: chrono::Utc::now(),
+            access_count: 0,
+            last_accessed: chrono::Utc::now(),
+        };
+        claw_redis::memory::upsert_notebook_entry(pool, username, &path, &entry).await
+            .map_err(|e| format!("Failed to store session digest: {e}"))?;
+
+        // Update last_digest_seq
+        let mut meta = claw_redis::memory::get_notebook_meta(pool, username).await
+            .ok().flatten().unwrap_or_default();
+        meta.last_digest_seq = Some(max_seq);
+        claw_redis::memory::set_notebook_meta(pool, username, &meta).await.ok();
+
+        tracing::info!(username = %username, path = %path, msgs = new_msgs.len(), "Session digest generated");
+    }
+
+    Ok(())
+}
+
 /// Run memory consolidation (the "thinking between messages" step).
 /// Called before cleaning up an idle chat container.
 pub async fn consolidate_notebook(
@@ -474,6 +555,24 @@ fn parse_consolidation_result(raw: &str) -> Option<Vec<NotebookOp>> {
         return Some(r.ops);
     }
     tracing::warn!("Failed to parse consolidation result");
+    None
+}
+
+#[derive(Debug, Deserialize)]
+struct DigestResult {
+    title_slug: String,
+    digest: String,
+}
+
+fn parse_digest_result(raw: &str) -> Option<(String, String)> {
+    if let Ok(r) = serde_json::from_str::<DigestResult>(raw) {
+        return Some((r.title_slug, r.digest));
+    }
+    let stripped = strip_code_fences(raw);
+    if let Ok(r) = serde_json::from_str::<DigestResult>(&stripped) {
+        return Some((r.title_slug, r.digest));
+    }
+    tracing::warn!("Failed to parse session digest result");
     None
 }
 

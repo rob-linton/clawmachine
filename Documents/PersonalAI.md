@@ -45,6 +45,8 @@ You come back after two weeks. Claude's consolidation process has refined its no
 │  • Anticipation note ("user might need X next")         │
 │  • Notebook usage instructions                          │
 │                                                         │
+│  • Session index (recent conversation digests by date)   │
+│                                                         │
 │  Budget: ~2000 tokens. Refreshed before every message.  │
 ├─────────────────────────────────────────────────────────┤
 │  Tier 2: WARM — .notebook/ workspace files              │
@@ -63,6 +65,9 @@ You come back after two weeks. Claude's consolidation process has refined its no
 │  ├── topics/              — deep notes per topic        │
 │  │   ├── authentication.md                              │
 │  │   └── api-design.md                                  │
+│  ├── sessions/            — conversation digests        │
+│  │   ├── 2026-03-25-auth-middleware.md                   │
+│  │   └── 2026-03-22-inventory-api.md                    │
 │  └── scratch.md           — working notes (this session)│
 │                                                         │
 │  Persisted to Redis per-user. Survives everything.      │
@@ -92,6 +97,7 @@ The notebook is what makes this system feel human. Instead of a flat database of
 | `preferences.md` | Tools, frameworks, response style preferences | Cognitive pipeline + Claude |
 | `timeline.md` | Key events and deadlines with absolute dates | Cognitive pipeline + Claude |
 | `topics/{name}.md` | Deep notes on specific subjects discussed at length | Claude + consolidation |
+| `sessions/{date}-{slug}.md` | Conversation digests — narrative recaps of past sessions | Session digest pipeline |
 | `scratch.md` | Working notes for the current session | Claude (cleared on consolidation) |
 
 The notebook is **bidirectional**:
@@ -157,6 +163,13 @@ The notebook is **bidirectional**:
   → Archive low-importance entries
   → Add session summary to timeline.md
 
+  Session Digest:
+  → Generate narrative recap of exchanges since last digest
+  → Store as .notebook/sessions/{date}-{topic-slug}.md
+  → Covers: topics discussed, decisions made, code built,
+    problems solved, important context for later recall
+  → Tracked via last_digest_seq in NotebookMeta
+
   This is the "sleeping on it" step — the agent processes
   the session and emerges with cleaner understanding.
 
@@ -192,6 +205,19 @@ When the Docker session container dies (idle timeout, crash, server restart) and
 5. **No `--continue`**: Since there's no conversation to continue, the first message in the new container runs without `--continue`. Subsequent messages use `--continue` normally.
 
 The user experiences zero disruption. Claude responds as if nothing happened.
+
+### Conversation Recall
+
+Instead of managing multiple chat windows, the Personal AI uses a single continuous conversation with deep recall. When the user says something like "remember that conversation about auth from last week," Claude:
+
+1. **Checks the session index** in CLAUDE.md — sees `2026-03-20-auth-middleware.md` listed
+2. **Reads the digest** at `.notebook/sessions/2026-03-20-auth-middleware.md` — gets a 200-400 word narrative recap covering topics, decisions, code built, and open problems
+3. **Optionally searches `.chat/messages/`** for the actual exchange if still in history
+4. **Responds with full context** as if it remembers the conversation naturally
+
+Session digests are generated during the consolidation pass (idle timeout) and stored in the notebook — they survive chat deletion, container restarts, and server reboots. The CLAUDE.md hot tier includes a session index (date + topic slug + first line) for the 20 most recent digests, so Claude always knows what's available to recall without reading every file.
+
+This approach avoids the cognitive overhead of switching between conversations. The user has one relationship with one assistant. Past conversations are recalled naturally through language, not through UI navigation.
 
 ### Chat Deletion & Recreation
 
@@ -234,6 +260,7 @@ Each cognitive pipeline call uses a **unique subdirectory** inside the summarize
 | 3. Reflect | Mood assessment | Haiku | Every message |
 | 4. Anticipate | Predict what user needs next | Haiku | Every 5th message |
 | Consolidation | Merge, prune, synthesize | Sonnet | On idle timeout |
+| Session Digest | Narrative recap of recent exchanges | Sonnet | On idle timeout (after consolidation) |
 | Rolling Summary | Rebuild .chat/summary.md | Haiku | Every 10th message |
 
 ### Memory Importance Scoring
@@ -258,7 +285,7 @@ Top 15 entries by score are included in CLAUDE.md. The rest remain accessible in
 # Per-user notebook (survives everything)
 claw:user:{username}:notebook              — Set of file paths
 claw:user:{username}:notebook:{path}       — JSON NotebookEntry
-claw:user:{username}:notebook_meta         — JSON: {total_entries, last_consolidation, mood_history, anticipation}
+claw:user:{username}:notebook_meta         — JSON: {total_entries, last_consolidation, last_digest_seq, mood_history, anticipation}
 
 # Per-chat (tied to session lifecycle)
 claw:chat:{chat_id}                        — JSON ChatSession
@@ -285,3 +312,4 @@ claw:chat:{chat_id}:stream                 — Pub/sub for streaming
 | Mood awareness | None | Tracks productive/debugging/frustrated/exploring |
 | Anticipation | None | Predicts what user needs next, injects into CLAUDE.md |
 | Memory ranking | All equal | Importance-scored: recency × frequency × type weight |
+| Past conversations | Start new chat, lose context | Single chat with natural recall ("remember when we discussed...") |
