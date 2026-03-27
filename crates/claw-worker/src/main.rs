@@ -4,6 +4,7 @@ mod executor;
 mod pipeline_runner;
 mod prompt_builder;
 pub mod session_container;
+pub mod summarizer;
 mod token_refresh;
 
 use claw_models::WorkspacePersistence;
@@ -324,7 +325,6 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                 let ws_id = job.workspace_id.unwrap_or_default();
                                 let seq_tag = job.tags.iter().find(|t| t.starts_with("chat_seq:"));
                                 let seq: u32 = seq_tag.and_then(|t| t.strip_prefix("chat_seq:")).and_then(|s| s.parse().ok()).unwrap_or(1);
-                                let is_first = seq == 1;
 
                                 // Acquire per-chat execution lock — only one message at a time
                                 // (--continue requires sequential execution)
@@ -347,26 +347,56 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
 
                                 tracing::info!(job_id = %job_id, chat_id = %chat_id, seq, "Chat via session container");
 
+                                // Get username for notebook operations
+                                let chat_username = claw_redis::get_chat_session(&pool, chat_id).await
+                                    .ok().flatten().map(|s| s.user_id.clone()).unwrap_or_default();
+
                                 match session_container::ensure_container(&pool, chat_id, ws_id, dc, raw_api_key.as_deref()).await {
-                                    Ok(container_name) => {
-                                        // Pre-exec: refresh available skills/tools for Claude + deploy API skill
+                                    Ok((container_name, is_new_container)) => {
+                                        // is_first: use container freshness, not seq == 1.
+                                        // A new container has no --continue history to resume.
+                                        let is_first = is_new_container;
+                                        let needs_rehydration = is_new_container && seq > 1;
+
+                                        if needs_rehydration {
+                                            tracing::info!(chat_id = %chat_id, seq, "Rehydrating after container restart");
+                                        }
+
+                                        // --- PRE-EXEC: prepare workspace ---
+
+                                        // Deploy notebook from Redis to workspace
+                                        session_container::deploy_notebook(&pool, &chat_username, ws_id).await.ok();
+
+                                        // Deploy dynamic CLAUDE.md (temporal context + user profile + memories)
+                                        session_container::deploy_dynamic_claude_md(&pool, chat_id, ws_id, &chat_username).await.ok();
+
+                                        // Refresh available skills/tools + deploy API skill
                                         session_container::refresh_available_catalog(&pool, ws_id).await;
                                         session_container::deploy_api_skill(ws_id).await;
 
                                         // Read raw user message from file (API writes it before job submission).
-                                        // job.prompt contains assembled history for the fallback path;
-                                        // the session container path uses --continue so only needs the raw message.
                                         let user_msg_path = dirs::home_dir().unwrap_or_else(|| "/tmp".into())
                                             .join(".claw/checkouts").join(ws_id.to_string())
                                             .join(".chat/messages").join(format!("{:04}-user.md", seq));
                                         let user_message = tokio::fs::read_to_string(&user_msg_path).await
                                             .unwrap_or_else(|_| job.prompt.clone());
 
+                                        // Build effective message (rehydration wraps user message with context)
+                                        let effective_message = if needs_rehydration {
+                                            session_container::build_rehydration_prompt(
+                                                &pool, chat_id, ws_id, &chat_username, &user_message
+                                            ).await
+                                        } else {
+                                            user_message.clone()
+                                        };
+
+                                        // --- EXECUTE ---
                                         let (log_tx, _log_rx) = tokio::sync::mpsc::channel(256);
                                         match session_container::execute_chat_message(
-                                            &pool, chat_id, &container_name, ws_id, &user_message, job.model.as_deref(), is_first, seq, log_tx
+                                            &pool, chat_id, &container_name, ws_id, &effective_message, job.model.as_deref(), is_first, seq, log_tx
                                         ).await {
                                             Ok(r) => {
+                                                // --- POST-EXEC: store results ---
                                                 claw_redis::complete_job(&pool, job_id, &r.result_text, r.cost_usd, r.duration_ms).await.ok();
                                                 if seq > 0 {
                                                     let msg = claw_models::ChatMessage {
@@ -389,6 +419,12 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                     }
                                                 }
                                                 tracing::info!(job_id = %job_id, duration_ms = r.duration_ms, "Chat completed");
+
+                                                // Harvest notebook changes Claude made during the message
+                                                let changed_files = session_container::harvest_notebook(&pool, &chat_username, ws_id, seq).await
+                                                    .unwrap_or_default();
+
+                                                // Release lock (after harvest, before background work)
                                                 claw_redis::release_chat_lock(&pool, chat_id, job_id).await.ok();
 
                                                 // Post-exec: extract artifacts + check install requests
@@ -410,6 +446,87 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                 });
                                                 claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
 
+                                                // --- BACKGROUND: cognitive pipeline ---
+                                                let pool_bg = pool.clone();
+                                                let dc_bg = dc.clone();
+                                                let user_content_bg = user_message.clone();
+                                                let result_text_bg = r.result_text.clone();
+                                                let username_bg = chat_username.clone();
+                                                let changed_bg = changed_files;
+                                                tokio::spawn(async move {
+                                                    let container = match summarizer::ensure_summarizer_container(&dc_bg).await {
+                                                        Ok(c) => c,
+                                                        Err(e) => { tracing::warn!("Summarizer container failed: {e}"); return; }
+                                                    };
+
+                                                    let notebook_index = claw_redis::memory::build_notebook_index(&pool_bg, &username_bg).await.unwrap_or_default();
+                                                    let recent_moods = claw_redis::memory::get_recent_moods(&pool_bg, &username_bg, 5).await.unwrap_or_default();
+
+                                                    if let Some(result) = summarizer::run_cognitive_pipeline(
+                                                        &container, &user_content_bg, &result_text_bg,
+                                                        &notebook_index, &changed_bg, &recent_moods, seq,
+                                                    ).await {
+                                                        // Store message summary
+                                                        claw_redis::update_message_summary(&pool_bg, chat_id, seq, "assistant", &result.summary).await.ok();
+
+                                                        // Apply notebook operations
+                                                        let now = chrono::Utc::now();
+                                                        for op in &result.notebook_ops {
+                                                            match op.op.as_str() {
+                                                                "create" | "update" => {
+                                                                    let entry = claw_redis::memory::NotebookEntry {
+                                                                        content: op.content.clone(),
+                                                                        summary: op.summary.clone(),
+                                                                        created: claw_redis::memory::get_notebook_entry(&pool_bg, &username_bg, &op.file).await
+                                                                            .ok().flatten().map(|e| e.created).unwrap_or(now),
+                                                                        updated: now,
+                                                                        access_count: 0,
+                                                                        last_accessed: now,
+                                                                    };
+                                                                    claw_redis::memory::upsert_notebook_entry(&pool_bg, &username_bg, &op.file, &entry).await.ok();
+                                                                }
+                                                                "append" => {
+                                                                    // Append to existing entry
+                                                                    if let Ok(Some(mut existing)) = claw_redis::memory::get_notebook_entry(&pool_bg, &username_bg, &op.file).await {
+                                                                        existing.content.push('\n');
+                                                                        existing.content.push_str(&op.content);
+                                                                        existing.updated = now;
+                                                                        existing.summary = op.summary.clone();
+                                                                        claw_redis::memory::upsert_notebook_entry(&pool_bg, &username_bg, &op.file, &existing).await.ok();
+                                                                    } else {
+                                                                        // File doesn't exist yet — create it
+                                                                        let entry = claw_redis::memory::NotebookEntry {
+                                                                            content: op.content.clone(),
+                                                                            summary: op.summary.clone(),
+                                                                            created: now, updated: now,
+                                                                            access_count: 0, last_accessed: now,
+                                                                        };
+                                                                        claw_redis::memory::upsert_notebook_entry(&pool_bg, &username_bg, &op.file, &entry).await.ok();
+                                                                    }
+                                                                }
+                                                                "delete" => {
+                                                                    claw_redis::memory::delete_notebook_entry(&pool_bg, &username_bg, &op.file).await.ok();
+                                                                }
+                                                                _ => {}
+                                                            }
+                                                        }
+
+                                                        // Store mood
+                                                        if let Some(ref mood) = result.mood {
+                                                            claw_redis::memory::append_mood(&pool_bg, &username_bg, mood).await.ok();
+                                                        }
+
+                                                        // Store anticipation
+                                                        if let Some(ref anticipation) = result.anticipation {
+                                                            claw_redis::memory::update_anticipation(&pool_bg, &username_bg, anticipation).await.ok();
+                                                        }
+
+                                                        // Rolling summary every 10 messages
+                                                        if seq % 10 == 0 && seq > 0 {
+                                                            summarizer::update_rolling_summary(&container, &pool_bg, chat_id, ws_id).await.ok();
+                                                        }
+                                                    }
+                                                });
                                             }
                                             Err(e) => {
                                                 tracing::error!(job_id = %job_id, error = %e, "Chat execution failed");

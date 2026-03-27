@@ -449,6 +449,16 @@ claw:workspace:{uuid}:events       — List of JSON WorkspaceEvent entries (newe
 claw:workspace:{uuid}:children     — Set of child workspace UUIDs (for lineage tracking)
 ```
 
+## Notebook Redis Keys (Personal AI)
+
+```
+claw:user:{username}:notebook              — Set of notebook file paths (e.g., "about-user.md", "topics/auth.md")
+claw:user:{username}:notebook:{path}       — JSON NotebookEntry {content, summary, created, updated, access_count, last_accessed}
+claw:user:{username}:notebook_meta         — JSON NotebookMeta {total_entries, last_consolidation, mood_history, anticipation}
+```
+
+Per-user persistent notebook that survives chat deletion and container restarts. Deployed to `.notebook/` in the chat workspace before each message. Changes Claude makes to `.notebook/` are harvested back to Redis after each message. A cognitive pipeline (summarizer container) extracts facts, tracks mood, and generates anticipation notes after each exchange. Consolidation runs on idle container cleanup.
+
 ## Production Server
 
 The server runs at `10.0.0.10`, accessible via `ssh claw-server` (user `developer`, key `~/.ssh/id_ed25519_claw_server`). Caddy reverse-proxies ports 80/443 to the API on :8080, so use `http://10.0.0.10` (not `:8080`) for API calls from the server.

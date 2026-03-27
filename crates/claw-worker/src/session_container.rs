@@ -12,14 +12,15 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// Ensure a session container is running for the given chat.
-/// Returns the container name. Creates the container if not running.
+/// Returns (container_name, is_new_container). `is_new_container` is true when
+/// a fresh container was created (no prior --continue conversation exists).
 pub async fn ensure_container(
     pool: &Pool,
     chat_id: Uuid,
     workspace_id: Uuid,
     config: &DockerConfig,
     api_key: Option<&str>,
-) -> Result<String, String> {
+) -> Result<(String, bool), String> {
     let container_name = format!("claw-chat-{}", chat_id);
 
     // Check Redis for existing container
@@ -32,7 +33,7 @@ pub async fn ensure_container(
         if let Ok(output) = check {
             if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true" {
                 tracing::debug!(chat_id = %chat_id, "Reusing session container");
-                return Ok(name);
+                return Ok((name, false));
             }
         }
         claw_redis::delete_chat_container(pool, chat_id).await.ok();
@@ -108,7 +109,7 @@ pub async fn ensure_container(
 
     claw_redis::set_chat_container(pool, chat_id, &container_name).await.ok();
     tracing::info!(chat_id = %chat_id, container = %container_name, "Session container started");
-    Ok(container_name)
+    Ok((container_name, true))
 }
 
 /// Execute a chat message using `claude -p "msg" --continue`.
@@ -246,6 +247,7 @@ pub async fn execute_chat_message(
 }
 
 /// Stop and remove idle session containers.
+/// Runs notebook consolidation before cleanup (the "thinking between messages" step).
 pub async fn cleanup_idle_containers(pool: &Pool, timeout_secs: u64) {
     let output = Command::new("docker")
         .args(["ps", "--filter", "name=claw-chat-", "--format", "{{.Names}}"])
@@ -258,6 +260,10 @@ pub async fn cleanup_idle_containers(pool: &Pool, timeout_secs: u64) {
         _ => return,
     };
 
+    // Build DockerConfig once for consolidation (not per-container)
+    let all_config = claw_redis::get_all_config(pool).await.unwrap_or_default();
+    let dc = DockerConfig::from_config(&all_config);
+
     for name in containers {
         let chat_id_str = name.strip_prefix("claw-chat-").unwrap_or("");
         let chat_id: Uuid = match chat_id_str.parse() {
@@ -268,7 +274,17 @@ pub async fn cleanup_idle_containers(pool: &Pool, timeout_secs: u64) {
         if let Ok(Some(session)) = claw_redis::get_chat_session(pool, chat_id).await {
             let idle_secs = (chrono::Utc::now() - session.last_activity).num_seconds() as u64;
             if idle_secs > timeout_secs {
-                tracing::info!(chat_id = %chat_id, idle_secs, "Stopping idle session container");
+                tracing::info!(chat_id = %chat_id, idle_secs, "Stopping idle session container — running consolidation first");
+
+                // Harvest any remaining notebook changes before shutdown
+                harvest_notebook(pool, &session.user_id, session.workspace_id, 0).await.ok();
+
+                // Run notebook consolidation (the "thinking between messages" step)
+                // Uses the summarizer container, not the chat container being shut down
+                if let Ok(summarizer) = crate::summarizer::ensure_summarizer_container(&dc).await {
+                    crate::summarizer::consolidate_notebook(pool, &session.user_id, &summarizer).await.ok();
+                }
+
                 let checkout = checkout_path(session.workspace_id);
                 git_commit(&checkout, "chat: auto-commit on idle shutdown").await;
                 Command::new("docker").args(["stop", &name]).output().await.ok();
@@ -566,9 +582,359 @@ pub async fn deploy_api_skill(workspace_id: Uuid) {
     tokio::fs::write(skill_dir.join("SKILL.md"), API_SKILL_CONTENT).await.ok();
 }
 
-fn checkout_path(workspace_id: Uuid) -> PathBuf {
+pub fn checkout_path(workspace_id: Uuid) -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| "/tmp".into())
         .join(".claw").join("checkouts").join(workspace_id.to_string())
+}
+
+// =============================================================================
+// Notebook deploy/harvest
+// =============================================================================
+
+const NOTEBOOK_README: &str = r#"# Your Notebook
+
+This is your persistent notebook. Everything you write here will be remembered across sessions.
+
+## Files
+- `about-user.md` — Who the user is, their role, expertise, communication style
+- `active-projects.md` — What they're currently building, status, blockers
+- `decisions.md` — Append-only decision log: date, decision, rationale
+- `people.md` — Team members, roles, who works on what
+- `preferences.md` — Tools, frameworks, response style preferences
+- `timeline.md` — Key events and deadlines with dates
+- `topics/{name}.md` — Deep notes on specific subjects
+- `scratch.md` — Working notes for the current session
+
+Write naturally, like a colleague's notes. Update existing entries rather than creating new ones.
+"#;
+
+/// Deploy notebook from Redis to workspace before each message.
+pub async fn deploy_notebook(pool: &Pool, username: &str, workspace_id: Uuid) -> Result<(), String> {
+    let checkout = checkout_path(workspace_id);
+    let notebook_dir = checkout.join(".notebook");
+    tokio::fs::create_dir_all(&notebook_dir).await
+        .map_err(|e| format!("Failed to create .notebook/: {e}"))?;
+
+    // Write README if it doesn't exist
+    let readme_path = notebook_dir.join("README.md");
+    if !readme_path.exists() {
+        tokio::fs::write(&readme_path, NOTEBOOK_README).await.ok();
+    }
+
+    // Deploy all entries from Redis
+    let files = claw_redis::memory::list_notebook_files(pool, username).await
+        .map_err(|e| format!("Failed to list notebook: {e}"))?;
+
+    for path in &files {
+        if let Ok(Some(entry)) = claw_redis::memory::get_notebook_entry(pool, username, path).await {
+            let file_path = notebook_dir.join(path);
+            if let Some(parent) = file_path.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+            tokio::fs::write(&file_path, &entry.content).await.ok();
+        }
+    }
+
+    Ok(())
+}
+
+/// Harvest notebook changes from workspace after each message.
+/// Returns list of changed file paths (so the cognitive pipeline can skip them).
+pub async fn harvest_notebook(pool: &Pool, username: &str, workspace_id: Uuid, _seq: u32) -> Result<Vec<String>, String> {
+    let checkout = checkout_path(workspace_id);
+    let notebook_dir = checkout.join(".notebook");
+    if !notebook_dir.exists() {
+        return Ok(vec![]);
+    }
+
+    let known_files = claw_redis::memory::list_notebook_files(pool, username).await
+        .unwrap_or_default();
+
+    let mut changed = Vec::new();
+
+    // Walk .notebook/ directory
+    let mut entries = tokio::fs::read_dir(&notebook_dir).await
+        .map_err(|e| format!("Failed to read .notebook/: {e}"))?;
+
+    let mut file_paths = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        collect_files(&notebook_dir, entry.path(), &mut file_paths).await;
+    }
+
+    for abs_path in &file_paths {
+        let rel_path = abs_path.strip_prefix(&notebook_dir)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+
+        // Skip README.md
+        if rel_path == "README.md" { continue; }
+
+        let content = match tokio::fs::read_to_string(abs_path).await {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // Check if this is new or modified
+        let is_new = !known_files.contains(&rel_path);
+        let is_modified = if !is_new {
+            if let Ok(Some(existing)) = claw_redis::memory::get_notebook_entry(pool, username, &rel_path).await {
+                existing.content != content
+            } else {
+                true
+            }
+        } else {
+            true
+        };
+
+        if is_new || is_modified {
+            let now = chrono::Utc::now();
+            let entry = claw_redis::memory::NotebookEntry {
+                content: content.clone(),
+                summary: content.lines().next().unwrap_or("").chars().take(100).collect(),
+                created: if is_new { now } else {
+                    claw_redis::memory::get_notebook_entry(pool, username, &rel_path).await
+                        .ok().flatten().map(|e| e.created).unwrap_or(now)
+                },
+                updated: now,
+                access_count: 0,
+                last_accessed: now,
+            };
+            claw_redis::memory::upsert_notebook_entry(pool, username, &rel_path, &entry).await.ok();
+            changed.push(rel_path);
+        }
+    }
+
+    if !changed.is_empty() {
+        tracing::info!(count = changed.len(), files = ?changed, "Harvested notebook changes");
+    }
+
+    Ok(changed)
+}
+
+/// Recursively collect file paths under a directory.
+async fn collect_files(base: &Path, path: PathBuf, out: &mut Vec<PathBuf>) {
+    if path.is_dir() {
+        if let Ok(mut entries) = tokio::fs::read_dir(&path).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                Box::pin(collect_files(base, entry.path(), out)).await;
+            }
+        }
+    } else if path.is_file() {
+        out.push(path);
+    }
+}
+
+// =============================================================================
+// Dynamic CLAUDE.md
+// =============================================================================
+
+/// Build and deploy dynamic CLAUDE.md before each message.
+pub async fn deploy_dynamic_claude_md(
+    pool: &Pool,
+    chat_id: Uuid,
+    workspace_id: Uuid,
+    username: &str,
+) -> Result<(), String> {
+    let mut sections = Vec::new();
+
+    // 1. Base instructions
+    sections.push(BASE_CHAT_INSTRUCTIONS.to_string());
+
+    // 2. Temporal context
+    if let Ok(Some(session)) = claw_redis::get_chat_session(pool, chat_id).await {
+        sections.push(build_temporal_context(&session));
+    }
+
+    // 3. User profile
+    if let Ok(Some(entry)) = claw_redis::memory::get_notebook_entry(pool, username, "about-user.md").await {
+        claw_redis::memory::touch_notebook_entry(pool, username, "about-user.md").await.ok();
+        sections.push(format!("## About This User\n{}", entry.content));
+    }
+
+    // 4. Active projects
+    if let Ok(Some(entry)) = claw_redis::memory::get_notebook_entry(pool, username, "active-projects.md").await {
+        claw_redis::memory::touch_notebook_entry(pool, username, "active-projects.md").await.ok();
+        sections.push(format!("## Active Projects\n{}", entry.content));
+    }
+
+    // 5. Top memories by importance score
+    if let Ok(files) = claw_redis::memory::list_notebook_files(pool, username).await {
+        let mut scored: Vec<(String, f64, String)> = Vec::new();
+        for path in &files {
+            // Skip files already shown in dedicated sections
+            if path == "about-user.md" || path == "active-projects.md" || path == "README.md" || path == "scratch.md" {
+                continue;
+            }
+            if let Ok(Some(entry)) = claw_redis::memory::get_notebook_entry(pool, username, path).await {
+                let score = claw_redis::memory::score_entry(&entry, path);
+                scored.push((path.clone(), score, entry.summary.clone()));
+            }
+        }
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let top: Vec<String> = scored.iter().take(15)
+            .map(|(path, _, summary)| format!("- **{}**: {}", path, summary))
+            .collect();
+        if !top.is_empty() {
+            sections.push(format!("## What You Remember\n{}", top.join("\n")));
+        }
+    }
+
+    // 6. Anticipation note
+    if let Ok(Some(meta)) = claw_redis::memory::get_notebook_meta(pool, username).await {
+        if let Some(ref anticipation) = meta.anticipation {
+            sections.push(format!("## For This Session\n{}", anticipation));
+        }
+    }
+
+    // 7. Notebook instructions
+    sections.push(NOTEBOOK_INSTRUCTIONS.to_string());
+
+    // 8. Conversation history pointers
+    sections.push(CONVERSATION_HISTORY_INSTRUCTIONS.to_string());
+
+    // Write to workspace
+    let claude_md = sections.join("\n\n---\n\n");
+    let checkout = checkout_path(workspace_id);
+    tokio::fs::write(checkout.join("CLAUDE.md"), &claude_md).await
+        .map_err(|e| format!("Failed to write CLAUDE.md: {e}"))?;
+
+    Ok(())
+}
+
+fn build_temporal_context(session: &claw_models::ChatSession) -> String {
+    let now = chrono::Utc::now();
+    let last_activity_ago = humanize_duration(now - session.last_activity);
+    let created_ago = humanize_duration(now - session.created_at);
+
+    format!(
+        "## Temporal Context\n\
+         - Today: {}\n\
+         - Messages in this conversation: {}\n\
+         - Conversation started: {} ago\n\
+         - Last activity: {} ago",
+        now.format("%A, %B %d, %Y %I:%M %p UTC"),
+        session.total_messages,
+        created_ago,
+        last_activity_ago,
+    )
+}
+
+fn humanize_duration(d: chrono::Duration) -> String {
+    let secs = d.num_seconds().max(0);
+    if secs < 60 {
+        "just now".to_string()
+    } else if secs < 3600 {
+        format!("{} minutes", secs / 60)
+    } else if secs < 86400 {
+        let hours = secs / 3600;
+        format!("{} hour{}", hours, if hours == 1 { "" } else { "s" })
+    } else {
+        let days = secs / 86400;
+        format!("{} day{}", days, if days == 1 { "" } else { "s" })
+    }
+}
+
+const BASE_CHAT_INSTRUCTIONS: &str = r#"# Interactive Chat Workspace
+
+You are in a persistent, ongoing conversation. Each message you receive continues the conversation.
+You have full access to the conversation history, your notebook, and all files in this workspace."#;
+
+const NOTEBOOK_INSTRUCTIONS: &str = r#"## Your Notebook
+
+You have a persistent notebook at `.notebook/` in this workspace.
+
+**How to use it:**
+- `about-user.md` — Update when you learn about the user's role, expertise, preferences
+- `active-projects.md` — Track what they're building, current status, blockers
+- `decisions.md` — Log key decisions with date, rationale, and alternatives considered
+- `people.md` — Team members, roles, who works on what
+- `preferences.md` — Communication style, tools, frameworks they prefer
+- `timeline.md` — Key events and deadlines with dates
+- `topics/{name}.md` — Deep notes on specific topics discussed at length
+- `scratch.md` — Working notes for this session (will be consolidated later)
+
+**Guidelines:**
+- Write naturally, like a colleague's notes — not formal documentation
+- Update existing entries rather than creating new ones when possible
+- Focus on what will help you serve this user better in future conversations
+- Your notebook persists across sessions — anything you write here, you'll remember forever"#;
+
+const CONVERSATION_HISTORY_INSTRUCTIONS: &str = r#"## Conversation History
+
+- **Recent messages** are in your conversation context (via --continue)
+- **Full message history**: `.chat/messages/` (searchable with `grep -rl "keyword" .chat/messages/`)
+- **Rolling summary**: `.chat/summary.md`
+- When the user references something you don't immediately recall, search .chat/messages/"#;
+
+// =============================================================================
+// Rehydration ("Previously On...")
+// =============================================================================
+
+/// Build a "Previously On..." narrative for container restarts.
+/// Called when `is_new_container && seq > 1` — Claude has no --continue history
+/// but the user has been chatting. Returns the user's message wrapped in a context preamble.
+pub async fn build_rehydration_prompt(
+    pool: &Pool,
+    chat_id: Uuid,
+    workspace_id: Uuid,
+    username: &str,
+    user_message: &str,
+) -> String {
+    let mut context_parts = Vec::new();
+
+    // 1. Notebook synthesis
+    if let Ok(Some(about)) = claw_redis::memory::get_notebook_entry(pool, username, "about-user.md").await {
+        context_parts.push(format!("About the user: {}", about.summary));
+    }
+    if let Ok(Some(projects)) = claw_redis::memory::get_notebook_entry(pool, username, "active-projects.md").await {
+        context_parts.push(format!("Active projects: {}", projects.summary));
+    }
+
+    // 2. Rolling summary or recent message summaries
+    let summary_path = checkout_path(workspace_id).join(".chat/summary.md");
+    if let Ok(summary) = tokio::fs::read_to_string(&summary_path).await {
+        if !summary.trim().is_empty() {
+            context_parts.push(format!("Conversation summary:\n{}", summary));
+        }
+    } else {
+        // Fall back to recent message summaries
+        if let Ok(msgs) = claw_redis::get_chat_messages(pool, chat_id, 0, 20).await {
+            let summaries: Vec<String> = msgs.iter()
+                .filter_map(|m| m.summary.as_ref().map(|s| format!("[{}] {}: {}", m.seq, m.role, s)))
+                .collect();
+            if !summaries.is_empty() {
+                context_parts.push(format!("Recent exchanges:\n{}", summaries.join("\n")));
+            }
+        }
+    }
+
+    // 3. Last 3 full message pairs
+    if let Ok(recent) = claw_redis::get_chat_messages(pool, chat_id, 0, 6).await {
+        if !recent.is_empty() {
+            let recent_text: Vec<String> = recent.iter()
+                .map(|m| {
+                    let content = if m.content.len() > 500 { &m.content[..500] } else { &m.content };
+                    format!("{} [{}]: {}", m.role.to_uppercase(), m.seq, content)
+                })
+                .collect();
+            context_parts.push(format!("Last few messages:\n{}", recent_text.join("\n\n")));
+        }
+    }
+
+    if context_parts.is_empty() {
+        // No context available — just pass through the user message
+        return user_message.to_string();
+    }
+
+    format!(
+        "[You are resuming an ongoing conversation. Your notebook at .notebook/ has been restored \
+         with everything you've learned about this user. Here's a quick recap:]\n\n\
+         {}\n\n\
+         [The user's new message follows. Respond naturally — don't mention this recap unless asked.]\n\n\
+         {}",
+        context_parts.join("\n\n"),
+        user_message
+    )
 }
 
 const API_SKILL_CONTENT: &str = r##"---

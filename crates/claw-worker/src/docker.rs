@@ -10,6 +10,7 @@ use tokio_util::sync::CancellationToken;
 use crate::executor::ExecutionResult;
 
 /// Configuration for Docker-based execution.
+#[derive(Clone)]
 pub struct DockerConfig {
     pub image: String,
     pub memory_limit: String,

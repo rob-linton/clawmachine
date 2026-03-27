@@ -1,4 +1,5 @@
 pub mod chat;
+pub mod memory;
 pub mod pool;
 pub mod jobs;
 pub mod logs;
