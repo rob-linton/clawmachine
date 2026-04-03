@@ -380,6 +380,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           }
         });
         _scrollToBottom();
+      } else if (eventType == 'tool_build') {
+        final buildMsg = parsed['content'] as String? ?? 'Building tools...';
+        setState(() {
+          _toolStatus = buildMsg;
+          for (int i = _messages.length - 1; i >= 0; i--) {
+            final msg = _messages[i];
+            if (msg['_thinking'] == true || msg['status'] == 'pending') {
+              msg['_toolStatus'] = buildMsg;
+              break;
+            }
+          }
+        });
       } else if (eventType == 'cancelled') {
         setState(() {
           _cancelling = false;

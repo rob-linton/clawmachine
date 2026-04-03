@@ -260,12 +260,13 @@ pub async fn publish_chat_stream(pool: &Pool, channel: &str, data: &str) -> Resu
 // --- Container Tracking ---
 
 /// Store the active container info for a chat session.
-pub async fn set_chat_container(pool: &Pool, chat_id: Uuid, container_name: &str) -> Result<(), RedisError> {
+pub async fn set_chat_container(pool: &Pool, chat_id: Uuid, container_name: &str, tool_image: Option<&str>) -> Result<(), RedisError> {
     let mut conn = pool.get().await?;
     let key = format!("{}{}:container", CHAT_PREFIX, chat_id);
     let json = serde_json::json!({
         "container_name": container_name,
         "started_at": chrono::Utc::now().to_rfc3339(),
+        "tool_image": tool_image,
     });
     let _: () = conn.set(&key, serde_json::to_string(&json)?).await?;
     Ok(())
@@ -280,6 +281,20 @@ pub async fn get_chat_container(pool: &Pool, chat_id: Uuid) -> Result<Option<Str
         Some(j) => {
             let v: serde_json::Value = serde_json::from_str(&j)?;
             Ok(v.get("container_name").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Get the tool image tag stored with the container record.
+pub async fn get_chat_container_tool_image(pool: &Pool, chat_id: Uuid) -> Result<Option<String>, RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("{}{}:container", CHAT_PREFIX, chat_id);
+    let json: Option<String> = conn.get(&key).await?;
+    match json {
+        Some(j) => {
+            let v: serde_json::Value = serde_json::from_str(&j)?;
+            Ok(v.get("tool_image").and_then(|v| v.as_str()).map(|s| s.to_string()))
         }
         None => Ok(None),
     }

@@ -15,29 +15,49 @@ use uuid::Uuid;
 /// Ensure a session container is running for the given chat.
 /// Returns (container_name, is_new_container). `is_new_container` is true when
 /// a fresh container was created (no prior --continue conversation exists).
+/// If workspace tools change, the container is recreated with the new tool image.
 pub async fn ensure_container(
     pool: &Pool,
     chat_id: Uuid,
     workspace_id: Uuid,
     config: &DockerConfig,
     api_key: Option<&str>,
+    tools: &[claw_models::Tool],
+    workspace: Option<&claw_models::Workspace>,
 ) -> Result<(String, bool), String> {
     let container_name = format!("claw-chat-{}", chat_id);
 
+    // Determine the image: use derived tool image if tools are configured
+    let base_image = workspace
+        .and_then(|w| w.base_image.as_deref())
+        .unwrap_or(&config.image);
+    let image = crate::docker::ensure_tool_image(base_image, tools).await
+        .unwrap_or_else(|_| base_image.to_string());
+
     // Check Redis for existing container
     if let Ok(Some(name)) = claw_redis::get_chat_container(pool, chat_id).await {
-        // Verify it's actually running
-        let check = Command::new("docker")
-            .args(["inspect", "--format", "{{.State.Running}}", &name])
-            .output()
-            .await;
-        if let Ok(output) = check {
-            if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true" {
-                tracing::debug!(chat_id = %chat_id, "Reusing session container");
-                return Ok((name, false));
+        // Check if tool image changed — if so, recreate the container
+        let stored_image = claw_redis::get_chat_container_tool_image(pool, chat_id).await
+            .ok().flatten().unwrap_or_default();
+        if !stored_image.is_empty() && stored_image != image {
+            tracing::info!(chat_id = %chat_id, old = %stored_image, new = %image, "Tool image changed — recreating container");
+            Command::new("docker").args(["stop", &name]).output().await.ok();
+            Command::new("docker").args(["rm", "-f", &name]).output().await.ok();
+            claw_redis::delete_chat_container(pool, chat_id).await.ok();
+        } else {
+            // Verify it's actually running
+            let check = Command::new("docker")
+                .args(["inspect", "--format", "{{.State.Running}}", &name])
+                .output()
+                .await;
+            if let Ok(output) = check {
+                if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "true" {
+                    tracing::debug!(chat_id = %chat_id, "Reusing session container");
+                    return Ok((name, false));
+                }
             }
+            claw_redis::delete_chat_container(pool, chat_id).await.ok();
         }
-        claw_redis::delete_chat_container(pool, chat_id).await.ok();
     }
 
     // Remove any dead container with the same name
@@ -60,13 +80,18 @@ pub async fn ensure_container(
         }
     };
 
+    // Use workspace resource limits or defaults
+    let memory = workspace.and_then(|w| w.memory_limit.as_deref()).unwrap_or("2g");
+    let cpu_val = workspace.and_then(|w| w.cpu_limit).unwrap_or(1.0);
+    let cpu = format!("{}", cpu_val);
+
     let mut args = vec![
         "run".to_string(), "-d".into(),
         "--name".into(), container_name.clone(),
         "--user".into(), format!("{}:{}", uid, gid),
-        "--memory".into(), "2g".into(),
-        "--cpus".into(), "1.0".into(),
-        "--pids-limit".into(), "128".into(),
+        "--memory".into(), memory.to_string(),
+        "--cpus".into(), cpu.to_string(),
+        "--pids-limit".into(), "256".into(),
         "-w".into(), "/workspace".into(),
         "-e".into(), "HOME=/home/claw".into(),
         "-v".into(), format!("{}:/workspace", host_checkout),
@@ -82,7 +107,6 @@ pub async fn ensure_container(
     let network = std::env::var("CLAW_DOCKER_NETWORK").unwrap_or_else(|_| "bridge".to_string());
     args.push("--network".into());
     args.push(network);
-    // Linux compatibility: host.docker.internal is automatic on macOS but needs explicit mapping on Linux
     args.push("--add-host=host.docker.internal:host-gateway".into());
 
     // Credential mounts — use same DinD translation as docker_execute_job
@@ -98,9 +122,10 @@ pub async fn ensure_container(
     // Override entrypoint (sandbox has ENTRYPOINT ["claude"])
     args.push("--entrypoint".into());
     args.push("sleep".into());
-    args.push(config.image.clone());
+    args.push(image.clone());
     args.push("infinity".into());
 
+    tracing::info!(chat_id = %chat_id, %image, "Starting session container");
     let output = Command::new("docker").args(&args).output().await
         .map_err(|e| format!("Failed to start session container: {e}"))?;
 
@@ -108,7 +133,7 @@ pub async fn ensure_container(
         return Err(format!("docker run failed: {}", String::from_utf8_lossy(&output.stderr)));
     }
 
-    claw_redis::set_chat_container(pool, chat_id, &container_name).await.ok();
+    claw_redis::set_chat_container(pool, chat_id, &container_name, Some(&image)).await.ok();
     tracing::info!(chat_id = %chat_id, container = %container_name, "Session container started");
     Ok((container_name, true))
 }
@@ -128,6 +153,8 @@ pub async fn execute_chat_message(
     seq: u32,
     log_tx: mpsc::Sender<String>,
     cancel: CancellationToken,
+    credential_env_vars: &std::collections::HashMap<String, String>,
+    tools: &[claw_models::Tool],
 ) -> Result<ExecutionResult, String> {
     let checkout = checkout_path(workspace_id);
     let start = std::time::Instant::now();
@@ -154,24 +181,39 @@ pub async fn execute_chat_message(
     cmd_parts.push("--max-budget-usd".into());
     cmd_parts.push("10".into());
 
-    // Mint a per-message session token so Claude can call the Claw Machine API
-    // as the logged-in user. Written into the runner script (not docker run -e)
-    // so the token is fresh on every message even when the container is reused.
-    let mut api_env_lines = String::new();
+    // Build env var exports for the runner script (fresh every message)
+    let mut env_lines = String::new();
+
+    // API session token — lets Claude call the Claw Machine API
     if let Ok(Some(session)) = claw_redis::get_chat_session(pool, chat_id).await {
         if let Ok(token) = claw_redis::create_session(pool, &session.user_id).await {
             let api_url = std::env::var("CLAW_CHAT_API_URL")
                 .unwrap_or_else(|_| "http://host.docker.internal:8080".to_string());
-            api_env_lines = format!(
+            env_lines.push_str(&format!(
                 "export CLAW_API_URL={}\nexport CLAW_SESSION={}\n",
                 shell_escape(&api_url), shell_escape(&token),
-            );
+            ));
             tracing::debug!(chat_id = %chat_id, user = %session.user_id, "Minted API session token for chat");
         }
     }
 
+    // Credential env vars — tool credentials (AWS keys, etc.)
+    for (key, value) in credential_env_vars {
+        env_lines.push_str(&format!("export {}={}\n", key, shell_escape(value)));
+    }
+
+    // Auth scripts — run tool authentication before Claude starts
+    let mut auth_lines = String::new();
+    for tool in tools {
+        if let Some(ref script) = tool.auth_script {
+            if !script.trim().is_empty() {
+                auth_lines.push_str(&format!("# Auth: {}\n{}\n", tool.name, script));
+            }
+        }
+    }
+
     // Write runner script (avoids CLI arg limits for long messages)
-    let script = format!("#!/bin/bash\n{}cd /workspace\nexec {}", api_env_lines, cmd_parts.join(" "));
+    let script = format!("#!/bin/bash\nset -e\n{}{}cd /workspace\nexec {}", env_lines, auth_lines, cmd_parts.join(" "));
     let script_path = checkout.join(".claw-chat-run.sh");
     tokio::fs::write(&script_path, &script).await
         .map_err(|e| format!("Failed to write runner script: {e}"))?;
@@ -1209,4 +1251,42 @@ curl -s -b "claw_session=$CLAW_SESSION" \
 ```bash
 curl -s -b "claw_session=$CLAW_SESSION" "$CLAW_API_URL/api/v1/workspaces" | jq '.[] | {id, name, persistence_mode}'
 ```
+
+## Managing Tools and Credentials in Chat
+
+Your chat container can have CLI tools (aws, az, gh, etc.) installed directly, with credentials injected automatically. This eliminates the need to submit jobs for simple CLI commands.
+
+### Quick install via file (preferred)
+Write a JSON file to request tool or skill installation. The system processes it after your message:
+```bash
+# Install a tool (by its ID from the tools list)
+echo '{"type":"tool","id":"aws-cli-prod-audit"}' > /workspace/.chat/install-request.json
+
+# Install a skill
+echo '{"type":"skill","id":"my-skill"}' > /workspace/.chat/install-request.json
+```
+After writing the install request, tell the user the tool will be available on the next message (the container rebuilds automatically with the new tools).
+
+### List available tools and credentials
+```bash
+# List all tools
+curl -s -b "claw_session=$CLAW_SESSION" "$CLAW_API_URL/api/v1/tools" | jq '.[] | {id, name, description}'
+
+# List credentials (values masked)
+curl -s -b "claw_session=$CLAW_SESSION" "$CLAW_API_URL/api/v1/credentials" | jq '.[] | {id, name}'
+```
+
+### Bind a credential to a tool on your workspace
+```bash
+# Get your workspace ID
+WS_ID=$(curl -s -b "claw_session=$CLAW_SESSION" "$CLAW_API_URL/api/v1/chat" | jq -r .workspace_id)
+
+# Update workspace to bind credential to tool
+curl -s -b "claw_session=$CLAW_SESSION" \
+  -X PUT -H "Content-Type: application/json" \
+  -d '{"credential_bindings": {"TOOL_ID": "CREDENTIAL_ID"}}' \
+  "$CLAW_API_URL/api/v1/workspaces/$WS_ID" | jq .
+```
+
+**Note:** Tool and credential changes take effect on the next message. The container is automatically rebuilt with the updated tools.
 "##;

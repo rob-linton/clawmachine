@@ -351,7 +351,34 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                 let chat_username = claw_redis::get_chat_session(&pool, chat_id).await
                                     .ok().flatten().map(|s| s.user_id.clone()).unwrap_or_default();
 
-                                match session_container::ensure_container(&pool, chat_id, ws_id, dc, raw_api_key.as_deref()).await {
+                                // Resolve workspace, tools, and credentials for the chat container
+                                let chat_workspace = claw_redis::get_workspace(&pool, ws_id).await.ok().flatten();
+                                let mut chat_tool_ids = chat_workspace.as_ref().map(|w| w.tool_ids.clone()).unwrap_or_default();
+                                // Include session-level tools (added via chat install requests)
+                                if let Ok(Some(sess)) = claw_redis::get_chat_session(&pool, chat_id).await {
+                                    for tid in &sess.tool_ids {
+                                        if !chat_tool_ids.contains(tid) { chat_tool_ids.push(tid.clone()); }
+                                    }
+                                }
+                                let chat_tools: Vec<claw_models::Tool> = if chat_tool_ids.is_empty() {
+                                    Vec::new()
+                                } else {
+                                    claw_redis::resolve_tools(&pool, &chat_tool_ids).await.unwrap_or_default()
+                                };
+
+                                // Resolve credential env vars for tools
+                                let mut chat_credential_env = std::collections::HashMap::new();
+                                if let Some(ref ws) = chat_workspace {
+                                    for tool in &chat_tools {
+                                        if let Some(cred_id) = ws.credential_bindings.get(&tool.id) {
+                                            if let Ok(Some(values)) = claw_redis::get_credential_values(&pool, cred_id).await {
+                                                chat_credential_env.extend(values);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                match session_container::ensure_container(&pool, chat_id, ws_id, dc, raw_api_key.as_deref(), &chat_tools, chat_workspace.as_ref()).await {
                                     Ok((container_name, is_new_container)) => {
                                         // is_first: use container freshness, not seq == 1.
                                         // A new container has no --continue history to resume.
@@ -408,7 +435,8 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                         });
 
                                         match session_container::execute_chat_message(
-                                            &pool, chat_id, &container_name, ws_id, &effective_message, job.model.as_deref(), is_first, seq, log_tx, chat_cancel
+                                            &pool, chat_id, &container_name, ws_id, &effective_message, job.model.as_deref(), is_first, seq, log_tx, chat_cancel,
+                                            &chat_credential_env, &chat_tools,
                                         ).await {
                                             Ok(r) => {
                                                 chat_cancel_handle.abort();
