@@ -505,10 +505,10 @@ fn chat_text_stream(redis_url: String, channel: String) -> impl Stream<Item = Re
             match pubsub.on_message().next().await {
                 Some(msg) => {
                     if let Ok(payload) = msg.get_payload::<String>() {
-                        if payload.contains("\"type\":\"done\"") {
-                            yield Ok(Event::default().event("done").data(payload));
-                            break;
-                        }
+                        // Forward all events — don't break on "done".
+                        // The subscription stays alive across messages so the
+                        // Flutter client receives thinking/tool_use/text/done
+                        // events for every message without reconnection gaps.
                         yield Ok(Event::default().event("chunk").data(payload));
                     }
                 }
