@@ -692,12 +692,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     final isAssistant = msg['role'] == 'assistant';
                     final seq = (msg['seq'] as num?)?.toInt() ?? 0;
                     final isPending = msg['_thinking'] == true || msg['status'] == 'pending';
+                    final isStillStreaming = _pendingJobs.values.contains(seq);
                     final msgArtifacts = _artifacts.where(
                       (a) => (a['seq'] as num?)?.toInt() == seq,
                     ).toList();
                     return _MessageBubble(
                       message: msg,
                       isThinking: isPending && (msg['content'] as String? ?? '').isEmpty,
+                      isStreaming: isStillStreaming,
                       thinkingText: msg['_thinkingText'] as String?,
                       toolStatus: msg['_toolStatus'] as String?,
                       onRetry: isAssistant && !isPending && seq > 0
@@ -826,13 +828,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 class _MessageBubble extends StatefulWidget {
   final Map<String, dynamic> message;
   final bool isThinking;
+  final bool isStreaming;
   final String? thinkingText;
   final String? toolStatus;
   final VoidCallback? onRetry;
   final List<Map<String, dynamic>> artifacts;
   final void Function(Map<String, dynamic>)? onArtifactTap;
 
-  const _MessageBubble({required this.message, this.isThinking = false, this.thinkingText, this.toolStatus, this.onRetry, this.artifacts = const [], this.onArtifactTap});
+  const _MessageBubble({required this.message, this.isThinking = false, this.isStreaming = false, this.thinkingText, this.toolStatus, this.onRetry, this.artifacts = const [], this.onArtifactTap});
 
   @override
   State<_MessageBubble> createState() => _MessageBubbleState();
@@ -851,7 +854,6 @@ class _MessageBubbleState extends State<_MessageBubble> {
     final filesWritten = (widget.message['files_written'] as List?)?.cast<String>() ?? [];
     final storedThinking = widget.message['thinking'] as String?;
     final hasThinkingContent = (widget.thinkingText ?? storedThinking ?? '').isNotEmpty;
-    final isStreaming = widget.isThinking || widget.thinkingText != null || widget.toolStatus != null;
     final hasContent = content.isNotEmpty;
 
     final IconData icon;
@@ -898,13 +900,13 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   ],
                 ),
                 const SizedBox(height: 4),
-                // Thinking section: show while streaming or as expandable toggle after
+                // Thinking section: expanded while streaming, collapsible after done
                 if (!isUser && hasThinkingContent) ...[
-                  if (isStreaming && !hasContent)
-                    // Actively thinking — show full text streaming in
+                  if (widget.isStreaming || widget.isThinking)
+                    // Still streaming — keep thinking visible above the response
                     _buildThinkingSection(context, widget.thinkingText ?? storedThinking ?? '', expanded: true)
                   else
-                    // Done thinking, text arrived — collapsible toggle
+                    // Message complete — collapsible toggle
                     _buildThinkingSection(context, widget.thinkingText ?? storedThinking ?? '', expanded: _thinkingExpanded),
                 ],
                 // Tool activity line
