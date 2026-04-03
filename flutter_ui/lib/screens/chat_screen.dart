@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
-import 'package:dio/dio.dart';
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:web/web.dart' as web;
 import '../main.dart';
 import '../widgets/markdown_message.dart';
 
@@ -54,11 +56,14 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     // Polling fallback: SSE events are unreliable (Redis pub/sub is
     // fire-and-forget). Poll every 2s to clear any stuck messages.
     _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!mounted) return;
       final thinkingCount = _messages.where((m) => m['_thinking'] == true).length;
       final pendingCount = _pendingJobs.length;
-      print('[POLL] pending=$pendingCount thinking=$thinkingCount msgs=${_messages.length}');
-      if (!mounted || (_pendingJobs.isEmpty && thinkingCount == 0)) return;
-      print('[POLL] refreshing...');
+      // Also check for assistant messages with empty content (SSE missed the response)
+      final emptyAssistants = _messages.where((m) =>
+        m['role'] == 'assistant' && (m['content'] as String? ?? '').isEmpty
+      ).length;
+      if (_pendingJobs.isEmpty && thinkingCount == 0 && emptyAssistants == 0) return;
       _refreshMessages();
     });
   }
@@ -238,157 +243,180 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
-  /// Persistent SSE connection to the chat stream. Stays open for the
-  /// lifetime of the screen — no per-message reconnection (which caused
-  /// events to be lost during the reconnect gap). Seq matching routes
-  /// text chunks to the correct message.
+  /// Persistent SSE connection using the browser's native fetch API with
+  /// ReadableStream. Dio on Flutter web uses XMLHttpRequest which buffers
+  /// the entire response — it does NOT stream chunks incrementally.
+  /// Native fetch with ReadableStream gives us true real-time streaming.
   void _connectChatStream() {
     _streamSub?.cancel();
-    print('[STREAM] connecting...');
+    print('[STREAM] connecting via fetch...');
     final api = ref.read(apiClientProvider);
     final streamUrl = api.chatStreamUrl;
 
-    final dio = Dio(BaseOptions(extra: {'withCredentials': true}));
-    dio.get<ResponseBody>(
-      streamUrl,
-      options: Options(responseType: ResponseType.stream, headers: {'Accept': 'text/event-stream'}),
-    ).then((response) {
-      final stream = response.data?.stream;
-      if (stream == null) return;
+    _fetchSSE(streamUrl);
+  }
 
-      String buffer = '';
-      _streamSub = stream.listen(
-        (chunk) {
-          if (!mounted) return;
-          buffer += utf8.decode(chunk);
-
-          while (buffer.contains('\n\n')) {
-            final idx = buffer.indexOf('\n\n');
-            final block = buffer.substring(0, idx);
-            buffer = buffer.substring(idx + 2);
-
-            String? data;
-            for (final line in block.split('\n')) {
-              if (line.startsWith('data: ')) data = line.substring(6);
-            }
-            if (data == null) continue;
-
-            try {
-              final parsed = json.decode(data) as Map<String, dynamic>;
-              final eventType = parsed['type'] as String?;
-              final eventSeq = (parsed['seq'] as num?)?.toInt();
-
-              if (eventType == 'thinking' && parsed['content'] != null) {
-                setState(() {
-                  final seq = eventSeq ?? 0;
-                  _thinkingContent[seq] = (_thinkingContent[seq] ?? '') + (parsed['content'] as String);
-                  // Update the message bubble to show thinking
-                  for (int i = _messages.length - 1; i >= 0; i--) {
-                    final msg = _messages[i];
-                    if (msg['role'] != 'assistant') continue;
-                    final msgSeq = (msg['seq'] as num?)?.toInt();
-                    if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
-                    if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
-                      msg['_thinkingText'] = _thinkingContent[seq];
-                      break;
-                    }
-                  }
-                });
-                _scrollToBottom();
-              } else if (eventType == 'tool_use') {
-                final tool = parsed['tool'] as String? ?? '';
-                final summary = parsed['input_summary'] as String? ?? '';
-                setState(() {
-                  _toolStatus = _formatToolActivity(tool, summary);
-                  for (int i = _messages.length - 1; i >= 0; i--) {
-                    final msg = _messages[i];
-                    if (msg['role'] != 'assistant') continue;
-                    final msgSeq = (msg['seq'] as num?)?.toInt();
-                    if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
-                    if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
-                      msg['_toolStatus'] = _toolStatus;
-                      break;
-                    }
-                  }
-                });
-              } else if (eventType == 'text' && parsed['content'] != null) {
-                setState(() {
-                  _toolStatus = '';
-                  for (int i = _messages.length - 1; i >= 0; i--) {
-                    final msg = _messages[i];
-                    if (msg['role'] != 'assistant') continue;
-                    final msgSeq = (msg['seq'] as num?)?.toInt();
-                    if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
-                    if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
-                      msg['content'] = (msg['content'] as String? ?? '') + parsed['content'];
-                      msg['_thinking'] = false;
-                      msg['_toolStatus'] = null;
-                      break;
-                    }
-                  }
-                });
-                _scrollToBottom();
-              } else if (eventType == 'cancelled') {
-                setState(() {
-                  _cancelling = false;
-                  _toolStatus = '';
-                  for (int i = _messages.length - 1; i >= 0; i--) {
-                    final msg = _messages[i];
-                    if (msg['_thinking'] == true || msg['status'] == 'pending') {
-                      msg['_thinking'] = false;
-                      final existing = msg['content'] as String? ?? '';
-                      msg['content'] = existing.isEmpty ? '[Cancelled]' : '$existing\n\n_[Cancelled]_';
-                      break;
-                    }
-                  }
-                  _pendingJobs.clear();
-                  _thinkingContent.clear();
-                });
-              } else if (eventType == 'done') {
-                final doneSeq = eventSeq;
-                final jobId = _pendingJobs.entries
-                    .where((e) => e.value == doneSeq)
-                    .map((e) => e.key)
-                    .firstOrNull;
-                if (jobId != null) {
-                  _pendingJobs.remove(jobId);
-                  ref.read(apiClientProvider).getChat().then((session) {
-                    if (mounted) setState(() => _session = session);
-                  }).catchError((_) {});
-                }
-                setState(() {
-                  _cancelling = false;
-                  _toolStatus = '';
-                  if (doneSeq != null) _thinkingContent.remove(doneSeq);
-                });
-              }
-            } catch (_) {}
-          }
-        },
-        onDone: () {
-          // SSE connection closed — reconnect after a short delay
-          if (mounted) {
-            Future.delayed(const Duration(seconds: 2), () {
-              if (mounted) _connectChatStream();
-            });
-          }
-        },
-        onError: (_) {
-          if (mounted) {
-            Future.delayed(const Duration(seconds: 2), () {
-              if (mounted) _connectChatStream();
-            });
-          }
-        },
+  Future<void> _fetchSSE(String url) async {
+    try {
+      final init = web.RequestInit(
+        method: 'GET',
+        headers: {'Accept': 'text/event-stream'}.jsify() as web.HeadersInit,
+        credentials: 'include',
       );
-    }).catchError((_) {
-      // Connection failed — retry
-      if (mounted) {
-        Future.delayed(const Duration(seconds: 2), () {
-          if (mounted) _connectChatStream();
+      final response = await web.window.fetch(url.toJS, init).toDart;
+      print('[STREAM] fetch status=${response.status}');
+
+      if (!response.ok) {
+        print('[STREAM] fetch failed: ${response.status} ${response.statusText}');
+        _reconnectStream();
+        return;
+      }
+
+      final body = response.body;
+      if (body == null) {
+        print('[STREAM] no response body');
+        _reconnectStream();
+        return;
+      }
+
+      final reader = body.getReader();
+      final decoder = web.TextDecoder();
+      String buffer = '';
+
+      while (mounted) {
+        final result = await (reader.callMethod<JSPromise>('read'.toJS)).toDart;
+        final done = (result as JSObject).getProperty<JSBoolean>('done'.toJS).toDart;
+        if (done) {
+          print('[STREAM] stream ended');
+          break;
+        }
+        final value = result.getProperty<JSObject>('value'.toJS);
+        final chunk = decoder.decode(value, web.TextDecodeOptions(stream: true));
+        buffer += chunk;
+
+        while (buffer.contains('\n\n')) {
+          final idx = buffer.indexOf('\n\n');
+          final block = buffer.substring(0, idx);
+          buffer = buffer.substring(idx + 2);
+
+          String? data;
+          for (final line in block.split('\n')) {
+            if (line.startsWith('data: ')) data = line.substring(6);
+          }
+          if (data == null) continue;
+
+          _handleSSEData(data);
+        }
+      }
+    } catch (e) {
+      print('[STREAM] error: $e');
+    }
+
+    _reconnectStream();
+  }
+
+  void _reconnectStream() {
+    if (mounted) {
+      Future.delayed(const Duration(seconds: 2), () {
+        if (mounted) _connectChatStream();
+      });
+    }
+  }
+
+  void _handleSSEData(String data) {
+    try {
+      final parsed = json.decode(data) as Map<String, dynamic>;
+      final eventType = parsed['type'] as String?;
+      final eventSeq = (parsed['seq'] as num?)?.toInt();
+
+      print('[STREAM] event type=$eventType seq=$eventSeq');
+
+      if (eventType == 'thinking' && parsed['content'] != null) {
+        setState(() {
+          final seq = eventSeq ?? 0;
+          _thinkingContent[seq] = (_thinkingContent[seq] ?? '') + (parsed['content'] as String);
+          for (int i = _messages.length - 1; i >= 0; i--) {
+            final msg = _messages[i];
+            if (msg['role'] != 'assistant') continue;
+            final msgSeq = (msg['seq'] as num?)?.toInt();
+            if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
+            if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
+              msg['_thinkingText'] = _thinkingContent[seq];
+              break;
+            }
+          }
+        });
+        _scrollToBottom();
+      } else if (eventType == 'tool_use') {
+        final tool = parsed['tool'] as String? ?? '';
+        final summary = parsed['input_summary'] as String? ?? '';
+        setState(() {
+          _toolStatus = _formatToolActivity(tool, summary);
+          for (int i = _messages.length - 1; i >= 0; i--) {
+            final msg = _messages[i];
+            if (msg['role'] != 'assistant') continue;
+            final msgSeq = (msg['seq'] as num?)?.toInt();
+            if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
+            if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
+              msg['_toolStatus'] = _toolStatus;
+              break;
+            }
+          }
+        });
+      } else if (eventType == 'text' && parsed['content'] != null) {
+        setState(() {
+          _toolStatus = '';
+          for (int i = _messages.length - 1; i >= 0; i--) {
+            final msg = _messages[i];
+            if (msg['role'] != 'assistant') continue;
+            final msgSeq = (msg['seq'] as num?)?.toInt();
+            if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
+            if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
+              msg['content'] = (msg['content'] as String? ?? '') + parsed['content'];
+              msg['_thinking'] = false;
+              msg['_toolStatus'] = null;
+              break;
+            }
+          }
+        });
+        _scrollToBottom();
+      } else if (eventType == 'cancelled') {
+        setState(() {
+          _cancelling = false;
+          _toolStatus = '';
+          for (int i = _messages.length - 1; i >= 0; i--) {
+            final msg = _messages[i];
+            if (msg['_thinking'] == true || msg['status'] == 'pending') {
+              msg['_thinking'] = false;
+              final existing = msg['content'] as String? ?? '';
+              msg['content'] = existing.isEmpty ? '[Cancelled]' : '$existing\n\n_[Cancelled]_';
+              break;
+            }
+          }
+          _pendingJobs.clear();
+          _thinkingContent.clear();
+        });
+      } else if (eventType == 'done') {
+        final doneSeq = eventSeq;
+        final jobId = _pendingJobs.entries
+            .where((e) => e.value == doneSeq)
+            .map((e) => e.key)
+            .firstOrNull;
+        if (jobId != null) {
+          _pendingJobs.remove(jobId);
+          ref.read(apiClientProvider).getChat().then((session) {
+            if (mounted) setState(() => _session = session);
+          }).catchError((_) {});
+        }
+        setState(() {
+          _cancelling = false;
+          _toolStatus = '';
+          if (doneSeq != null) _thinkingContent.remove(doneSeq);
         });
       }
-    });
+    } catch (e) {
+      print('[STREAM] parse error: $e data=$data');
+    }
   }
 
   Future<void> _onJobComplete(String jobId) async {
