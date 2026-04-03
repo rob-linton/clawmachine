@@ -490,14 +490,24 @@ fn chat_text_stream(redis_url: String, channel: String) -> impl Stream<Item = Re
     async_stream::stream! {
         let client = match redis::Client::open(redis_url.as_str()) {
             Ok(c) => c,
-            Err(_) => return,
+            Err(e) => {
+                tracing::error!(error = %e, "Chat SSE: failed to create Redis client");
+                return;
+            }
         };
         let mut pubsub = match client.get_async_pubsub().await {
             Ok(ps) => ps,
-            Err(_) => return,
+            Err(e) => {
+                tracing::error!(error = %e, "Chat SSE: failed to create PubSub connection");
+                return;
+            }
         };
-        if pubsub.subscribe(&channel).await.is_err() { return; }
+        if let Err(e) = pubsub.subscribe(&channel).await {
+            tracing::error!(error = %e, %channel, "Chat SSE: failed to subscribe");
+            return;
+        }
 
+        tracing::debug!(%channel, "Chat SSE: subscribed");
         yield Ok(Event::default().event("connected").data(r#"{"status":"connected"}"#));
 
         loop {
@@ -505,14 +515,13 @@ fn chat_text_stream(redis_url: String, channel: String) -> impl Stream<Item = Re
             match pubsub.on_message().next().await {
                 Some(msg) => {
                     if let Ok(payload) = msg.get_payload::<String>() {
-                        // Forward all events — don't break on "done".
-                        // The subscription stays alive across messages so the
-                        // Flutter client receives thinking/tool_use/text/done
-                        // events for every message without reconnection gaps.
                         yield Ok(Event::default().event("chunk").data(payload));
                     }
                 }
-                None => break,
+                None => {
+                    tracing::debug!(%channel, "Chat SSE: pub/sub stream ended");
+                    break;
+                }
             }
         }
     }
