@@ -96,6 +96,11 @@ class ApiClient {
   String get chatStreamUrl => '$_baseUrl/api/v1/chat/stream';
   String get chatExportUrl => '$_baseUrl/api/v1/chat/export';
 
+  /// Cancel the currently running chat message.
+  Future<void> cancelChat() async {
+    await _dio.post('/chat/cancel');
+  }
+
   Future<Map<String, dynamic>> submitTask(String prompt, {String? model}) async {
     final data = <String, dynamic>{'content': prompt};
     if (model != null) data['model'] = model;
@@ -106,6 +111,11 @@ class ApiClient {
   Future<List<Map<String, dynamic>>> getArtifacts() async {
     final resp = await _dio.get('/chat/artifacts');
     return List<Map<String, dynamic>>.from(resp.data['artifacts']);
+  }
+
+  Future<Map<String, dynamic>> getArtifact(int id) async {
+    final resp = await _dio.get('/chat/artifacts/$id');
+    return Map<String, dynamic>.from(resp.data);
   }
 
   Future<void> retryChatMessage(int seq) async {

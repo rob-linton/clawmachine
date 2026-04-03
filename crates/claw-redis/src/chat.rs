@@ -236,6 +236,14 @@ pub async fn release_chat_lock(pool: &Pool, chat_id: Uuid, job_id: Uuid) -> Resu
     Ok(())
 }
 
+/// Get the job_id currently holding the chat execution lock (if any).
+pub async fn get_chat_lock_holder(pool: &Pool, chat_id: Uuid) -> Result<Option<Uuid>, RedisError> {
+    let mut conn = pool.get().await?;
+    let key = format!("{}{}:exec_lock", CHAT_PREFIX, chat_id);
+    let val: Option<String> = redis::cmd("GET").arg(&key).query_async(&mut *conn).await?;
+    Ok(val.and_then(|v| v.parse().ok()))
+}
+
 // --- Streaming ---
 
 /// Publish a chat stream chunk to Redis pub/sub for real-time UI display.

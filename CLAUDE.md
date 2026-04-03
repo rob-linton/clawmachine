@@ -152,10 +152,20 @@ POST   /api/v1/chat/messages/{seq}/retry — retry from this point (truncates hi
 DELETE /api/v1/chat                    — delete chat session + workspace
 GET    /api/v1/chat/search?q=keyword   — full-text search message history
 GET    /api/v1/chat/stream             — SSE stream of assistant text chunks (real-time)
+POST   /api/v1/chat/cancel            — cancel the currently running chat message
 GET    /api/v1/chat/export            — download chat as markdown file
 POST   /api/v1/chat/tasks             — submit background task {content, model?} (runs in forked workspace)
 GET    /api/v1/chat/artifacts          — list extracted code artifacts from conversation
 ```
+
+**Chat stream event types**: The SSE stream at `/chat/stream` publishes events with JSON payloads containing a `type` field:
+- `text` — assistant response text chunk: `{"type": "text", "content": "...", "seq": N}`
+- `thinking` — extended thinking content: `{"type": "thinking", "content": "...", "seq": N}`
+- `tool_use` — tool activity: `{"type": "tool_use", "tool": "Read", "input_summary": "src/main.rs", "seq": N}`
+- `cancelled` — message was cancelled: `{"type": "cancelled", "seq": N}`
+- `done` — message complete: `{"type": "done", "seq": N}`
+
+**Chat cancellation**: Uses the existing per-job cancel flag (`claw:job:{job_id}:cancel`). The cancel endpoint reads the chat's exec_lock to find the running job_id, then sets its cancel flag. The worker sends SIGTERM to the Claude process inside the container (container stays alive for reuse), harvests partial work, and publishes the `cancelled` SSE event.
 
 Each user gets one chat session tied to a private persistent workspace. Messages are submitted as high-priority jobs. The worker detects chat jobs via `chat:` and `chat_seq:` tags and routes them through a **persistent session container** (`docker exec` into a long-lived container) with `claude -p --continue` for native conversation context. Both user and assistant messages are also written to `.chat/messages/{seq}-{role}.md` in the workspace.
 

@@ -11,6 +11,8 @@ pub struct ExecutionResult {
     pub result_text: String,
     pub cost_usd: f64,
     pub duration_ms: u64,
+    pub files_written: Vec<String>,
+    pub thinking: Option<String>,
 }
 
 /// Execution backend: local (direct subprocess) or Docker (containerized).
@@ -127,7 +129,7 @@ impl StreamState {
     /// Build the final result text and extract cost.
     /// When `prefer_assistant` is true, use assistant text chunks (the actual response)
     /// instead of the result event text (which is a summary in stream-json format).
-    pub fn finalize(mut self, prefer_assistant: bool) -> (String, f64) {
+    pub fn finalize(mut self, prefer_assistant: bool) -> (String, f64, Vec<String>) {
         let use_assistant = if prefer_assistant {
             !self.assistant_texts.is_empty()
         } else {
@@ -174,7 +176,7 @@ impl StreamState {
             })
             .unwrap_or(0.0);
 
-        (self.result_text, cost_usd)
+        (self.result_text, cost_usd, self.files_written)
     }
 }
 
@@ -291,11 +293,13 @@ pub async fn local_execute_job(
         ));
     }
 
-    let (result_text, cost_usd) = state.finalize(false);
+    let (result_text, cost_usd, files_written) = state.finalize(false);
 
     Ok(ExecutionResult {
         result_text,
         cost_usd,
         duration_ms,
+        files_written,
+        thinking: None,
     })
 }

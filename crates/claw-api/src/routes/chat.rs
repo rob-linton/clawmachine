@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -26,7 +26,9 @@ pub fn router() -> Router<AppState> {
         .route("/chat/stream", get(chat_stream_sse))
         .route("/chat/export", get(export_chat))
         .route("/chat/tasks", post(submit_task))
+        .route("/chat/cancel", post(cancel_chat))
         .route("/chat/artifacts", get(list_artifacts))
+        .route("/chat/artifacts/{id}", get(get_artifact))
         .route("/chat", delete(delete_chat))
 }
 
@@ -171,6 +173,7 @@ async fn send_message(
         token_estimate: estimate_tokens(&req.content),
         files_written: Vec::new(),
         artifacts: Vec::new(),
+        thinking: None,
         timestamp: chrono::Utc::now(),
     };
     if let Err(e) = claw_redis::add_chat_message(&state.pool, chat_id, &user_msg).await {
@@ -321,7 +324,7 @@ async fn submit_task(
         status: "complete".to_string(),
         summary: None, job_id: None, cost_usd: None, model: None,
         token_estimate: estimate_tokens(&req.content),
-        files_written: Vec::new(), artifacts: Vec::new(),
+        files_written: Vec::new(), artifacts: Vec::new(), thinking: None,
         timestamp: chrono::Utc::now(),
     };
     claw_redis::add_chat_message(&state.pool, chat_id, &task_msg).await.ok();
@@ -388,6 +391,52 @@ async fn list_artifacts(
             (StatusCode::OK, Json(serde_json::json!({"artifacts": artifacts}))).into_response()
         }
         Err(_) => (StatusCode::OK, Json(serde_json::json!({"artifacts": []}))).into_response(),
+    }
+}
+
+/// Get a single artifact's content by ID.
+async fn get_artifact(
+    user: CurrentUser,
+    State(state): State<AppState>,
+    Path(id): Path<u32>,
+) -> impl IntoResponse {
+    let chat_id = match get_user_chat_id(&state, &user.username).await {
+        Some(id) => id,
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No chat session"}))).into_response(),
+    };
+
+    let session = match claw_redis::get_chat_session(&state.pool, chat_id).await {
+        Ok(Some(s)) => s,
+        _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Session not found"}))).into_response(),
+    };
+
+    let home = dirs::home_dir().unwrap_or_else(|| "/tmp".into());
+    let artifacts_dir = home.join(".claw/checkouts").join(session.workspace_id.to_string()).join(".chat/artifacts");
+    let index_path = artifacts_dir.join("index.json");
+
+    let index: Vec<serde_json::Value> = match tokio::fs::read_to_string(&index_path).await {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+        Err(_) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No artifacts"}))).into_response(),
+    };
+
+    let entry = match index.iter().find(|e| e.get("id").and_then(|i| i.as_u64()) == Some(id as u64)) {
+        Some(e) => e,
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Artifact not found"}))).into_response(),
+    };
+
+    let rel_path = match entry.get("path").and_then(|p| p.as_str()) {
+        Some(p) => p,
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Artifact path missing"}))).into_response(),
+    };
+
+    let file_path = home.join(".claw/checkouts").join(session.workspace_id.to_string()).join(rel_path);
+    match tokio::fs::read_to_string(&file_path).await {
+        Ok(content) => {
+            let mut result = entry.clone();
+            result.as_object_mut().map(|o| o.insert("content".to_string(), serde_json::Value::String(content)));
+            (StatusCode::OK, Json(result)).into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Artifact file not found"}))).into_response(),
     }
 }
 
@@ -528,6 +577,29 @@ async fn fork_ephemeral_workspace(
 
     tracing::info!(parent = %parent_id, fork = %new_id, seq, "Forked ephemeral task workspace");
     Ok(new_id)
+}
+
+/// Cancel the currently running chat message.
+/// Finds the running job via the exec_lock and sets its cancel flag.
+async fn cancel_chat(
+    user: CurrentUser,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    let chat_id = match get_user_chat_id(&state, &user.username).await {
+        Some(id) => id,
+        None => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No chat session"}))).into_response(),
+    };
+
+    // Read the exec_lock to find the currently running job_id
+    let job_id = match claw_redis::get_chat_lock_holder(&state.pool, chat_id).await {
+        Ok(Some(id)) => id,
+        _ => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "No message currently executing"}))).into_response(),
+    };
+
+    // Set the per-job cancel flag (worker polls this every 2s)
+    claw_redis::set_cancel_flag(&state.pool, job_id).await.ok();
+
+    (StatusCode::OK, Json(serde_json::json!({"ok": true, "job_id": job_id.to_string()}))).into_response()
 }
 
 async fn get_user_chat_id(state: &AppState, username: &str) -> Option<Uuid> {

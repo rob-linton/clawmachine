@@ -390,20 +390,44 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                             user_message.clone()
                                         };
 
-                                        // --- EXECUTE ---
+                                        // --- EXECUTE with cancellation support ---
                                         let (log_tx, _log_rx) = tokio::sync::mpsc::channel(256);
+                                        let chat_cancel = CancellationToken::new();
+                                        let chat_cancel_clone = chat_cancel.clone();
+                                        let chat_cancel_pool = pool.clone();
+                                        let chat_cancel_job_id = job_id;
+                                        let chat_cancel_handle = tokio::spawn(async move {
+                                            let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+                                            loop {
+                                                interval.tick().await;
+                                                if let Ok(true) = claw_redis::is_cancelled(&chat_cancel_pool, chat_cancel_job_id).await {
+                                                    chat_cancel_clone.cancel();
+                                                    break;
+                                                }
+                                            }
+                                        });
+
                                         match session_container::execute_chat_message(
-                                            &pool, chat_id, &container_name, ws_id, &effective_message, job.model.as_deref(), is_first, seq, log_tx
+                                            &pool, chat_id, &container_name, ws_id, &effective_message, job.model.as_deref(), is_first, seq, log_tx, chat_cancel
                                         ).await {
                                             Ok(r) => {
+                                                chat_cancel_handle.abort();
+                                                claw_redis::clear_cancel_flag(&pool, job_id).await.ok();
+
                                                 // --- POST-EXEC: store results ---
                                                 claw_redis::complete_job(&pool, job_id, &r.result_text, r.cost_usd, r.duration_ms).await.ok();
+
+                                                // Extract artifacts before saving message so IDs are included
+                                                let artifact_ids = session_container::extract_artifacts(ws_id, seq, &r.result_text).await;
+
                                                 if seq > 0 {
                                                     let msg = claw_models::ChatMessage {
                                                         seq, role: "assistant".to_string(), content: r.result_text.clone(),
                                                         summary: None, job_id: Some(job_id), cost_usd: Some(r.cost_usd),
                                                         model: job.model.clone(), token_estimate: (r.result_text.len() / 4).max(1) as u32,
-                                                        files_written: Vec::new(), artifacts: Vec::new(), status: "complete".to_string(), timestamp: chrono::Utc::now(),
+                                                        files_written: r.files_written.clone(), artifacts: artifact_ids,
+                                                        thinking: r.thinking.clone(),
+                                                        status: "complete".to_string(), timestamp: chrono::Utc::now(),
                                                     };
                                                     claw_redis::add_chat_message(&pool, chat_id, &msg).await.ok();
                                                     let msgs_dir = dirs::home_dir().unwrap_or_else(|| "/tmp".into())
@@ -426,9 +450,6 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
 
                                                 // Release lock (after harvest, before background work)
                                                 claw_redis::release_chat_lock(&pool, chat_id, job_id).await.ok();
-
-                                                // Post-exec: extract artifacts + check install requests
-                                                session_container::extract_artifacts(ws_id, seq, &r.result_text).await;
                                                 session_container::process_install_requests(&pool, ws_id, chat_id).await;
 
                                                 // Periodic git commit every 5 messages
@@ -534,23 +555,57 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                 });
                                             }
                                             Err(e) => {
-                                                tracing::error!(job_id = %job_id, error = %e, "Chat execution failed");
-                                                claw_redis::release_chat_lock(&pool, chat_id, job_id).await.ok();
-                                                let is_terminal = claw_redis::fail_job(&pool, job_id, &e).await.ok() == Some(false);
-                                                claw_redis::delete_chat_container(&pool, chat_id).await.ok();
-                                                // On terminal failure, store error as assistant message so UI shows it
-                                                if is_terminal && seq > 0 {
-                                                    let err_msg = claw_models::ChatMessage {
-                                                        seq, role: "assistant".to_string(),
-                                                        content: format!("Error: {}", e),
-                                                        summary: None, job_id: Some(job_id), cost_usd: None,
-                                                        model: None, token_estimate: 0,
-                                                        files_written: Vec::new(), artifacts: Vec::new(), status: "complete".to_string(), timestamp: chrono::Utc::now(),
-                                                    };
-                                                    claw_redis::add_chat_message(&pool, chat_id, &err_msg).await.ok();
+                                                chat_cancel_handle.abort();
+                                                claw_redis::clear_cancel_flag(&pool, job_id).await.ok();
+
+                                                let is_cancelled = e.contains("cancelled");
+                                                if is_cancelled {
+                                                    tracing::info!(job_id = %job_id, "Chat message cancelled");
+                                                } else {
+                                                    tracing::error!(job_id = %job_id, error = %e, "Chat execution failed");
                                                 }
-                                                let event = serde_json::json!({"type": "job_update", "job_id": job_id.to_string(), "status": "failed"});
-                                                claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
+
+                                                // Harvest notebook + git commit even on cancel (preserve partial work)
+                                                session_container::harvest_notebook(&pool, &chat_username, ws_id, seq).await.ok();
+                                                let checkout = dirs::home_dir().unwrap_or_else(|| "/tmp".into())
+                                                    .join(".claw/checkouts").join(ws_id.to_string());
+                                                session_container::git_commit(&checkout, &format!("chat: {} at message {}", if is_cancelled { "cancelled" } else { "failed" }, seq)).await;
+
+                                                // Release lock before anything else
+                                                claw_redis::release_chat_lock(&pool, chat_id, job_id).await.ok();
+
+                                                if is_cancelled {
+                                                    // Cancel: mark job cancelled, keep container alive
+                                                    claw_redis::cancel_job(&pool, job_id).await.ok();
+                                                    if seq > 0 {
+                                                        let err_msg = claw_models::ChatMessage {
+                                                            seq, role: "assistant".to_string(),
+                                                            content: "[Cancelled]".to_string(),
+                                                            summary: None, job_id: Some(job_id), cost_usd: None,
+                                                            model: None, token_estimate: 0, thinking: None,
+                                                            files_written: Vec::new(), artifacts: Vec::new(), status: "complete".to_string(), timestamp: chrono::Utc::now(),
+                                                        };
+                                                        claw_redis::add_chat_message(&pool, chat_id, &err_msg).await.ok();
+                                                    }
+                                                    let event = serde_json::json!({"type": "job_update", "job_id": job_id.to_string(), "status": "cancelled"});
+                                                    claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
+                                                } else {
+                                                    // Real error: delete container, mark failed
+                                                    let is_terminal = claw_redis::fail_job(&pool, job_id, &e).await.ok() == Some(false);
+                                                    claw_redis::delete_chat_container(&pool, chat_id).await.ok();
+                                                    if is_terminal && seq > 0 {
+                                                        let err_msg = claw_models::ChatMessage {
+                                                            seq, role: "assistant".to_string(),
+                                                            content: format!("Error: {}", e),
+                                                            summary: None, job_id: Some(job_id), cost_usd: None,
+                                                            model: None, token_estimate: 0, thinking: None,
+                                                            files_written: Vec::new(), artifacts: Vec::new(), status: "complete".to_string(), timestamp: chrono::Utc::now(),
+                                                        };
+                                                        claw_redis::add_chat_message(&pool, chat_id, &err_msg).await.ok();
+                                                    }
+                                                    let event = serde_json::json!({"type": "job_update", "job_id": job_id.to_string(), "status": "failed"});
+                                                    claw_redis::publish_job_event(&pool, &event.to_string()).await.ok();
+                                                }
                                             }
                                         }
                                     }
@@ -919,6 +974,7 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                         token_estimate: (r.result_text.len() / 4).max(1) as u32,
                                         files_written: Vec::new(),
                                         artifacts: Vec::new(),
+                                        thinking: None,
                                         status: "complete".to_string(),
                                         timestamp: chrono::Utc::now(),
                                     };

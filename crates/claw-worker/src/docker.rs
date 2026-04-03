@@ -623,12 +623,14 @@ pub async fn docker_execute_job(
         return Err(format!("claude exited with code {code}: {}", stderr_output.trim().chars().take(500).collect::<String>()));
     }
 
-    let (result_text, cost_usd) = state.finalize(false);
+    let (result_text, cost_usd, files_written) = state.finalize(false);
 
     Ok(ExecutionResult {
         result_text,
         cost_usd,
         duration_ms,
+        files_written,
+        thinking: None,
     })
 }
 

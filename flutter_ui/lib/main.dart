@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -170,7 +171,15 @@ class _ClawAppState extends ConsumerState<ClawApp> {
         useMaterial3: true,
       ),
       routerConfig: _router,
-      builder: (context, child) => SelectionArea(child: child ?? const SizedBox.shrink()),
+      builder: (context, child) {
+        final widget = child ?? const SizedBox.shrink();
+        // SelectionArea interferes with TextField focus on mobile (keyboard won't appear)
+        if (defaultTargetPlatform == TargetPlatform.iOS ||
+            defaultTargetPlatform == TargetPlatform.android) {
+          return widget;
+        }
+        return SelectionArea(child: widget);
+      },
     );
   }
 }

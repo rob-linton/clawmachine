@@ -57,6 +57,8 @@ pub struct ChatMessage {
     pub files_written: Vec<String>,
     #[serde(default)]
     pub artifacts: Vec<u32>,
+    #[serde(default)]
+    pub thinking: Option<String>,
     pub timestamp: DateTime<Utc>,
 }
 

@@ -28,9 +28,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   String _selectedModel = 'sonnet';
   String _searchQuery = '';
   List<Map<String, dynamic>>? _searchResults;
+  List<Map<String, dynamic>> _artifacts = [];
   StreamSubscription? _eventSub;
   StreamSubscription? _streamSub;
   Timer? _pollTimer;
+  final Map<int, String> _thinkingContent = {}; // seq → accumulated thinking
+  String _toolStatus = ''; // current tool activity line
+  bool _cancelling = false; // true between cancel press and worker confirmation
 
   @override
   void initState() {
@@ -76,9 +80,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final api = ref.read(apiClientProvider);
       final session = await api.createOrGetChat();
       final messages = await api.getChatMessages(limit: 100);
+      final artifacts = await api.getArtifacts().catchError((_) => <Map<String, dynamic>>[]);
       setState(() {
         _session = session;
         _messages = messages;
+        _artifacts = artifacts;
         _loading = false;
       });
       _scrollToBottom();
@@ -94,6 +100,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     try {
       final api = ref.read(apiClientProvider);
       final messages = await api.getChatMessages(limit: 200);
+      final artifacts = await api.getArtifacts().catchError((_) => <Map<String, dynamic>>[]);
       print('[REFRESH] server returned ${messages.length} messages');
 
       // Preserve optimistic messages not yet stored on server
@@ -117,7 +124,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         return (roleOrder[a['role']] ?? 2).compareTo(roleOrder[b['role']] ?? 2);
       });
       if (mounted) {
-        setState(() => _messages = messages);
+        setState(() {
+          _messages = messages;
+          _artifacts = artifacts;
+        });
       }
     } catch (_) {}
   }
@@ -265,10 +275,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
             try {
               final parsed = json.decode(data) as Map<String, dynamic>;
-              if (parsed['type'] == 'text' && parsed['content'] != null) {
-                final eventSeq = (parsed['seq'] as num?)?.toInt();
-                print('[STREAM] text seq=$eventSeq content="${(parsed['content'] as String).substring(0, (parsed['content'] as String).length.clamp(0, 20))}"');
+              final eventType = parsed['type'] as String?;
+              final eventSeq = (parsed['seq'] as num?)?.toInt();
+
+              if (eventType == 'thinking' && parsed['content'] != null) {
                 setState(() {
+                  final seq = eventSeq ?? 0;
+                  _thinkingContent[seq] = (_thinkingContent[seq] ?? '') + (parsed['content'] as String);
+                  // Update the message bubble to show thinking
+                  for (int i = _messages.length - 1; i >= 0; i--) {
+                    final msg = _messages[i];
+                    if (msg['role'] != 'assistant') continue;
+                    final msgSeq = (msg['seq'] as num?)?.toInt();
+                    if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
+                    if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
+                      msg['_thinkingText'] = _thinkingContent[seq];
+                      break;
+                    }
+                  }
+                });
+                _scrollToBottom();
+              } else if (eventType == 'tool_use') {
+                final tool = parsed['tool'] as String? ?? '';
+                final summary = parsed['input_summary'] as String? ?? '';
+                setState(() {
+                  _toolStatus = _formatToolActivity(tool, summary);
+                  for (int i = _messages.length - 1; i >= 0; i--) {
+                    final msg = _messages[i];
+                    if (msg['role'] != 'assistant') continue;
+                    final msgSeq = (msg['seq'] as num?)?.toInt();
+                    if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
+                    if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
+                      msg['_toolStatus'] = _toolStatus;
+                      break;
+                    }
+                  }
+                });
+              } else if (eventType == 'text' && parsed['content'] != null) {
+                setState(() {
+                  _toolStatus = '';
                   for (int i = _messages.length - 1; i >= 0; i--) {
                     final msg = _messages[i];
                     if (msg['role'] != 'assistant') continue;
@@ -277,28 +322,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
                       msg['content'] = (msg['content'] as String? ?? '') + parsed['content'];
                       msg['_thinking'] = false;
+                      msg['_toolStatus'] = null;
                       break;
                     }
                   }
                 });
                 _scrollToBottom();
-              } else if (parsed['type'] == 'done') {
-                // Don't cancel the persistent stream here — it stays open
-                // for all messages. Just clean up the pending job.
-                final doneSeq = (parsed['seq'] as num?)?.toInt();
-                print('[STREAM] done seq=$doneSeq pending=${_pendingJobs.length}');
+              } else if (eventType == 'cancelled') {
+                setState(() {
+                  _cancelling = false;
+                  _toolStatus = '';
+                  for (int i = _messages.length - 1; i >= 0; i--) {
+                    final msg = _messages[i];
+                    if (msg['_thinking'] == true || msg['status'] == 'pending') {
+                      msg['_thinking'] = false;
+                      final existing = msg['content'] as String? ?? '';
+                      msg['content'] = existing.isEmpty ? '[Cancelled]' : '$existing\n\n_[Cancelled]_';
+                      break;
+                    }
+                  }
+                  _pendingJobs.clear();
+                  _thinkingContent.clear();
+                });
+              } else if (eventType == 'done') {
+                final doneSeq = eventSeq;
                 final jobId = _pendingJobs.entries
                     .where((e) => e.value == doneSeq)
                     .map((e) => e.key)
                     .firstOrNull;
                 if (jobId != null) {
                   _pendingJobs.remove(jobId);
-                  print('[STREAM] removed jobId=$jobId, pending=${_pendingJobs.length}');
-                  // Update session stats
                   ref.read(apiClientProvider).getChat().then((session) {
                     if (mounted) setState(() => _session = session);
                   }).catchError((_) {});
                 }
+                setState(() {
+                  _cancelling = false;
+                  _toolStatus = '';
+                  if (doneSeq != null) _thinkingContent.remove(doneSeq);
+                });
               }
             } catch (_) {}
           }
@@ -359,6 +421,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  String _formatToolActivity(String tool, String summary) {
+    switch (tool) {
+      case 'Read': return 'Reading ${summary.isNotEmpty ? summary : "file"}';
+      case 'Write': return 'Writing ${summary.isNotEmpty ? summary : "file"}';
+      case 'Edit': return 'Editing ${summary.isNotEmpty ? summary : "file"}';
+      case 'Bash': return 'Running ${summary.isNotEmpty ? summary : "command"}';
+      case 'Grep': return 'Searching ${summary.isNotEmpty ? summary : "files"}';
+      case 'Glob': return 'Finding files';
+      default: return summary.isNotEmpty ? '$tool: $summary' : tool;
+    }
+  }
+
+  Future<void> _cancelMessage() async {
+    setState(() => _cancelling = true);
+    try {
+      await ref.read(apiClientProvider).cancelChat();
+    } catch (e) {
+      setState(() => _cancelling = false);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Cancel failed: $e')),
+        );
+      }
+    }
+  }
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -369,6 +457,100 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         );
       }
     });
+  }
+
+  void _showArtifactViewer(Map<String, dynamic> artifact) async {
+    final api = ref.read(apiClientProvider);
+    final id = (artifact['id'] as num).toInt();
+    try {
+      final full = await api.getArtifact(id);
+      final content = full['content'] as String? ?? '';
+      final filename = full['filename'] as String? ?? 'snippet';
+      final language = full['language'] as String? ?? '';
+      if (!mounted) return;
+      showDialog(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: Row(
+            children: [
+              Expanded(child: Text(filename, style: const TextStyle(fontSize: 16))),
+              if (language.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Chip(
+                    label: Text(language, style: const TextStyle(fontSize: 11)),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+              IconButton(
+                icon: const Icon(Icons.copy, size: 18),
+                tooltip: 'Copy',
+                onPressed: () {
+                  Clipboard.setData(ClipboardData(text: content));
+                  ScaffoldMessenger.of(ctx).showSnackBar(
+                    const SnackBar(content: Text('Copied to clipboard')),
+                  );
+                },
+              ),
+            ],
+          ),
+          content: SizedBox(
+            width: 700,
+            height: 500,
+            child: SingleChildScrollView(
+              child: MarkdownMessage(content: '```$language\n$content\n```'),
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+          ],
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to load artifact: $e')),
+        );
+      }
+    }
+  }
+
+  void _showArtifactsPanel() {
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Artifacts (${_artifacts.length})'),
+        content: SizedBox(
+          width: 500,
+          height: 400,
+          child: _artifacts.isEmpty
+              ? const Center(child: Text('No artifacts yet'))
+              : ListView.builder(
+                  itemCount: _artifacts.length,
+                  itemBuilder: (context, index) {
+                    final a = _artifacts[index];
+                    final filename = a['filename'] as String? ?? 'snippet';
+                    final language = a['language'] as String? ?? '';
+                    final lines = (a['lines'] as num?)?.toInt() ?? 0;
+                    final seq = (a['seq'] as num?)?.toInt() ?? 0;
+                    return ListTile(
+                      leading: const Icon(Icons.code),
+                      title: Text(filename),
+                      subtitle: Text('$language \u00b7 $lines lines \u00b7 message #$seq'),
+                      dense: true,
+                      onTap: () {
+                        Navigator.pop(ctx);
+                        _showArtifactViewer(a);
+                      },
+                    );
+                  },
+                ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+        ],
+      ),
+    );
   }
 
   @override
@@ -445,6 +627,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   launchUrl(Uri.parse(api.chatExportUrl));
                 },
               ),
+              if (_artifacts.isNotEmpty)
+                TextButton.icon(
+                  icon: Badge(
+                    label: Text('${_artifacts.length}', style: const TextStyle(fontSize: 10)),
+                    child: const Icon(Icons.code, size: 16),
+                  ),
+                  label: const Text('Artifacts'),
+                  onPressed: _showArtifactsPanel,
+                ),
               if (_session?['workspace_id'] != null)
                 TextButton.icon(
                   icon: const Icon(Icons.folder_open, size: 16),
@@ -501,12 +692,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     final isAssistant = msg['role'] == 'assistant';
                     final seq = (msg['seq'] as num?)?.toInt() ?? 0;
                     final isPending = msg['_thinking'] == true || msg['status'] == 'pending';
+                    final msgArtifacts = _artifacts.where(
+                      (a) => (a['seq'] as num?)?.toInt() == seq,
+                    ).toList();
                     return _MessageBubble(
                       message: msg,
                       isThinking: isPending && (msg['content'] as String? ?? '').isEmpty,
+                      thinkingText: msg['_thinkingText'] as String?,
+                      toolStatus: msg['_toolStatus'] as String?,
                       onRetry: isAssistant && !isPending && seq > 0
                           ? () => _retryMessage(seq)
                           : null,
+                      artifacts: isAssistant ? msgArtifacts : const [],
+                      onArtifactTap: _showArtifactViewer,
                     );
                   },
                 ),
@@ -561,15 +759,32 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           label: const Text('Send'),
                         ),
                       ),
-                      const SizedBox(width: 4),
-                      SizedBox(
-                        height: 48,
-                        child: OutlinedButton.icon(
-                          onPressed: _sendTask,
-                          icon: const Icon(Icons.construction, size: 18),
-                          label: const Text('Task'),
+                      if (!hasPending) ...[
+                        const SizedBox(width: 4),
+                        SizedBox(
+                          height: 48,
+                          child: OutlinedButton.icon(
+                            onPressed: _sendTask,
+                            icon: const Icon(Icons.construction, size: 18),
+                            label: const Text('Task'),
+                          ),
                         ),
-                      ),
+                      ],
+                      if (hasPending) ...[
+                        const SizedBox(width: 4),
+                        SizedBox(
+                          height: 48,
+                          child: OutlinedButton.icon(
+                            onPressed: _cancelling ? null : _cancelMessage,
+                            icon: Icon(_cancelling ? Icons.hourglass_top : Icons.stop, size: 18, color: _cancelling ? null : Colors.red),
+                            label: Text(_cancelling ? 'Cancelling...' : 'Stop'),
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: _cancelling ? null : Colors.red,
+                              side: _cancelling ? null : const BorderSide(color: Colors.red),
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                   const SizedBox(height: 8),
@@ -608,21 +823,36 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 }
 
-class _MessageBubble extends StatelessWidget {
+class _MessageBubble extends StatefulWidget {
   final Map<String, dynamic> message;
   final bool isThinking;
+  final String? thinkingText;
+  final String? toolStatus;
   final VoidCallback? onRetry;
+  final List<Map<String, dynamic>> artifacts;
+  final void Function(Map<String, dynamic>)? onArtifactTap;
 
-  const _MessageBubble({required this.message, this.isThinking = false, this.onRetry});
+  const _MessageBubble({required this.message, this.isThinking = false, this.thinkingText, this.toolStatus, this.onRetry, this.artifacts = const [], this.onArtifactTap});
+
+  @override
+  State<_MessageBubble> createState() => _MessageBubbleState();
+}
+
+class _MessageBubbleState extends State<_MessageBubble> {
+  bool _thinkingExpanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final role = message['role'] as String? ?? 'user';
-    final content = message['content'] as String? ?? '';
+    final role = widget.message['role'] as String? ?? 'user';
+    final content = widget.message['content'] as String? ?? '';
     final isUser = role == 'user';
     final isTask = role == 'task';
-    final cost = (message['cost_usd'] as num?)?.toDouble();
-    final filesWritten = (message['files_written'] as List?)?.cast<String>() ?? [];
+    final cost = (widget.message['cost_usd'] as num?)?.toDouble();
+    final filesWritten = (widget.message['files_written'] as List?)?.cast<String>() ?? [];
+    final storedThinking = widget.message['thinking'] as String?;
+    final hasThinkingContent = (widget.thinkingText ?? storedThinking ?? '').isNotEmpty;
+    final isStreaming = widget.isThinking || widget.thinkingText != null || widget.toolStatus != null;
+    final hasContent = content.isNotEmpty;
 
     final IconData icon;
     final Color bgColor;
@@ -668,7 +898,35 @@ class _MessageBubble extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: 4),
-                if (isThinking)
+                // Thinking section: show while streaming or as expandable toggle after
+                if (!isUser && hasThinkingContent) ...[
+                  if (isStreaming && !hasContent)
+                    // Actively thinking — show full text streaming in
+                    _buildThinkingSection(context, widget.thinkingText ?? storedThinking ?? '', expanded: true)
+                  else
+                    // Done thinking, text arrived — collapsible toggle
+                    _buildThinkingSection(context, widget.thinkingText ?? storedThinking ?? '', expanded: _thinkingExpanded),
+                ],
+                // Tool activity line
+                if (!isUser && widget.toolStatus != null && widget.toolStatus!.isNotEmpty && !hasContent)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Row(
+                      children: [
+                        SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.grey.shade500)),
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Text(
+                            widget.toolStatus!,
+                            style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontStyle: FontStyle.italic),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                // Spinner: only if nothing else is showing yet
+                if (widget.isThinking && !hasContent && !hasThinkingContent && widget.toolStatus == null)
                   Row(
                     children: [
                       SizedBox(
@@ -684,8 +942,9 @@ class _MessageBubble extends StatelessWidget {
                         fontStyle: FontStyle.italic,
                       )),
                     ],
-                  )
-                else
+                  ),
+                // Response text
+                if (hasContent)
                   Semantics(
                     label: '${isUser ? "You" : "Claude"}: $content',
                     child: isUser
@@ -703,10 +962,25 @@ class _MessageBubble extends StatelessWidget {
                     )).toList(),
                   ),
                 ],
+                if (widget.artifacts.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 6,
+                    children: widget.artifacts.map((a) => ActionChip(
+                      avatar: const Icon(Icons.code, size: 14),
+                      label: Text(
+                        '${a['filename'] ?? 'snippet'} (${a['lines']} lines)',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                      visualDensity: VisualDensity.compact,
+                      onPressed: () => widget.onArtifactTap?.call(a),
+                    )).toList(),
+                  ),
+                ],
               ],
             ),
           ),
-          if (!isUser && !isThinking && content.isNotEmpty)
+          if (!isUser && !widget.isThinking && content.isNotEmpty)
             Column(
               children: [
                 IconButton(
@@ -722,18 +996,86 @@ class _MessageBubble extends StatelessWidget {
                     );
                   },
                 ),
-                if (onRetry != null)
+                if (widget.onRetry != null)
                   IconButton(
                     icon: const Icon(Icons.refresh, size: 16),
                     tooltip: 'Retry',
                     visualDensity: VisualDensity.compact,
                     constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
                     padding: EdgeInsets.zero,
-                    onPressed: onRetry,
+                    onPressed: widget.onRetry,
                   ),
               ],
             ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildThinkingSection(BuildContext context, String thinkingText, {required bool expanded}) {
+    final content = widget.message['content'] as String? ?? '';
+    final hasResponse = content.isNotEmpty;
+
+    if (!hasResponse) {
+      // Still streaming thinking — show full text
+      return Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade900.withValues(alpha: 0.3),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.psychology, size: 14, color: Colors.grey.shade500),
+                const SizedBox(width: 4),
+                Text('Thinking', style: TextStyle(color: Colors.grey.shade500, fontSize: 11, fontWeight: FontWeight.bold)),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              thinkingText.length > 500 ? '...${thinkingText.substring(thinkingText.length - 500)}' : thinkingText,
+              style: TextStyle(color: Colors.grey.shade400, fontSize: 12, fontStyle: FontStyle.italic, height: 1.4),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // Response arrived — collapsible toggle
+    return GestureDetector(
+      onTap: () => setState(() => _thinkingExpanded = !_thinkingExpanded),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade900.withValues(alpha: 0.2),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.psychology, size: 14, color: Colors.grey.shade500),
+                const SizedBox(width: 4),
+                Text('Thinking', style: TextStyle(color: Colors.grey.shade500, fontSize: 11, fontWeight: FontWeight.bold)),
+                const Spacer(),
+                Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 16, color: Colors.grey.shade500),
+              ],
+            ),
+            if (expanded) ...[
+              const SizedBox(height: 4),
+              Text(
+                thinkingText,
+                style: TextStyle(color: Colors.grey.shade400, fontSize: 12, fontStyle: FontStyle.italic, height: 1.4),
+              ),
+            ],
+          ],
+        ),
       ),
     );
   }

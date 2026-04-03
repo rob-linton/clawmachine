@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 /// Ensure a session container is running for the given chat.
@@ -126,6 +127,7 @@ pub async fn execute_chat_message(
     is_first_message: bool,
     seq: u32,
     log_tx: mpsc::Sender<String>,
+    cancel: CancellationToken,
 ) -> Result<ExecutionResult, String> {
     let checkout = checkout_path(workspace_id);
     let start = std::time::Instant::now();
@@ -201,37 +203,92 @@ pub async fn execute_chat_message(
         output
     });
 
-    // Parse stream-json from stdout + publish assistant text chunks for streaming UI
+    // Parse stream-json from stdout + publish chunks for real-time streaming UI
     let stream_channel = format!("claw:chat:{}:stream", chat_id);
     let mut lines = BufReader::new(stdout).lines();
     let mut state = StreamState::new();
-    while let Ok(Some(line)) = lines.next_line().await {
-        let trimmed = line.trim();
-        if !trimmed.is_empty() {
-            // Publish assistant text chunks for real-time streaming
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                if val.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-                    if let Some(content) = val.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
-                        for item in content {
-                            if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                                if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                                    if !text.is_empty() {
-                                        let chunk = serde_json::json!({"type": "text", "content": text, "seq": seq});
+    let mut accumulated_thinking = String::new();
+    let container_for_kill = container_name.to_string();
+
+    let read_result = tokio::select! {
+        r = async {
+            while let Ok(Some(line)) = lines.next_line().await {
+                let trimmed = line.trim();
+                if trimmed.is_empty() { continue; }
+
+                // Publish real-time chunks for the streaming UI
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if val.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                        if let Some(content) = val.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                            for item in content {
+                                match item.get("type").and_then(|t| t.as_str()) {
+                                    Some("text") => {
+                                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
+                                            if !text.is_empty() {
+                                                let chunk = serde_json::json!({"type": "text", "content": text, "seq": seq});
+                                                claw_redis::publish_chat_stream(pool, &stream_channel, &chunk.to_string()).await.ok();
+                                            }
+                                        }
+                                    }
+                                    Some("thinking") => {
+                                        if let Some(text) = item.get("thinking").and_then(|t| t.as_str()) {
+                                            if !text.is_empty() {
+                                                accumulated_thinking.push_str(text);
+                                                let chunk = serde_json::json!({"type": "thinking", "content": text, "seq": seq});
+                                                claw_redis::publish_chat_stream(pool, &stream_channel, &chunk.to_string()).await.ok();
+                                            }
+                                        }
+                                    }
+                                    Some("tool_use") => {
+                                        let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                                        let summary = match name {
+                                            "Write" | "Edit" | "Read" => item.get("input")
+                                                .and_then(|i| i.get("file_path"))
+                                                .and_then(|p| p.as_str())
+                                                .unwrap_or("").to_string(),
+                                            "Bash" => item.get("input")
+                                                .and_then(|i| i.get("command"))
+                                                .and_then(|c| c.as_str())
+                                                .map(|c| c.chars().take(80).collect::<String>())
+                                                .unwrap_or_default(),
+                                            _ => String::new(),
+                                        };
+                                        let chunk = serde_json::json!({"type": "tool_use", "tool": name, "input_summary": summary, "seq": seq});
                                         claw_redis::publish_chat_stream(pool, &stream_channel, &chunk.to_string()).await.ok();
                                     }
+                                    _ => {}
                                 }
                             }
                         }
+                    } else if val.get("type").and_then(|t| t.as_str()) == Some("result") {
+                        let done = serde_json::json!({"type": "done", "seq": seq});
+                        claw_redis::publish_chat_stream(pool, &stream_channel, &done.to_string()).await.ok();
                     }
-                } else if val.get("type").and_then(|t| t.as_str()) == Some("result") {
-                    let done = serde_json::json!({"type": "done", "seq": seq});
-                    claw_redis::publish_chat_stream(pool, &stream_channel, &done.to_string()).await.ok();
                 }
+                state.process_line(trimmed);
+                log_tx.send(line.clone()).await.ok();
             }
-            state.process_line(trimmed);
-            log_tx.send(line.clone()).await.ok();
+            Ok::<(), String>(())
+        } => r,
+
+        _ = cancel.cancelled() => {
+            // Graceful shutdown: SIGTERM first, then SIGKILL after 2s
+            tracing::info!(chat_id = %chat_id, seq, "Cancelling chat message — sending SIGTERM");
+            Command::new("docker")
+                .args(["exec", &container_for_kill, "pkill", "-TERM", "-f", "claude"])
+                .output().await.ok();
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            // SIGKILL if still running
+            Command::new("docker")
+                .args(["exec", &container_for_kill, "pkill", "-9", "-f", "claude"])
+                .output().await.ok();
+            // Publish cancelled event to stream
+            let cancelled = serde_json::json!({"type": "cancelled", "seq": seq});
+            claw_redis::publish_chat_stream(pool, &stream_channel, &cancelled.to_string()).await.ok();
+            return Err("Job was cancelled".to_string());
         }
-    }
+    };
+    read_result.map_err(|e| format!("Stream read error: {e}"))?;
 
     let exit = child.wait().await.map_err(|e| format!("docker exec wait: {e}"))?;
     let stderr_output = stderr_handle.await.unwrap_or_default();
@@ -242,8 +299,9 @@ pub async fn execute_chat_message(
             exit.code().unwrap_or(-1), stderr_output.trim()));
     }
 
-    let (result_text, cost_usd) = state.finalize(true);
-    Ok(ExecutionResult { result_text, cost_usd, duration_ms })
+    let (result_text, cost_usd, files_written) = state.finalize(true);
+    let thinking = if accumulated_thinking.is_empty() { None } else { Some(accumulated_thinking) };
+    Ok(ExecutionResult { result_text, cost_usd, duration_ms, files_written, thinking })
 }
 
 /// Stop and remove idle session containers.
@@ -366,7 +424,16 @@ pub async fn extract_artifacts(workspace_id: Uuid, seq: u32, response: &str) -> 
         // Determine if this is an artifact
         let (language, filename) = if lang_line.contains(':') {
             let parts: Vec<&str> = lang_line.splitn(2, ':').collect();
-            (parts[0].to_string(), Some(parts[1].to_string()))
+            (parts[0].to_string(), Some(parts[1].trim().to_string()))
+        } else if lang_line.contains(' ') {
+            // Also support "python fibonacci.py" (space-separated)
+            let parts: Vec<&str> = lang_line.splitn(2, ' ').collect();
+            let potential_file = parts[1].trim();
+            if potential_file.contains('.') {
+                (parts[0].to_string(), Some(potential_file.to_string()))
+            } else {
+                (lang_line.to_string(), None)
+            }
         } else {
             (lang_line.to_string(), None)
         };
