@@ -129,23 +129,36 @@ class ApiClient {
   /// when the Flutter UI is on a different origin from the API (dev: :3000
   /// vs :8080) — a plain `window.open` would lose the session cookie.
   Future<void> downloadArtifact(int id, String filename) async {
+    await _fetchToDownload(artifactDownloadUrl(id), filename);
+  }
+
+  /// Download a single workspace file. Same cross-origin-safe pattern as
+  /// [downloadArtifact]. Used by the chat view to make `files_written`
+  /// chips downloadable.
+  Future<void> downloadWorkspaceFile(
+      String workspaceId, String path, String filename) async {
+    await _fetchToDownload(
+      fileDownloadUrl(workspaceId, path, download: true),
+      filename,
+    );
+  }
+
+  Future<void> _fetchToDownload(String url, String filename) async {
     final init = web.RequestInit(
       method: 'GET',
       credentials: 'include',
     );
-    final response = await web.window
-        .fetch(artifactDownloadUrl(id).toJS, init)
-        .toDart;
+    final response = await web.window.fetch(url.toJS, init).toDart;
     if (!response.ok) {
       throw Exception('Download failed: HTTP ${response.status}');
     }
     final blob = await response.blob().toDart;
-    final url = web.URL.createObjectURL(blob);
+    final blobUrl = web.URL.createObjectURL(blob);
     final anchor = web.HTMLAnchorElement()
-      ..href = url
+      ..href = blobUrl
       ..download = filename;
     anchor.click();
-    web.URL.revokeObjectURL(url);
+    web.URL.revokeObjectURL(blobUrl);
   }
 
   Future<void> retryChatMessage(int seq) async {

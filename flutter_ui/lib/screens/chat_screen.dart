@@ -197,6 +197,40 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     }
   }
 
+  /// Download a file Claude wrote during a message. The path comes from the
+  /// worker's `files_written` harvest as the absolute container path
+  /// (e.g. `/workspace/reports/foo.md`); strip the `/workspace/` prefix to
+  /// get the workspace-relative path the API expects.
+  Future<void> _downloadWorkspaceFile(String absolutePath) async {
+    final session = ref.read(chatControllerProvider).session;
+    final workspaceId = session?['workspace_id'] as String?;
+    if (workspaceId == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('No workspace for this chat')));
+      }
+      return;
+    }
+    var rel = absolutePath;
+    for (final prefix in const ['/workspace/', 'workspace/', '/']) {
+      if (rel.startsWith(prefix)) {
+        rel = rel.substring(prefix.length);
+        break;
+      }
+    }
+    final filename = rel.split('/').last;
+    try {
+      await ref
+          .read(apiClientProvider)
+          .downloadWorkspaceFile(workspaceId, rel, filename);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Download failed: $e')));
+      }
+    }
+  }
+
   void _showArtifactsPanel(List<Map<String, dynamic>> artifacts) {
     showDialog(
       context: context,
@@ -471,6 +505,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           onArtifactDownload: (a) => _downloadArtifact(
                               (a['id'] as num).toInt(),
                               a['filename'] as String? ?? 'artifact'),
+                          onFileDownload: _downloadWorkspaceFile,
                         );
                       },
                     ),
@@ -641,6 +676,7 @@ class _MessageBubble extends StatefulWidget {
   final List<Map<String, dynamic>> artifacts;
   final void Function(Map<String, dynamic>)? onArtifactTap;
   final void Function(Map<String, dynamic>)? onArtifactDownload;
+  final void Function(String absolutePath)? onFileDownload;
 
   const _MessageBubble({
     required this.message,
@@ -652,6 +688,7 @@ class _MessageBubble extends StatefulWidget {
     this.artifacts = const [],
     this.onArtifactTap,
     this.onArtifactDownload,
+    this.onFileDownload,
   });
 
   @override
@@ -799,13 +836,13 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 6,
+                    runSpacing: 4,
                     children: filesWritten
-                        .map((f) => Chip(
-                              avatar: const Icon(Icons.insert_drive_file,
-                                  size: 14),
-                              label:
-                                  Text(f, style: const TextStyle(fontSize: 12)),
-                              visualDensity: VisualDensity.compact,
+                        .map((f) => _FileChip(
+                              path: f,
+                              onDownload: widget.onFileDownload == null
+                                  ? null
+                                  : () => widget.onFileDownload!(f),
                             ))
                         .toList(),
                   ),
@@ -1009,6 +1046,47 @@ class _ArtifactChip extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Tappable chip for a file Claude wrote during a message. Tapping the chip
+/// (or the trailing download icon) downloads the file from the chat's
+/// workspace via the workspace files API.
+class _FileChip extends StatelessWidget {
+  final String path;
+  final VoidCallback? onDownload;
+
+  const _FileChip({required this.path, required this.onDownload});
+
+  @override
+  Widget build(BuildContext context) {
+    final filename = path.split('/').last;
+    return Tooltip(
+      message: path,
+      waitDuration: const Duration(milliseconds: 400),
+      child: Material(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(16),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: onDownload,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.insert_drive_file, size: 14),
+                const SizedBox(width: 6),
+                Text(filename, style: const TextStyle(fontSize: 12)),
+                const SizedBox(width: 6),
+                Icon(Icons.download,
+                    size: 14, color: Colors.grey.shade400),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
