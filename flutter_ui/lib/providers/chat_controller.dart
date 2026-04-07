@@ -246,9 +246,26 @@ class ChatController extends StateNotifier<ChatState> {
       final jobId = result['job_id'] as String?;
       final seq = (result['seq'] as num?)?.toInt() ?? optimisticSeq;
       // Patch optimistic seq → real seq so isStillStreaming can match.
-      if (seq != optimisticSeq) {
-        for (final m in state.messages) {
-          if (m['seq'] == optimisticSeq) m['seq'] = seq;
+      // ALSO patch the optimistic timestamps to a fresh post-RTT now() —
+      // the server's stored chrono::Utc::now() was captured DURING the
+      // round-trip we just awaited, so it's now in the past relative to
+      // this clock. Without this re-patch, the assistant placeholder
+      // (timestamped pre-RTT) sorts BEFORE the server-stored user msg
+      // (timestamped during-RTT) once refreshMessages replaces the
+      // optimistic user copy — visibly putting the "Thinking..." bubble
+      // ABOVE the user message that triggered it. The post-RTT now() is
+      // guaranteed to be after the server timestamp.
+      final postRttNow = DateTime.now().toUtc();
+      for (final m in state.messages) {
+        if (m['seq'] == seq || m['seq'] == optimisticSeq) {
+          if (m['role'] == 'user') {
+            m['timestamp'] = postRttNow.toIso8601String();
+          } else if (m['role'] == 'assistant') {
+            // Bump the assistant placeholder strictly after the user msg.
+            m['timestamp'] = postRttNow
+                .add(const Duration(milliseconds: 1))
+                .toIso8601String();
+          }
         }
       }
       if (jobId != null) {
@@ -298,6 +315,22 @@ class ChatController extends StateNotifier<ChatState> {
     try {
       final result = await _api.submitTask(text, model: model);
       final jobId = result['job_id'] as String?;
+      // Patch optimistic timestamps to a fresh post-RTT now() so the
+      // refreshMessages sort doesn't put the placeholder above the user
+      // message that triggered it (see sendMessage for the full
+      // explanation).
+      final postRttNow = DateTime.now().toUtc();
+      for (final m in state.messages) {
+        if (m['seq'] == optimisticSeq) {
+          if (m['role'] == 'user') {
+            m['timestamp'] = postRttNow.toIso8601String();
+          } else if (m['role'] == 'task') {
+            m['timestamp'] = postRttNow
+                .add(const Duration(milliseconds: 1))
+                .toIso8601String();
+          }
+        }
+      }
       if (jobId != null) {
         state = state.copyWith(
           pendingJobs: {...state.pendingJobs, jobId: optimisticSeq},
