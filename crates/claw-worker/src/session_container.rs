@@ -93,9 +93,14 @@ pub async fn ensure_container(
         "--memory".into(), memory.to_string(),
         "--cpus".into(), cpu.to_string(),
         "--pids-limit".into(), "256".into(),
-        // Defense-in-depth: prevent privilege escalation via setuid
-        // binaries. Applies to all subsequent docker exec invocations.
-        "--security-opt".into(), "no-new-privileges".into(),
+        // NOTE: --security-opt no-new-privileges was tried here for
+        // defense-in-depth but had to be removed — on the production
+        // host (Ubuntu Core 24, snap-packaged Docker 28.4.0) the flag
+        // causes EVERY container exec to fail with "operation not
+        // permitted", regardless of whether the binary is setuid. The
+        // flag interacts badly with the host's seccomp/AppArmor
+        // configuration. The other credential-injection hardening
+        // (stdin pipe, no -e flags, no workspace plaintext) is intact.
         "-w".into(), "/workspace".into(),
         "-e".into(), "HOME=/home/claw".into(),
         "-v".into(), format!("{}:/workspace", host_checkout),

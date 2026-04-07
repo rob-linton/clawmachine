@@ -395,10 +395,14 @@ pub async fn docker_execute_job(
         cpu,
         "--pids-limit".into(),
         config.pids_limit.clone(),
-        // Defense-in-depth: prevent privilege escalation via setuid binaries.
-        // Pairs with --user to make the root drop irreversible.
-        "--security-opt".into(),
-        "no-new-privileges".into(),
+        // NOTE: --security-opt no-new-privileges was tried here for
+        // defense-in-depth but had to be removed — on the production host
+        // (Ubuntu Core 24, snap-packaged Docker 28.4.0) the flag causes
+        // EVERY container exec to fail with "operation not permitted",
+        // even on non-setuid binaries. Interaction with the host's
+        // seccomp/AppArmor configuration. The other credential-injection
+        // hardening (stdin pipe, no -e flags, no workspace plaintext) is
+        // intact and unaffected.
         // Mount workspace (using host path)
         "-v".into(),
         format!("{}:/workspace", host_workspace_path),
