@@ -330,6 +330,7 @@ pub async fn execute_chat_message(
                                     }
                                     Some("tool_use") => {
                                         let name = item.get("name").and_then(|n| n.as_str()).unwrap_or("unknown");
+                                        let tool_use_id = item.get("id").and_then(|i| i.as_str()).unwrap_or("");
                                         let summary = match name {
                                             "Write" | "Edit" | "Read" => item.get("input")
                                                 .and_then(|i| i.get("file_path"))
@@ -342,11 +343,50 @@ pub async fn execute_chat_message(
                                                 .unwrap_or_default(),
                                             _ => String::new(),
                                         };
-                                        let chunk = serde_json::json!({"type": "tool_use", "tool": name, "input_summary": summary, "seq": seq});
+                                        let chunk = serde_json::json!({
+                                            "type": "tool_use",
+                                            "tool": name,
+                                            "input_summary": summary,
+                                            "tool_use_id": tool_use_id,
+                                            "seq": seq,
+                                        });
                                         claw_redis::publish_chat_stream(pool, &stream_channel, &chunk.to_string()).await.ok();
                                     }
                                     _ => {}
                                 }
+                            }
+                        }
+                    } else if val.get("type").and_then(|t| t.as_str()) == Some("user") {
+                        // tool_result content blocks come back as `user` messages.
+                        // Publish each one to the chat stream so the inline activity
+                        // timeline can show what each tool returned.
+                        if let Some(content) = val.get("message").and_then(|m| m.get("content")).and_then(|c| c.as_array()) {
+                            for item in content {
+                                if item.get("type").and_then(|t| t.as_str()) != Some("tool_result") {
+                                    continue;
+                                }
+                                let tool_use_id = item.get("tool_use_id").and_then(|i| i.as_str()).unwrap_or("");
+                                let is_error = item.get("is_error").and_then(|b| b.as_bool()).unwrap_or(false);
+                                let full = extract_tool_result_text(item.get("content"));
+                                // Truncate by char count (not byte count) so we never split a
+                                // multi-byte UTF-8 sequence.
+                                const TRUNCATE_AT: usize = 500;
+                                let char_count = full.chars().count();
+                                let truncated = char_count > TRUNCATE_AT;
+                                let output: String = if truncated {
+                                    full.chars().take(TRUNCATE_AT).collect()
+                                } else {
+                                    full
+                                };
+                                let chunk = serde_json::json!({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use_id,
+                                    "output": output,
+                                    "truncated": truncated,
+                                    "is_error": is_error,
+                                    "seq": seq,
+                                });
+                                claw_redis::publish_chat_stream(pool, &stream_channel, &chunk.to_string()).await.ok();
                             }
                         }
                     } else if val.get("type").and_then(|t| t.as_str()) == Some("result") {
@@ -742,6 +782,24 @@ pub async fn deploy_api_skill(workspace_id: Uuid) {
     // Always overwrite — the skill content may have been updated
     tokio::fs::create_dir_all(&skill_dir).await.ok();
     tokio::fs::write(skill_dir.join("SKILL.md"), API_SKILL_CONTENT).await.ok();
+}
+
+/// Extract the displayable text from a stream-json `tool_result.content`
+/// field, which can be either a bare string or an array of content blocks
+/// like `[{type: "text", text: "..."}, {type: "image", source: {...}}]`.
+/// Walks the array, concatenates `text` items with newlines, ignores
+/// images and other non-text blocks. Returns an empty string for
+/// missing/null/unsupported content.
+fn extract_tool_result_text(content: Option<&serde_json::Value>) -> String {
+    match content {
+        Some(serde_json::Value::String(s)) => s.clone(),
+        Some(serde_json::Value::Array(items)) => items
+            .iter()
+            .filter_map(|i| i.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
 }
 
 pub fn checkout_path(workspace_id: Uuid) -> PathBuf {

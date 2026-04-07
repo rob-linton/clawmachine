@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../main.dart';
 import '../models/job.dart';
 import '../widgets/status_badge.dart';
+import '../widgets/tool_activity.dart';
 
 class JobDetailScreen extends ConsumerStatefulWidget {
   final String jobId;
@@ -545,7 +546,7 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
             } else if (ctype == 'tool_use') {
               final name = item['name'] as String? ?? '?';
               final input = item['input'] as Map<String, dynamic>? ?? {};
-              final summary = _toolSummary(name, input);
+              final summary = toolSummaryShort(name, input);
               widgets.add(Padding(
                 padding: const EdgeInsets.only(bottom: 4),
                 child: Text(
@@ -632,28 +633,6 @@ class _JobDetailScreenState extends ConsumerState<JobDetailScreen> {
       }
     }
     return widgets;
-  }
-
-  String _toolSummary(String name, Map<String, dynamic> input) {
-    switch (name) {
-      case 'Read':
-      case 'Write':
-      case 'Edit':
-        return input['file_path']?.toString() ?? '';
-      case 'Bash':
-        final cmd = input['command']?.toString() ?? '';
-        return cmd.length > 80 ? '${cmd.substring(0, 80)}...' : cmd;
-      case 'Glob':
-        return input['pattern']?.toString() ?? '';
-      case 'Grep':
-        return input['pattern']?.toString() ?? '';
-      case 'WebFetch':
-        return input['url']?.toString() ?? '';
-      case 'WebSearch':
-        return input['query']?.toString() ?? '';
-      default:
-        return '';
-    }
   }
 
   Widget _workspaceRow(String wsId) {

@@ -163,9 +163,12 @@ GET    /api/v1/chat/artifacts/{id}?download=true — download raw artifact bytes
 **Chat stream event types**: The SSE stream at `/chat/stream` publishes events with JSON payloads containing a `type` field:
 - `text` — assistant response text chunk: `{"type": "text", "content": "...", "seq": N}`
 - `thinking` — extended thinking content: `{"type": "thinking", "content": "...", "seq": N}`
-- `tool_use` — tool activity: `{"type": "tool_use", "tool": "Read", "input_summary": "src/main.rs", "seq": N}`
+- `tool_use` — tool call invocation: `{"type": "tool_use", "tool": "Read", "input_summary": "src/main.rs", "tool_use_id": "toolu_...", "seq": N}`
+- `tool_result` — tool call result: `{"type": "tool_result", "tool_use_id": "toolu_...", "output": "<first 500 chars>", "truncated": bool, "is_error": bool, "seq": N}` — pairs to its `tool_use` via `tool_use_id`. Output is truncated server-side; the chat UI's "Show full" button fetches the untruncated version from `GET /api/v1/jobs/{job_id}/logs` (which is now populated for chat-message jobs as of the inline-activity work).
 - `cancelled` — message was cancelled: `{"type": "cancelled", "seq": N}`
 - `done` — message complete: `{"type": "done", "seq": N}`
+
+**Inline activity timeline**: The chat UI accumulates `tool_use` and `tool_result` events into a per-message activity log (`msg['_activity']`) and renders them as a collapsible timeline above each assistant response. The timeline is populated from SSE events while the message is in flight; it survives navigation but NOT a hard browser refresh (the activity is in memory only — the server doesn't persist a per-event log on the chat message itself, only the final `ChatMessage`). For older messages on cold load, users can click into `/jobs/{job_id}` to see the full activity panel.
 
 **Chat cancellation**: Uses the existing per-job cancel flag (`claw:job:{job_id}:cancel`). The cancel endpoint reads the chat's exec_lock to find the running job_id, then sets its cancel flag. The worker sends SIGTERM to the Claude process inside the container (container stays alive for reuse), harvests partial work, and publishes the `cancelled` SSE event.
 

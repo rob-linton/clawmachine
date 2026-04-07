@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../main.dart';
 import '../providers/chat_controller.dart';
 import '../widgets/markdown_message.dart';
+import '../widgets/tool_activity.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -501,6 +502,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   model: _selectedModel)
                               : null,
                           artifacts: isAssistant ? msgArtifacts : const [],
+                          activity: (msg['_activity'] as List?)
+                              ?.cast<Map<String, dynamic>>(),
                           onArtifactTap: _showArtifactViewer,
                           onArtifactDownload: (a) => _downloadArtifact(
                               (a['id'] as num).toInt(),
@@ -674,6 +677,7 @@ class _MessageBubble extends StatefulWidget {
   final String? toolStatus;
   final VoidCallback? onRetry;
   final List<Map<String, dynamic>> artifacts;
+  final List<Map<String, dynamic>>? activity;
   final void Function(Map<String, dynamic>)? onArtifactTap;
   final void Function(Map<String, dynamic>)? onArtifactDownload;
   final void Function(String absolutePath)? onFileDownload;
@@ -686,6 +690,7 @@ class _MessageBubble extends StatefulWidget {
     this.toolStatus,
     this.onRetry,
     this.artifacts = const [],
+    this.activity,
     this.onArtifactTap,
     this.onArtifactDownload,
     this.onFileDownload,
@@ -697,6 +702,19 @@ class _MessageBubble extends StatefulWidget {
 
 class _MessageBubbleState extends State<_MessageBubble> {
   bool _thinkingExpanded = false;
+
+  @override
+  void didUpdateWidget(_MessageBubble old) {
+    super.didUpdateWidget(old);
+    // When a streaming message just finishes, leave the thinking section
+    // expanded so the user sees the smooth handover from streaming-form to
+    // collapsible-form. They can manually collapse via the chevron.
+    if (old.isStreaming && !widget.isStreaming) {
+      if (!_thinkingExpanded) {
+        setState(() => _thinkingExpanded = true);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -769,38 +787,24 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   if (widget.isStreaming || widget.isThinking)
                     _buildThinkingSection(
                         context, widget.thinkingText ?? storedThinking ?? '',
-                        expanded: true)
+                        expanded: true,
+                        isStreaming: widget.isStreaming)
                   else
                     _buildThinkingSection(
                         context, widget.thinkingText ?? storedThinking ?? '',
-                        expanded: _thinkingExpanded),
+                        expanded: _thinkingExpanded,
+                        isStreaming: widget.isStreaming),
                 ],
-                if (!isUser &&
-                    widget.toolStatus != null &&
-                    widget.toolStatus!.isNotEmpty &&
-                    !hasContent)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 4),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                            width: 12,
-                            height: 12,
-                            child: CircularProgressIndicator(
-                                strokeWidth: 2, color: Colors.grey.shade500)),
-                        const SizedBox(width: 8),
-                        Flexible(
-                          child: Text(
-                            widget.toolStatus!,
-                            style: TextStyle(
-                                color: Colors.grey.shade500,
-                                fontSize: 12,
-                                fontStyle: FontStyle.italic),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                      ],
-                    ),
+                // Inline activity timeline — shows tool calls + truncated
+                // results as they stream. Replaces the old transient
+                // _toolStatus caption (which got dropped because every step
+                // is now visible in the timeline with its own in-flight
+                // spinner).
+                if (!isUser && (widget.activity?.isNotEmpty ?? false))
+                  ActivityTimeline(
+                    entries: widget.activity!,
+                    isStreaming: widget.isStreaming,
+                    jobId: widget.message['job_id'] as String?,
                   ),
                 if (widget.isThinking &&
                     !hasContent &&
@@ -862,6 +866,29 @@ class _MessageBubbleState extends State<_MessageBubble> {
                         .toList(),
                   ),
                 ],
+                // Tasks (`/task <prompt>`) run via the standard worker job
+                // path, not the chat session container, so they don't get
+                // the inline activity timeline. Provide a one-click jump to
+                // the existing /jobs/{id} detail screen instead.
+                if (isTask && !widget.isThinking) ...[
+                  const SizedBox(height: 4),
+                  TextButton.icon(
+                    icon: const Icon(Icons.open_in_new, size: 14),
+                    label: const Text('View activity',
+                        style: TextStyle(fontSize: 12)),
+                    style: TextButton.styleFrom(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                      minimumSize: const Size(0, 0),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    onPressed: () {
+                      final jobId = widget.message['job_id'] as String?;
+                      if (jobId != null) context.go('/jobs/$jobId');
+                    },
+                  ),
+                ],
               ],
             ),
           ),
@@ -902,11 +929,14 @@ class _MessageBubbleState extends State<_MessageBubble> {
   }
 
   Widget _buildThinkingSection(BuildContext context, String thinkingText,
-      {required bool expanded}) {
+      {required bool expanded, required bool isStreaming}) {
     final content = widget.message['content'] as String? ?? '';
     final hasResponse = content.isNotEmpty;
 
-    if (!hasResponse) {
+    // While the assistant is still streaming, keep showing the expanded
+    // streaming form even after the first text token arrives. The
+    // collapsible toggle only takes over once streaming finishes.
+    if (!hasResponse || isStreaming) {
       return Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.all(8),

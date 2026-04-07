@@ -419,7 +419,19 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                         };
 
                                         // --- EXECUTE with cancellation support ---
-                                        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(256);
+                                        // Forward stream-json log lines to Redis so the chat-message
+                                        // job ends up with a proper log accessible via
+                                        // GET /api/v1/jobs/{id}/logs. This is what the chat UI's
+                                        // "Show full" tool-result button reads back, and it also
+                                        // populates the /jobs/{id} activity panel for chat jobs.
+                                        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel::<String>(256);
+                                        let log_pool = pool.clone();
+                                        let log_job_id = job_id;
+                                        let log_handle = tokio::spawn(async move {
+                                            while let Some(line) = log_rx.recv().await {
+                                                claw_redis::append_log(&log_pool, log_job_id, &line).await.ok();
+                                            }
+                                        });
                                         let chat_cancel = CancellationToken::new();
                                         let chat_cancel_clone = chat_cancel.clone();
                                         let chat_cancel_pool = pool.clone();
@@ -637,6 +649,12 @@ async fn worker_loop(pool: Pool, task_id: String, shutdown: Arc<AtomicBool>) {
                                                 }
                                             }
                                         }
+                                        // log_tx was moved into execute_chat_message and is
+                                        // dropped when that function returns. Wait for the
+                                        // forwarder task to drain any pending lines and exit
+                                        // cleanly. (Inside the ensure_container Ok arm so
+                                        // log_handle is in scope.)
+                                        let _ = log_handle.await;
                                     }
                                     Err(e) => {
                                         tracing::error!(job_id = %job_id, error = %e, "Session container failed");
