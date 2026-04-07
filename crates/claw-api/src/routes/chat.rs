@@ -15,6 +15,7 @@ use std::convert::Infallible;
 use uuid::Uuid;
 
 use crate::auth::CurrentUser;
+use crate::util::mime_from_extension;
 use crate::AppState;
 
 pub fn router() -> Router<AppState> {
@@ -394,11 +395,24 @@ async fn list_artifacts(
     }
 }
 
+#[derive(Deserialize, Default)]
+struct ArtifactQuery {
+    #[serde(default)]
+    download: Option<bool>,
+}
+
 /// Get a single artifact's content by ID.
+///
+/// Default mode returns JSON `{...metadata, content: <text>}` for the viewer.
+/// `?download=true` returns the raw file bytes with `Content-Disposition:
+/// attachment` so the browser downloads the file. The download path uses
+/// `tokio::fs::read` (binary-safe); the JSON path falls back to a placeholder
+/// when the file isn't UTF-8 so binary artifacts don't 404 in the viewer.
 async fn get_artifact(
     user: CurrentUser,
     State(state): State<AppState>,
     Path(id): Path<u32>,
+    Query(q): Query<ArtifactQuery>,
 ) -> impl IntoResponse {
     let chat_id = match get_user_chat_id(&state, &user.username).await {
         Some(id) => id,
@@ -430,13 +444,72 @@ async fn get_artifact(
     };
 
     let file_path = home.join(".claw/checkouts").join(session.workspace_id.to_string()).join(rel_path);
+
+    if q.download.unwrap_or(false) {
+        // Binary-safe download path.
+        let bytes = match tokio::fs::read(&file_path).await {
+            Ok(b) => b,
+            Err(_) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Artifact file not found"}))).into_response(),
+        };
+        let filename = entry
+            .get("filename")
+            .and_then(|f| f.as_str())
+            .unwrap_or("artifact")
+            .to_string();
+        let content_type = mime_from_extension(&filename);
+        // Sanitize filename for the header (drop quotes and CR/LF).
+        let safe_filename: String = filename
+            .chars()
+            .filter(|c| *c != '"' && *c != '\r' && *c != '\n')
+            .collect();
+        let disposition = format!("attachment; filename=\"{}\"", safe_filename);
+        return (
+            StatusCode::OK,
+            [
+                (axum::http::header::CONTENT_TYPE, content_type),
+                (axum::http::header::CONTENT_DISPOSITION, disposition),
+            ],
+            bytes,
+        )
+            .into_response();
+    }
+
+    // Default JSON viewer path. Fall back to a placeholder for non-UTF-8 files
+    // so binary artifacts (e.g. PNG) don't 404 — the viewer can still show
+    // metadata and the user can use the Download button.
     match tokio::fs::read_to_string(&file_path).await {
         Ok(content) => {
             let mut result = entry.clone();
-            result.as_object_mut().map(|o| o.insert("content".to_string(), serde_json::Value::String(content)));
+            if let Some(o) = result.as_object_mut() {
+                o.insert("content".to_string(), serde_json::Value::String(content));
+            }
             (StatusCode::OK, Json(result)).into_response()
         }
-        Err(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "Artifact file not found"}))).into_response(),
+        Err(_) => {
+            // Either the file is missing, or it isn't valid UTF-8. Probe
+            // existence with a raw read so a present-but-binary file still
+            // returns metadata + a placeholder rather than 404.
+            match tokio::fs::metadata(&file_path).await {
+                Ok(_) => {
+                    let mut result = entry.clone();
+                    if let Some(o) = result.as_object_mut() {
+                        o.insert(
+                            "content".to_string(),
+                            serde_json::Value::String(
+                                "[binary file — use Download to retrieve]".to_string(),
+                            ),
+                        );
+                        o.insert("binary".to_string(), serde_json::Value::Bool(true));
+                    }
+                    (StatusCode::OK, Json(result)).into_response()
+                }
+                Err(_) => (
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "Artifact file not found"})),
+                )
+                    .into_response(),
+            }
+        }
     }
 }
 

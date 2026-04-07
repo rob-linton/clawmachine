@@ -1,5 +1,7 @@
+import 'dart:js_interop';
 import 'dart:typed_data';
 import 'package:dio/dio.dart';
+import 'package:web/web.dart' as web;
 import '../models/job.dart';
 import '../models/skill.dart';
 import '../models/cron_schedule.dart';
@@ -116,6 +118,34 @@ class ApiClient {
   Future<Map<String, dynamic>> getArtifact(int id) async {
     final resp = await _dio.get('/chat/artifacts/$id');
     return Map<String, dynamic>.from(resp.data);
+  }
+
+  /// Build a URL for artifact download (binary-safe).
+  String artifactDownloadUrl(int id) =>
+      '$_baseUrl/api/v1/chat/artifacts/$id?download=true';
+
+  /// Download an artifact via credentialed fetch + Blob + synthetic anchor
+  /// click. Uses the browser fetch API directly so cookies ride along even
+  /// when the Flutter UI is on a different origin from the API (dev: :3000
+  /// vs :8080) — a plain `window.open` would lose the session cookie.
+  Future<void> downloadArtifact(int id, String filename) async {
+    final init = web.RequestInit(
+      method: 'GET',
+      credentials: 'include',
+    );
+    final response = await web.window
+        .fetch(artifactDownloadUrl(id).toJS, init)
+        .toDart;
+    if (!response.ok) {
+      throw Exception('Download failed: HTTP ${response.status}');
+    }
+    final blob = await response.blob().toDart;
+    final url = web.URL.createObjectURL(blob);
+    final anchor = web.HTMLAnchorElement()
+      ..href = url
+      ..download = filename;
+    anchor.click();
+    web.URL.revokeObjectURL(url);
   }
 
   Future<void> retryChatMessage(int seq) async {

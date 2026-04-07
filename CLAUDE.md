@@ -156,6 +156,8 @@ POST   /api/v1/chat/cancel            — cancel the currently running chat mess
 GET    /api/v1/chat/export            — download chat as markdown file
 POST   /api/v1/chat/tasks             — submit background task {content, model?} (runs in forked workspace)
 GET    /api/v1/chat/artifacts          — list extracted code artifacts from conversation
+GET    /api/v1/chat/artifacts/{id}     — get artifact metadata + content as JSON (binary files return placeholder text + `binary: true`)
+GET    /api/v1/chat/artifacts/{id}?download=true — download raw artifact bytes (binary-safe, with `Content-Disposition: attachment`)
 ```
 
 **Chat stream event types**: The SSE stream at `/chat/stream` publishes events with JSON payloads containing a `type` field:

@@ -1,14 +1,10 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:js_interop';
-import 'dart:js_interop_unsafe';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:web/web.dart' as web;
 import '../main.dart';
+import '../providers/chat_controller.dart';
 import '../widgets/markdown_message.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
@@ -22,49 +18,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _inputController = TextEditingController();
   final _inputFocusNode = FocusNode();
   final _scrollController = ScrollController();
-  List<Map<String, dynamic>> _messages = [];
-  Map<String, dynamic>? _session;
-  bool _loading = true;
-  String? _error;
-  final Map<String, int> _pendingJobs = {}; // job_id → seq
   String _selectedModel = 'sonnet';
   String _searchQuery = '';
   List<Map<String, dynamic>>? _searchResults;
-  List<Map<String, dynamic>> _artifacts = [];
-  StreamSubscription? _eventSub;
-  StreamSubscription? _streamSub;
-  Timer? _pollTimer;
-  final Map<int, String> _thinkingContent = {}; // seq → accumulated thinking
-  String _toolStatus = ''; // current tool activity line
-  bool _cancelling = false; // true between cancel press and worker confirmation
+  bool _userScrolledUp = false;
+  int _lastSeenStreamTick = -1;
 
   @override
   void initState() {
     super.initState();
-    _initChat();
-    _connectChatStream();
-    // Listen for job completion via SSE
-    _eventSub = ref.read(eventServiceProvider).jobUpdates.listen((event) {
-      final jobId = event['job_id'] as String?;
-      if (jobId != null && _pendingJobs.containsKey(jobId)) {
-        final status = event['status'] as String?;
-        if (status == 'completed' || status == 'failed') {
-          _onJobComplete(jobId);
-        }
-      }
-    });
-    // Polling fallback: SSE events are unreliable (Redis pub/sub is
-    // fire-and-forget). Poll every 2s to clear any stuck messages.
-    _pollTimer = Timer.periodic(const Duration(seconds: 2), (_) {
-      if (!mounted) return;
-      final thinkingCount = _messages.where((m) => m['_thinking'] == true).length;
-      final pendingCount = _pendingJobs.length;
-      // Also check for assistant messages with empty content (SSE missed the response)
-      final emptyAssistants = _messages.where((m) =>
-        m['role'] == 'assistant' && (m['content'] as String? ?? '').isEmpty
-      ).length;
-      if (_pendingJobs.isEmpty && thinkingCount == 0 && emptyAssistants == 0) return;
-      _refreshMessages();
+    _scrollController.addListener(_onScroll);
+    // Force scroll to bottom on first build (after layout completes).
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _pinToBottom(force: true);
     });
   }
 
@@ -72,80 +38,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void dispose() {
     _inputController.dispose();
     _inputFocusNode.dispose();
+    _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
-    _eventSub?.cancel();
-    _streamSub?.cancel();
-    _pollTimer?.cancel();
     super.dispose();
   }
 
-  Future<void> _initChat() async {
-    setState(() => _loading = true);
-    try {
-      final api = ref.read(apiClientProvider);
-      final session = await api.createOrGetChat();
-      final messages = await api.getChatMessages(limit: 100);
-      final artifacts = await api.getArtifacts().catchError((_) => <Map<String, dynamic>>[]);
-      setState(() {
-        _session = session;
-        _messages = messages;
-        _artifacts = artifacts;
-        _loading = false;
-      });
-      _scrollToBottom();
-    } catch (e) {
-      setState(() {
-        _error = 'Failed to load chat: $e';
-        _loading = false;
-      });
+  void _onScroll() {
+    if (!_scrollController.hasClients) return;
+    // In `reverse: true` mode, "at bottom" means scroll position near 0.
+    final atBottom = _scrollController.position.pixels < 100;
+    final scrolledUp = !atBottom;
+    if (_userScrolledUp != scrolledUp) {
+      setState(() => _userScrolledUp = scrolledUp);
     }
   }
 
-  Future<void> _refreshMessages() async {
-    try {
-      final api = ref.read(apiClientProvider);
-      final messages = await api.getChatMessages(limit: 200);
-      final artifacts = await api.getArtifacts().catchError((_) => <Map<String, dynamic>>[]);
-      print('[REFRESH] server returned ${messages.length} messages');
-
-      // Preserve optimistic messages not yet stored on server
-      final serverKeys = messages.map((m) => '${m['seq']}_${m['role']}').toSet();
-      final optimistic = _messages.where((m) =>
-        !serverKeys.contains('${m['seq']}_${m['role']}') &&
-        (m['_thinking'] == true || m['status'] == 'pending')
-      ).toList();
-      if (optimistic.isNotEmpty) {
-        print('[REFRESH] preserving ${optimistic.length} optimistic: ${optimistic.map((m) => '${m['seq']}_${m['role']}_thinking=${m['_thinking']}').join(', ')}');
-      }
-      messages.addAll(optimistic);
-
-      // Sort: by seq, then user before assistant/task within same seq
-      messages.sort((a, b) {
-        final seqA = (a['seq'] as num?)?.toInt() ?? 0;
-        final seqB = (b['seq'] as num?)?.toInt() ?? 0;
-        if (seqA != seqB) return seqA.compareTo(seqB);
-        // Within same seq: user first, then assistant/task
-        final roleOrder = {'user': 0, 'assistant': 1, 'task': 1};
-        return (roleOrder[a['role']] ?? 2).compareTo(roleOrder[b['role']] ?? 2);
-      });
-      if (mounted) {
-        setState(() {
-          _messages = messages;
-          _artifacts = artifacts;
-        });
-      }
-    } catch (_) {}
+  /// Pin the view to the newest message. With `reverse: true`, that's
+  /// scroll offset 0. `force: true` overrides the user-scrolled-up guard.
+  void _pinToBottom({bool force = false}) {
+    if (!force && _userScrolledUp) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      _scrollController.jumpTo(0);
+    });
   }
 
-  Future<void> _search(String query) async {
-    if (query.isEmpty) {
-      setState(() { _searchQuery = ''; _searchResults = null; });
-      return;
-    }
-    try {
-      final results = await ref.read(apiClientProvider).searchChatMessages(query);
-      setState(() { _searchQuery = query; _searchResults = results; });
-    } catch (_) {}
+  Future<void> _send() async {
+    final text = _inputController.text.trim();
+    if (text.isEmpty) return;
+    _inputController.clear();
+    _inputFocusNode.requestFocus();
+    // User-initiated send always pins to bottom.
+    _pinToBottom(force: true);
+    await ref
+        .read(chatControllerProvider.notifier)
+        .sendMessage(text, model: _selectedModel);
   }
 
   Future<void> _sendTask() async {
@@ -153,353 +80,30 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     if (text.isEmpty) return;
     _inputController.clear();
     _inputFocusNode.requestFocus();
+    _pinToBottom(force: true);
+    await ref
+        .read(chatControllerProvider.notifier)
+        .sendTask(text, model: _selectedModel);
+  }
 
-    final optimisticSeq = (_messages.isEmpty ? 1 : (_messages.last['seq'] as num).toInt() + 1);
-    setState(() {
-      _messages.add({
-        'seq': optimisticSeq, 'role': 'user', 'content': '/task $text',
-        'status': 'complete', 'timestamp': DateTime.now().toIso8601String(),
-      });
-      _messages.add({
-        'seq': optimisticSeq, 'role': 'task', 'content': '',
-        'status': 'pending', 'timestamp': DateTime.now().toIso8601String(),
-        '_thinking': true,
-      });
-    });
-    _scrollToBottom();
-
-    try {
-      final result = await ref.read(apiClientProvider).submitTask(text, model: _selectedModel);
-      final jobId = result['job_id'] as String?;
-      if (jobId != null) _pendingJobs[jobId] = optimisticSeq;
-    } catch (e) {
+  Future<void> _search(String query) async {
+    if (query.isEmpty) {
       setState(() {
-        _messages.removeWhere((m) => m['seq'] == optimisticSeq && m['_thinking'] == true);
+        _searchQuery = '';
+        _searchResults = null;
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Task failed: $e')));
-      }
+      return;
     }
-  }
-
-  Future<void> _sendMessage() async {
-    final text = _inputController.text.trim();
-    if (text.isEmpty) return;
-
-    // Check for /task prefix
-    if (text.startsWith('/task ')) {
-      _inputController.text = text.substring(6);
-      return _sendTask();
-    }
-
-    _inputController.clear();
-    _inputFocusNode.requestFocus();
-
-    // Optimistic seq (will be corrected by server)
-    final optimisticSeq = (_messages.isEmpty ? 1 : (_messages.last['seq'] as num).toInt() + 1);
-
-    // Add user message immediately
-    setState(() {
-      _messages.add({
-        'seq': optimisticSeq,
-        'role': 'user',
-        'content': text,
-        'status': 'complete',
-        'timestamp': DateTime.now().toIso8601String(),
-      });
-      // Add assistant placeholder
-      _messages.add({
-        'seq': optimisticSeq,
-        'role': 'assistant',
-        'content': '',
-        'status': 'pending',
-        'timestamp': DateTime.now().toIso8601String(),
-        '_thinking': true,
-      });
-    });
-    _scrollToBottom();
-
     try {
-      final api = ref.read(apiClientProvider);
-      final result = await api.sendChatMessage(text, model: _selectedModel);
-      final jobId = result['job_id'] as String?;
-      final seq = (result['seq'] as num?)?.toInt() ?? optimisticSeq;
-
-      if (jobId != null) {
-        _pendingJobs[jobId] = seq;
-        print('[SEND] jobId=$jobId seq=$seq pending=${_pendingJobs.length}');
-      }
-    } catch (e) {
-      // Remove the optimistic messages
+      final results = await ref.read(apiClientProvider).searchChatMessages(query);
       setState(() {
-        _messages.removeWhere((m) => m['seq'] == optimisticSeq && m['_thinking'] == true);
-        _messages.removeWhere((m) => m['seq'] == optimisticSeq && m['role'] == 'user' && m['content'] == text);
+        _searchQuery = query;
+        _searchResults = results;
       });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to send: $e')),
-        );
-      }
-    }
-  }
-
-  /// Persistent SSE connection using the browser's native fetch API with
-  /// ReadableStream. Dio on Flutter web uses XMLHttpRequest which buffers
-  /// the entire response — it does NOT stream chunks incrementally.
-  /// Native fetch with ReadableStream gives us true real-time streaming.
-  void _connectChatStream() {
-    _streamSub?.cancel();
-    print('[STREAM] connecting via fetch...');
-    final api = ref.read(apiClientProvider);
-    final streamUrl = api.chatStreamUrl;
-
-    _fetchSSE(streamUrl);
-  }
-
-  Future<void> _fetchSSE(String url) async {
-    try {
-      final init = web.RequestInit(
-        method: 'GET',
-        headers: {'Accept': 'text/event-stream'}.jsify() as web.HeadersInit,
-        credentials: 'include',
-      );
-      final response = await web.window.fetch(url.toJS, init).toDart;
-      print('[STREAM] fetch status=${response.status}');
-
-      if (!response.ok) {
-        print('[STREAM] fetch failed: ${response.status} ${response.statusText}');
-        _reconnectStream();
-        return;
-      }
-
-      final body = response.body;
-      if (body == null) {
-        print('[STREAM] no response body');
-        _reconnectStream();
-        return;
-      }
-
-      final reader = body.getReader();
-      final decoder = web.TextDecoder();
-      String buffer = '';
-
-      while (mounted) {
-        final result = await (reader.callMethod<JSPromise>('read'.toJS)).toDart;
-        final done = (result as JSObject).getProperty<JSBoolean>('done'.toJS).toDart;
-        if (done) {
-          print('[STREAM] stream ended');
-          break;
-        }
-        final value = result.getProperty<JSObject>('value'.toJS);
-        final chunk = decoder.decode(value, web.TextDecodeOptions(stream: true));
-        buffer += chunk;
-
-        while (buffer.contains('\n\n')) {
-          final idx = buffer.indexOf('\n\n');
-          final block = buffer.substring(0, idx);
-          buffer = buffer.substring(idx + 2);
-
-          String? data;
-          for (final line in block.split('\n')) {
-            if (line.startsWith('data: ')) data = line.substring(6);
-          }
-          if (data == null) continue;
-
-          _handleSSEData(data);
-        }
-      }
-    } catch (e) {
-      print('[STREAM] error: $e');
-    }
-
-    _reconnectStream();
-  }
-
-  void _reconnectStream() {
-    if (mounted) {
-      Future.delayed(const Duration(seconds: 2), () {
-        if (mounted) _connectChatStream();
-      });
-    }
-  }
-
-  void _handleSSEData(String data) {
-    try {
-      final parsed = json.decode(data) as Map<String, dynamic>;
-      final eventType = parsed['type'] as String?;
-      final eventSeq = (parsed['seq'] as num?)?.toInt();
-
-      print('[STREAM] event type=$eventType seq=$eventSeq');
-
-      if (eventType == 'thinking' && parsed['content'] != null) {
-        setState(() {
-          final seq = eventSeq ?? 0;
-          _thinkingContent[seq] = (_thinkingContent[seq] ?? '') + (parsed['content'] as String);
-          for (int i = _messages.length - 1; i >= 0; i--) {
-            final msg = _messages[i];
-            if (msg['role'] != 'assistant') continue;
-            final msgSeq = (msg['seq'] as num?)?.toInt();
-            if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
-            if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
-              msg['_thinkingText'] = _thinkingContent[seq];
-              break;
-            }
-          }
-        });
-        _scrollToBottom();
-      } else if (eventType == 'tool_use') {
-        final tool = parsed['tool'] as String? ?? '';
-        final summary = parsed['input_summary'] as String? ?? '';
-        setState(() {
-          _toolStatus = _formatToolActivity(tool, summary);
-          for (int i = _messages.length - 1; i >= 0; i--) {
-            final msg = _messages[i];
-            if (msg['role'] != 'assistant') continue;
-            final msgSeq = (msg['seq'] as num?)?.toInt();
-            if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
-            if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
-              msg['_toolStatus'] = _toolStatus;
-              break;
-            }
-          }
-        });
-      } else if (eventType == 'text' && parsed['content'] != null) {
-        setState(() {
-          _toolStatus = '';
-          for (int i = _messages.length - 1; i >= 0; i--) {
-            final msg = _messages[i];
-            if (msg['role'] != 'assistant') continue;
-            final msgSeq = (msg['seq'] as num?)?.toInt();
-            if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
-            if (msg['_thinking'] == true || (eventSeq != null && msgSeq == eventSeq)) {
-              msg['content'] = (msg['content'] as String? ?? '') + parsed['content'];
-              msg['_thinking'] = false;
-              msg['_toolStatus'] = null;
-              break;
-            }
-          }
-        });
-        _scrollToBottom();
-      } else if (eventType == 'tool_build') {
-        final buildMsg = parsed['content'] as String? ?? 'Building tools...';
-        setState(() {
-          _toolStatus = buildMsg;
-          for (int i = _messages.length - 1; i >= 0; i--) {
-            final msg = _messages[i];
-            if (msg['_thinking'] == true || msg['status'] == 'pending') {
-              msg['_toolStatus'] = buildMsg;
-              break;
-            }
-          }
-        });
-      } else if (eventType == 'cancelled') {
-        setState(() {
-          _cancelling = false;
-          _toolStatus = '';
-          for (int i = _messages.length - 1; i >= 0; i--) {
-            final msg = _messages[i];
-            if (msg['_thinking'] == true || msg['status'] == 'pending') {
-              msg['_thinking'] = false;
-              final existing = msg['content'] as String? ?? '';
-              msg['content'] = existing.isEmpty ? '[Cancelled]' : '$existing\n\n_[Cancelled]_';
-              break;
-            }
-          }
-          _pendingJobs.clear();
-          _thinkingContent.clear();
-        });
-      } else if (eventType == 'done') {
-        final doneSeq = eventSeq;
-        final jobId = _pendingJobs.entries
-            .where((e) => e.value == doneSeq)
-            .map((e) => e.key)
-            .firstOrNull;
-        if (jobId != null) {
-          _pendingJobs.remove(jobId);
-          ref.read(apiClientProvider).getChat().then((session) {
-            if (mounted) setState(() => _session = session);
-          }).catchError((_) {});
-        }
-        setState(() {
-          _cancelling = false;
-          _toolStatus = '';
-          if (doneSeq != null) _thinkingContent.remove(doneSeq);
-        });
-      }
-    } catch (e) {
-      print('[STREAM] parse error: $e data=$data');
-    }
-  }
-
-  Future<void> _onJobComplete(String jobId) async {
-    print('[JOB_COMPLETE] jobId=$jobId via SSE event, pending=${_pendingJobs.length}');
-    _pendingJobs.remove(jobId);
-    await _refreshMessages();
-    try {
-      final api = ref.read(apiClientProvider);
-      final session = await api.getChat();
-      if (mounted) setState(() => _session = session);
     } catch (_) {}
-    _scrollToBottom();
   }
 
-  Future<void> _retryMessage(int seq) async {
-    try {
-      final api = ref.read(apiClientProvider);
-      final userMsg = _messages.where((m) => m['seq'] == seq && m['role'] == 'user').firstOrNull;
-      if (userMsg == null) return;
-
-      await api.retryChatMessage(seq);
-      await api.sendChatMessage(userMsg['content'] as String, model: _selectedModel);
-      await _refreshMessages();
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Retry failed: $e')),
-        );
-      }
-    }
-  }
-
-  String _formatToolActivity(String tool, String summary) {
-    switch (tool) {
-      case 'Read': return 'Reading ${summary.isNotEmpty ? summary : "file"}';
-      case 'Write': return 'Writing ${summary.isNotEmpty ? summary : "file"}';
-      case 'Edit': return 'Editing ${summary.isNotEmpty ? summary : "file"}';
-      case 'Bash': return 'Running ${summary.isNotEmpty ? summary : "command"}';
-      case 'Grep': return 'Searching ${summary.isNotEmpty ? summary : "files"}';
-      case 'Glob': return 'Finding files';
-      default: return summary.isNotEmpty ? '$tool: $summary' : tool;
-    }
-  }
-
-  Future<void> _cancelMessage() async {
-    setState(() => _cancelling = true);
-    try {
-      await ref.read(apiClientProvider).cancelChat();
-    } catch (e) {
-      setState(() => _cancelling = false);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Cancel failed: $e')),
-        );
-      }
-    }
-  }
-
-  void _scrollToBottom() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scrollController.hasClients) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        );
-      }
-    });
-  }
-
-  void _showArtifactViewer(Map<String, dynamic> artifact) async {
+  Future<void> _showArtifactViewer(Map<String, dynamic> artifact) async {
     final api = ref.read(apiClientProvider);
     final id = (artifact['id'] as num).toInt();
     try {
@@ -507,6 +111,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       final content = full['content'] as String? ?? '';
       final filename = full['filename'] as String? ?? 'snippet';
       final language = full['language'] as String? ?? '';
+      final isBinary = full['binary'] == true;
       if (!mounted) return;
       showDialog(
         context: context,
@@ -523,61 +128,104 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   ),
                 ),
               IconButton(
-                icon: const Icon(Icons.copy, size: 18),
-                tooltip: 'Copy',
-                onPressed: () {
-                  Clipboard.setData(ClipboardData(text: content));
-                  ScaffoldMessenger.of(ctx).showSnackBar(
-                    const SnackBar(content: Text('Copied to clipboard')),
-                  );
-                },
+                icon: const Icon(Icons.download, size: 18),
+                tooltip: 'Download',
+                onPressed: () => _downloadArtifact(id, filename),
               ),
+              if (!isBinary)
+                IconButton(
+                  icon: const Icon(Icons.copy, size: 18),
+                  tooltip: 'Copy',
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: content));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Copied'),
+                        duration: Duration(seconds: 1),
+                      ),
+                    );
+                  },
+                ),
             ],
           ),
           content: SizedBox(
             width: 700,
             height: 500,
             child: SingleChildScrollView(
-              child: MarkdownMessage(content: '```$language\n$content\n```'),
+              child: isBinary
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.insert_drive_file, size: 64),
+                          const SizedBox(height: 12),
+                          Text(content),
+                          const SizedBox(height: 12),
+                          FilledButton.icon(
+                            icon: const Icon(Icons.download, size: 18),
+                            label: const Text('Download'),
+                            onPressed: () => _downloadArtifact(id, filename),
+                          ),
+                        ],
+                      ),
+                    )
+                  : MarkdownMessage(content: content),
             ),
           ),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+            TextButton(
+                onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
           ],
         ),
       );
     } catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to load artifact: $e')),
-        );
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Failed to load artifact: $e')));
       }
     }
   }
 
-  void _showArtifactsPanel() {
+  Future<void> _downloadArtifact(int id, String filename) async {
+    try {
+      await ref.read(apiClientProvider).downloadArtifact(id, filename);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Download failed: $e')));
+      }
+    }
+  }
+
+  void _showArtifactsPanel(List<Map<String, dynamic>> artifacts) {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text('Artifacts (${_artifacts.length})'),
+        title: Text('Artifacts (${artifacts.length})'),
         content: SizedBox(
           width: 500,
           height: 400,
-          child: _artifacts.isEmpty
+          child: artifacts.isEmpty
               ? const Center(child: Text('No artifacts yet'))
               : ListView.builder(
-                  itemCount: _artifacts.length,
+                  itemCount: artifacts.length,
                   itemBuilder: (context, index) {
-                    final a = _artifacts[index];
+                    final a = artifacts[index];
                     final filename = a['filename'] as String? ?? 'snippet';
                     final language = a['language'] as String? ?? '';
                     final lines = (a['lines'] as num?)?.toInt() ?? 0;
                     final seq = (a['seq'] as num?)?.toInt() ?? 0;
+                    final id = (a['id'] as num).toInt();
                     return ListTile(
                       leading: const Icon(Icons.code),
                       title: Text(filename),
                       subtitle: Text('$language \u00b7 $lines lines \u00b7 message #$seq'),
                       dense: true,
+                      trailing: IconButton(
+                        icon: const Icon(Icons.download, size: 18),
+                        tooltip: 'Download',
+                        onPressed: () => _downloadArtifact(id, filename),
+                      ),
                       onTap: () {
                         Navigator.pop(ctx);
                         _showArtifactViewer(a);
@@ -587,7 +235,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
+          TextButton(
+              onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
         ],
       ),
     );
@@ -595,27 +244,66 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) {
+    final chat = ref.watch(chatControllerProvider);
+    final controller = ref.read(chatControllerProvider.notifier);
+
+    // Forward controller errors to a snackbar.
+    ref.listen<String?>(
+      chatControllerProvider.select((s) => s.error),
+      (prev, next) {
+        if (next != null && next != prev) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(next)));
+        }
+      },
+    );
+
+    // Subscribe to the broadcast error stream too (rolled-back optimistic
+    // sends, etc., which don't change `state.error`).
+    ref.listen<AsyncValue<String>>(
+      _chatErrorStreamProvider,
+      (_, next) {
+        next.whenData((msg) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(msg)));
+        });
+      },
+    );
+
+    // Auto-pin to bottom whenever new content arrives, unless the user has
+    // scrolled up. The controller bumps `streamTick` after every flush.
+    if (controller.streamTick != _lastSeenStreamTick) {
+      _lastSeenStreamTick = controller.streamTick;
+      _pinToBottom();
+    }
+
+    if (chat.loading) {
       return const Center(child: CircularProgressIndicator());
     }
-    if (_error != null) {
+    if (chat.error != null && chat.messages.isEmpty) {
       return Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.error_outline, size: 48, color: Theme.of(context).colorScheme.error),
+            Icon(Icons.error_outline,
+                size: 48, color: Theme.of(context).colorScheme.error),
             const SizedBox(height: 16),
-            Text(_error!),
+            Text(chat.error!),
             const SizedBox(height: 16),
-            FilledButton(onPressed: _initChat, child: const Text('Retry')),
+            FilledButton(
+                onPressed: controller.loadInitial,
+                child: const Text('Retry')),
           ],
         ),
       );
     }
 
-    final totalCost = (_session?['total_cost_usd'] as num?)?.toDouble() ?? 0.0;
-    final messageCount = _messages.length;
-    final hasPending = _pendingJobs.isNotEmpty;
+    final messages = chat.messages;
+    final pendingJobs = chat.pendingJobs;
+    final artifacts = chat.artifacts;
+    final session = chat.session;
+    final cancelling = chat.cancelling;
+    final totalCost = (session?['total_cost_usd'] as num?)?.toDouble() ?? 0.0;
+    final hasPending = pendingJobs.isNotEmpty;
 
     return Column(
       children: [
@@ -632,17 +320,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               Semantics(
                 header: true,
                 label: 'Interactive Chat',
-                child: Text('Interactive Chat',
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+                child: Text(
+                  'Interactive Chat',
+                  style: Theme.of(context)
+                      .textTheme
+                      .titleMedium
+                      ?.copyWith(fontWeight: FontWeight.bold),
+                ),
               ),
               const SizedBox(width: 16),
-              Text('$messageCount messages', style: Theme.of(context).textTheme.bodySmall),
+              Text('${messages.length} messages',
+                  style: Theme.of(context).textTheme.bodySmall),
               if (totalCost > 0) ...[
                 const SizedBox(width: 16),
-                Text('\$${totalCost.toStringAsFixed(4)}', style: Theme.of(context).textTheme.bodySmall),
+                Text('\$${totalCost.toStringAsFixed(4)}',
+                    style: Theme.of(context).textTheme.bodySmall),
               ],
               const Spacer(),
-              // Search
               SizedBox(
                 width: 200,
                 height: 32,
@@ -650,7 +344,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   decoration: InputDecoration(
                     hintText: 'Search...',
                     prefixIcon: const Icon(Icons.search, size: 16),
-                    border: OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
+                    border:
+                        OutlineInputBorder(borderRadius: BorderRadius.circular(16)),
                     contentPadding: EdgeInsets.zero,
                     isDense: true,
                   ),
@@ -667,21 +362,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                   launchUrl(Uri.parse(api.chatExportUrl));
                 },
               ),
-              if (_artifacts.isNotEmpty)
+              if (artifacts.isNotEmpty)
                 TextButton.icon(
                   icon: Badge(
-                    label: Text('${_artifacts.length}', style: const TextStyle(fontSize: 10)),
+                    label: Text('${artifacts.length}',
+                        style: const TextStyle(fontSize: 10)),
                     child: const Icon(Icons.code, size: 16),
                   ),
                   label: const Text('Artifacts'),
-                  onPressed: _showArtifactsPanel,
+                  onPressed: () => _showArtifactsPanel(artifacts),
                 ),
-              if (_session?['workspace_id'] != null)
+              if (session?['workspace_id'] != null)
                 TextButton.icon(
                   icon: const Icon(Icons.folder_open, size: 16),
                   label: const Text('Workspace'),
                   onPressed: () {
-                    final wsId = _session!['workspace_id'] as String;
+                    final wsId = session!['workspace_id'] as String;
                     context.go('/workspaces/$wsId');
                   },
                 ),
@@ -690,7 +386,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ),
 
         // Search results banner
-        if (_searchResults != null) ...[
+        if (_searchResults != null)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
             color: Theme.of(context).colorScheme.surfaceContainerHighest,
@@ -699,64 +395,107 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 Text('${_searchResults!.length} results for "$_searchQuery"',
                     style: Theme.of(context).textTheme.bodySmall),
                 const Spacer(),
-                TextButton(onPressed: () => setState(() { _searchQuery = ''; _searchResults = null; }),
-                    child: const Text('Clear')),
+                TextButton(
+                  onPressed: () => setState(() {
+                    _searchQuery = '';
+                    _searchResults = null;
+                  }),
+                  child: const Text('Clear'),
+                ),
               ],
             ),
           ),
-        ],
 
         // Messages
         Expanded(
-          child: _messages.isEmpty
+          child: messages.isEmpty
               ? Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.chat_bubble_outline, size: 64, color: Colors.grey.shade600),
+                      Icon(Icons.chat_bubble_outline,
+                          size: 64, color: Colors.grey.shade600),
                       const SizedBox(height: 16),
-                      Text('Start a conversation',
-                          style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.grey.shade500)),
+                      Text(
+                        'Start a conversation',
+                        style: Theme.of(context)
+                            .textTheme
+                            .titleMedium
+                            ?.copyWith(color: Colors.grey.shade500),
+                      ),
                       const SizedBox(height: 8),
-                      Text('Your chat history persists across sessions.',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade600)),
+                      Text(
+                        'Your chat history persists across sessions.',
+                        style: Theme.of(context)
+                            .textTheme
+                            .bodySmall
+                            ?.copyWith(color: Colors.grey.shade600),
+                      ),
                     ],
                   ),
                 )
-              : ListView.builder(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-                  itemCount: _messages.length,
-                  itemBuilder: (context, index) {
-                    final msg = _messages[index];
-                    final isAssistant = msg['role'] == 'assistant';
-                    final seq = (msg['seq'] as num?)?.toInt() ?? 0;
-                    final isPending = msg['_thinking'] == true || msg['status'] == 'pending';
-                    final isStillStreaming = _pendingJobs.values.contains(seq);
-                    final msgArtifacts = _artifacts.where(
-                      (a) => (a['seq'] as num?)?.toInt() == seq,
-                    ).toList();
-                    return _MessageBubble(
-                      message: msg,
-                      isThinking: isPending && (msg['content'] as String? ?? '').isEmpty,
-                      isStreaming: isStillStreaming,
-                      thinkingText: msg['_thinkingText'] as String?,
-                      toolStatus: msg['_toolStatus'] as String?,
-                      onRetry: isAssistant && !isPending && seq > 0
-                          ? () => _retryMessage(seq)
-                          : null,
-                      artifacts: isAssistant ? msgArtifacts : const [],
-                      onArtifactTap: _showArtifactViewer,
-                    );
-                  },
+              : Stack(
+                  children: [
+                    ListView.builder(
+                      controller: _scrollController,
+                      reverse: true,
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 24, vertical: 16),
+                      itemCount: messages.length,
+                      itemBuilder: (context, index) {
+                        // reverse: true → index 0 is the newest message
+                        final msg = messages[messages.length - 1 - index];
+                        final isAssistant = msg['role'] == 'assistant';
+                        final seq = (msg['seq'] as num?)?.toInt() ?? 0;
+                        final isPending = msg['_thinking'] == true ||
+                            msg['status'] == 'pending';
+                        final isStillStreaming =
+                            pendingJobs.values.contains(seq);
+                        final msgArtifacts = artifacts
+                            .where((a) =>
+                                (a['seq'] as num?)?.toInt() == seq)
+                            .toList();
+                        return _MessageBubble(
+                          message: msg,
+                          isThinking: isPending &&
+                              (msg['content'] as String? ?? '').isEmpty,
+                          isStreaming: isStillStreaming,
+                          thinkingText: msg['_thinkingText'] as String?,
+                          toolStatus: msg['_toolStatus'] as String?,
+                          onRetry: isAssistant && !isPending && seq > 0
+                              ? () => controller.retryMessage(seq,
+                                  model: _selectedModel)
+                              : null,
+                          artifacts: isAssistant ? msgArtifacts : const [],
+                          onArtifactTap: _showArtifactViewer,
+                          onArtifactDownload: (a) => _downloadArtifact(
+                              (a['id'] as num).toInt(),
+                              a['filename'] as String? ?? 'artifact'),
+                        );
+                      },
+                    ),
+                    // "New messages ↓" floating button when the user has
+                    // scrolled away from the bottom and content is growing.
+                    if (_userScrolledUp)
+                      Positioned(
+                        bottom: 12,
+                        right: 24,
+                        child: FloatingActionButton.small(
+                          tooltip: 'Jump to latest',
+                          onPressed: () => _pinToBottom(force: true),
+                          child: const Icon(Icons.arrow_downward),
+                        ),
+                      ),
+                  ],
                 ),
         ),
 
-        // Input bar — ALWAYS enabled (non-blocking)
+        // Input bar
         Container(
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
-            border: Border(top: BorderSide(color: Theme.of(context).dividerColor)),
+            border:
+                Border(top: BorderSide(color: Theme.of(context).dividerColor)),
           ),
           child: Center(
             child: ConstrainedBox(
@@ -773,10 +512,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             if (event is KeyDownEvent &&
                                 event.logicalKey == LogicalKeyboardKey.enter &&
                                 !HardwareKeyboard.instance.isShiftPressed) {
-                              _sendMessage();
-                              return KeyEventResult.handled; // Consume Enter — no newline
+                              _send();
+                              return KeyEventResult.handled;
                             }
-                            return KeyEventResult.ignored; // Let Shift+Enter through as newline
+                            return KeyEventResult.ignored;
                           },
                           child: TextField(
                             controller: _inputController,
@@ -785,9 +524,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             maxLines: 5,
                             minLines: 1,
                             decoration: InputDecoration(
-                              hintText: hasPending ? 'Type another message...' : 'Type a message...',
+                              hintText: hasPending
+                                  ? 'Type another message...'
+                                  : 'Type a message...',
                               border: const OutlineInputBorder(),
-                              contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                              contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 16, vertical: 12),
                             ),
                           ),
                         ),
@@ -796,7 +538,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       SizedBox(
                         height: 48,
                         child: FilledButton.icon(
-                          onPressed: _sendMessage,
+                          onPressed: _send,
                           icon: const Icon(Icons.send),
                           label: const Text('Send'),
                         ),
@@ -817,12 +559,19 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                         SizedBox(
                           height: 48,
                           child: OutlinedButton.icon(
-                            onPressed: _cancelling ? null : _cancelMessage,
-                            icon: Icon(_cancelling ? Icons.hourglass_top : Icons.stop, size: 18, color: _cancelling ? null : Colors.red),
-                            label: Text(_cancelling ? 'Cancelling...' : 'Stop'),
+                            onPressed: cancelling
+                                ? null
+                                : controller.cancelMessage,
+                            icon: Icon(
+                                cancelling ? Icons.hourglass_top : Icons.stop,
+                                size: 18,
+                                color: cancelling ? null : Colors.red),
+                            label: Text(cancelling ? 'Cancelling...' : 'Stop'),
                             style: OutlinedButton.styleFrom(
-                              foregroundColor: _cancelling ? null : Colors.red,
-                              side: _cancelling ? null : const BorderSide(color: Colors.red),
+                              foregroundColor: cancelling ? null : Colors.red,
+                              side: cancelling
+                                  ? null
+                                  : const BorderSide(color: Colors.red),
                             ),
                           ),
                         ),
@@ -841,17 +590,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                           ButtonSegment(value: 'opus', label: Text('Opus')),
                         ],
                         selected: {_selectedModel},
-                        onSelectionChanged: (v) => setState(() => _selectedModel = v.first),
+                        onSelectionChanged: (v) =>
+                            setState(() => _selectedModel = v.first),
                         style: ButtonStyle(
                           visualDensity: VisualDensity.compact,
-                          textStyle: WidgetStatePropertyAll(Theme.of(context).textTheme.bodySmall),
+                          textStyle: WidgetStatePropertyAll(
+                              Theme.of(context).textTheme.bodySmall),
                         ),
                       ),
                       if (hasPending) ...[
                         const SizedBox(width: 12),
-                        SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.grey.shade500)),
+                        SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.grey.shade500)),
                         const SizedBox(width: 6),
-                        Text('${_pendingJobs.length} pending', style: Theme.of(context).textTheme.bodySmall?.copyWith(color: Colors.grey.shade500)),
+                        Text('${pendingJobs.length} pending',
+                            style: Theme.of(context)
+                                .textTheme
+                                .bodySmall
+                                ?.copyWith(color: Colors.grey.shade500)),
                       ],
                     ],
                   ),
@@ -865,6 +624,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 }
 
+/// Wraps the controller's broadcast error stream as an `AsyncValue<String>`
+/// so the screen can use `ref.listen` to drive snackbars.
+final _chatErrorStreamProvider = StreamProvider.autoDispose<String>((ref) {
+  final controller = ref.watch(chatControllerProvider.notifier);
+  return controller.errorStream;
+});
+
 class _MessageBubble extends StatefulWidget {
   final Map<String, dynamic> message;
   final bool isThinking;
@@ -874,8 +640,19 @@ class _MessageBubble extends StatefulWidget {
   final VoidCallback? onRetry;
   final List<Map<String, dynamic>> artifacts;
   final void Function(Map<String, dynamic>)? onArtifactTap;
+  final void Function(Map<String, dynamic>)? onArtifactDownload;
 
-  const _MessageBubble({required this.message, this.isThinking = false, this.isStreaming = false, this.thinkingText, this.toolStatus, this.onRetry, this.artifacts = const [], this.onArtifactTap});
+  const _MessageBubble({
+    required this.message,
+    this.isThinking = false,
+    this.isStreaming = false,
+    this.thinkingText,
+    this.toolStatus,
+    this.onRetry,
+    this.artifacts = const [],
+    this.onArtifactTap,
+    this.onArtifactDownload,
+  });
 
   @override
   State<_MessageBubble> createState() => _MessageBubbleState();
@@ -891,20 +668,28 @@ class _MessageBubbleState extends State<_MessageBubble> {
     final isUser = role == 'user';
     final isTask = role == 'task';
     final cost = (widget.message['cost_usd'] as num?)?.toDouble();
-    final filesWritten = (widget.message['files_written'] as List?)?.cast<String>() ?? [];
+    final filesWritten =
+        (widget.message['files_written'] as List?)?.cast<String>() ?? [];
     final storedThinking = widget.message['thinking'] as String?;
-    final hasThinkingContent = (widget.thinkingText ?? storedThinking ?? '').isNotEmpty;
+    final hasThinkingContent =
+        (widget.thinkingText ?? storedThinking ?? '').isNotEmpty;
     final hasContent = content.isNotEmpty;
 
     final IconData icon;
     final Color bgColor;
     final String label;
     if (isUser) {
-      icon = Icons.person; bgColor = Theme.of(context).colorScheme.primary; label = 'You';
+      icon = Icons.person;
+      bgColor = Theme.of(context).colorScheme.primary;
+      label = 'You';
     } else if (isTask) {
-      icon = Icons.construction; bgColor = Colors.orange; label = 'Task';
+      icon = Icons.construction;
+      bgColor = Colors.orange;
+      label = 'Task';
     } else {
-      icon = Icons.smart_toy; bgColor = Theme.of(context).colorScheme.secondary; label = 'Claude';
+      icon = Icons.smart_toy;
+      bgColor = Theme.of(context).colorScheme.secondary;
+      label = 'Claude';
     }
 
     return Padding(
@@ -926,97 +711,118 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   children: [
                     Text(
                       label,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.bold),
+                      style: Theme.of(context)
+                          .textTheme
+                          .bodySmall
+                          ?.copyWith(fontWeight: FontWeight.bold),
                     ),
                     const SizedBox(width: 8),
                     if (cost != null && cost > 0)
                       Text(
                         '\$${cost.toStringAsFixed(4)}',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Colors.grey.shade500,
-                          fontSize: 11,
-                        ),
+                              color: Colors.grey.shade500,
+                              fontSize: 11,
+                            ),
                       ),
                   ],
                 ),
                 const SizedBox(height: 4),
-                // Thinking section: expanded while streaming, collapsible after done
                 if (!isUser && hasThinkingContent) ...[
                   if (widget.isStreaming || widget.isThinking)
-                    // Still streaming — keep thinking visible above the response
-                    _buildThinkingSection(context, widget.thinkingText ?? storedThinking ?? '', expanded: true)
+                    _buildThinkingSection(
+                        context, widget.thinkingText ?? storedThinking ?? '',
+                        expanded: true)
                   else
-                    // Message complete — collapsible toggle
-                    _buildThinkingSection(context, widget.thinkingText ?? storedThinking ?? '', expanded: _thinkingExpanded),
+                    _buildThinkingSection(
+                        context, widget.thinkingText ?? storedThinking ?? '',
+                        expanded: _thinkingExpanded),
                 ],
-                // Tool activity line
-                if (!isUser && widget.toolStatus != null && widget.toolStatus!.isNotEmpty && !hasContent)
+                if (!isUser &&
+                    widget.toolStatus != null &&
+                    widget.toolStatus!.isNotEmpty &&
+                    !hasContent)
                   Padding(
                     padding: const EdgeInsets.only(top: 4),
                     child: Row(
                       children: [
-                        SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.grey.shade500)),
+                        SizedBox(
+                            width: 12,
+                            height: 12,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2, color: Colors.grey.shade500)),
                         const SizedBox(width: 8),
                         Flexible(
                           child: Text(
                             widget.toolStatus!,
-                            style: TextStyle(color: Colors.grey.shade500, fontSize: 12, fontStyle: FontStyle.italic),
+                            style: TextStyle(
+                                color: Colors.grey.shade500,
+                                fontSize: 12,
+                                fontStyle: FontStyle.italic),
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
                       ],
                     ),
                   ),
-                // Spinner: only if nothing else is showing yet
-                if (widget.isThinking && !hasContent && !hasThinkingContent && widget.toolStatus == null)
+                if (widget.isThinking &&
+                    !hasContent &&
+                    !hasThinkingContent &&
+                    widget.toolStatus == null)
                   Row(
                     children: [
                       SizedBox(
-                        width: 14, height: 14,
+                        width: 14,
+                        height: 14,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
                           color: Theme.of(context).colorScheme.secondary,
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text('Thinking...', style: TextStyle(
-                        color: Colors.grey.shade500,
-                        fontStyle: FontStyle.italic,
-                      )),
+                      Text('Thinking...',
+                          style: TextStyle(
+                            color: Colors.grey.shade500,
+                            fontStyle: FontStyle.italic,
+                          )),
                     ],
                   ),
-                // Response text
                 if (hasContent)
                   Semantics(
                     label: '${isUser ? "You" : "Claude"}: $content',
                     child: isUser
-                        ? SelectableText(content, style: const TextStyle(height: 1.5))
+                        ? SelectableText(content,
+                            style: const TextStyle(height: 1.5))
                         : MarkdownMessage(content: content),
                   ),
                 if (filesWritten.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 6,
-                    children: filesWritten.map((f) => Chip(
-                      avatar: const Icon(Icons.insert_drive_file, size: 14),
-                      label: Text(f, style: const TextStyle(fontSize: 12)),
-                      visualDensity: VisualDensity.compact,
-                    )).toList(),
+                    children: filesWritten
+                        .map((f) => Chip(
+                              avatar: const Icon(Icons.insert_drive_file,
+                                  size: 14),
+                              label:
+                                  Text(f, style: const TextStyle(fontSize: 12)),
+                              visualDensity: VisualDensity.compact,
+                            ))
+                        .toList(),
                   ),
                 ],
                 if (widget.artifacts.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   Wrap(
                     spacing: 6,
-                    children: widget.artifacts.map((a) => ActionChip(
-                      avatar: const Icon(Icons.code, size: 14),
-                      label: Text(
-                        '${a['filename'] ?? 'snippet'} (${a['lines']} lines)',
-                        style: const TextStyle(fontSize: 12),
-                      ),
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => widget.onArtifactTap?.call(a),
-                    )).toList(),
+                    runSpacing: 4,
+                    children: widget.artifacts
+                        .map((a) => _ArtifactChip(
+                              artifact: a,
+                              onTap: () => widget.onArtifactTap?.call(a),
+                              onDownload: () =>
+                                  widget.onArtifactDownload?.call(a),
+                            ))
+                        .toList(),
                   ),
                 ],
               ],
@@ -1029,12 +835,15 @@ class _MessageBubbleState extends State<_MessageBubble> {
                   icon: const Icon(Icons.copy, size: 16),
                   tooltip: 'Copy',
                   visualDensity: VisualDensity.compact,
-                  constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                  constraints:
+                      const BoxConstraints(minWidth: 28, minHeight: 28),
                   padding: EdgeInsets.zero,
                   onPressed: () {
                     Clipboard.setData(ClipboardData(text: content));
                     ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Copied'), duration: Duration(seconds: 1)),
+                      const SnackBar(
+                          content: Text('Copied'),
+                          duration: Duration(seconds: 1)),
                     );
                   },
                 ),
@@ -1043,7 +852,8 @@ class _MessageBubbleState extends State<_MessageBubble> {
                     icon: const Icon(Icons.refresh, size: 16),
                     tooltip: 'Retry',
                     visualDensity: VisualDensity.compact,
-                    constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                    constraints:
+                        const BoxConstraints(minWidth: 28, minHeight: 28),
                     padding: EdgeInsets.zero,
                     onPressed: widget.onRetry,
                   ),
@@ -1054,12 +864,12 @@ class _MessageBubbleState extends State<_MessageBubble> {
     );
   }
 
-  Widget _buildThinkingSection(BuildContext context, String thinkingText, {required bool expanded}) {
+  Widget _buildThinkingSection(BuildContext context, String thinkingText,
+      {required bool expanded}) {
     final content = widget.message['content'] as String? ?? '';
     final hasResponse = content.isNotEmpty;
 
     if (!hasResponse) {
-      // Still streaming thinking — show full text
       return Container(
         margin: const EdgeInsets.only(bottom: 8),
         padding: const EdgeInsets.all(8),
@@ -1074,20 +884,29 @@ class _MessageBubbleState extends State<_MessageBubble> {
               children: [
                 Icon(Icons.psychology, size: 14, color: Colors.grey.shade500),
                 const SizedBox(width: 4),
-                Text('Thinking', style: TextStyle(color: Colors.grey.shade500, fontSize: 11, fontWeight: FontWeight.bold)),
+                Text('Thinking',
+                    style: TextStyle(
+                        color: Colors.grey.shade500,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold)),
               ],
             ),
             const SizedBox(height: 4),
             Text(
-              thinkingText.length > 500 ? '...${thinkingText.substring(thinkingText.length - 500)}' : thinkingText,
-              style: TextStyle(color: Colors.grey.shade400, fontSize: 12, fontStyle: FontStyle.italic, height: 1.4),
+              thinkingText.length > 500
+                  ? '...${thinkingText.substring(thinkingText.length - 500)}'
+                  : thinkingText,
+              style: TextStyle(
+                  color: Colors.grey.shade400,
+                  fontSize: 12,
+                  fontStyle: FontStyle.italic,
+                  height: 1.4),
             ),
           ],
         ),
       );
     }
 
-    // Response arrived — collapsible toggle
     return GestureDetector(
       onTap: () => setState(() => _thinkingExpanded = !_thinkingExpanded),
       child: Container(
@@ -1104,20 +923,92 @@ class _MessageBubbleState extends State<_MessageBubble> {
               children: [
                 Icon(Icons.psychology, size: 14, color: Colors.grey.shade500),
                 const SizedBox(width: 4),
-                Text('Thinking', style: TextStyle(color: Colors.grey.shade500, fontSize: 11, fontWeight: FontWeight.bold)),
+                Text('Thinking',
+                    style: TextStyle(
+                        color: Colors.grey.shade500,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold)),
                 const Spacer(),
-                Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 16, color: Colors.grey.shade500),
+                Icon(expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 16, color: Colors.grey.shade500),
               ],
             ),
             if (expanded) ...[
               const SizedBox(height: 4),
               Text(
                 thinkingText,
-                style: TextStyle(color: Colors.grey.shade400, fontSize: 12, fontStyle: FontStyle.italic, height: 1.4),
+                style: TextStyle(
+                    color: Colors.grey.shade400,
+                    fontSize: 12,
+                    fontStyle: FontStyle.italic,
+                    height: 1.4),
               ),
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Chip for an artifact attached to an assistant message. Two tap targets:
+/// label opens the viewer, trailing icon downloads the file directly. The
+/// existing `ActionChip` only supports one `onPressed` so we build it as a
+/// custom `Material` + `InkWell` row.
+class _ArtifactChip extends StatelessWidget {
+  final Map<String, dynamic> artifact;
+  final VoidCallback onTap;
+  final VoidCallback onDownload;
+
+  const _ArtifactChip({
+    required this.artifact,
+    required this.onTap,
+    required this.onDownload,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final filename = artifact['filename'] as String? ?? 'snippet';
+    final lines = artifact['lines'];
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+      borderRadius: BorderRadius.circular(16),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          InkWell(
+            borderRadius: const BorderRadius.only(
+              topLeft: Radius.circular(16),
+              bottomLeft: Radius.circular(16),
+            ),
+            onTap: onTap,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.code, size: 14),
+                  const SizedBox(width: 6),
+                  Text(
+                    '$filename ($lines lines)',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          InkWell(
+            borderRadius: const BorderRadius.only(
+              topRight: Radius.circular(16),
+              bottomRight: Radius.circular(16),
+            ),
+            onTap: onDownload,
+            child: const Padding(
+              padding: EdgeInsets.fromLTRB(4, 6, 8, 6),
+              child: Icon(Icons.download, size: 14),
+            ),
+          ),
+        ],
       ),
     );
   }

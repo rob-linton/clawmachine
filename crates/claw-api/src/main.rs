@@ -1,6 +1,7 @@
 mod auth;
 mod routes;
 pub mod upload_utils;
+pub mod util;
 
 use axum::Router;
 use axum::http::{header, Method};

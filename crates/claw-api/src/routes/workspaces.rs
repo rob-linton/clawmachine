@@ -11,6 +11,7 @@ use uuid::Uuid;
 
 use crate::AppState;
 use crate::upload_utils::{self, ExtractLimits};
+use crate::util::mime_from_extension;
 
 pub fn router() -> Router<AppState> {
     Router::new()
@@ -507,35 +508,6 @@ async fn read_file(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => StatusCode::NOT_FOUND.into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
     }
-}
-
-fn mime_from_extension(path: &str) -> String {
-    let ext = path.rsplit('.').next().unwrap_or("").to_lowercase();
-    match ext.as_str() {
-        "html" | "htm" => "text/html",
-        "css" => "text/css",
-        "js" => "application/javascript",
-        "json" => "application/json",
-        "md" => "text/markdown",
-        "txt" => "text/plain",
-        "csv" => "text/csv",
-        "xml" => "application/xml",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "gif" => "image/gif",
-        "svg" => "image/svg+xml",
-        "webp" => "image/webp",
-        "pdf" => "application/pdf",
-        "zip" => "application/zip",
-        "gz" | "tar" => "application/gzip",
-        "yaml" | "yml" => "text/yaml",
-        "toml" => "text/toml",
-        "rs" => "text/x-rust",
-        "py" => "text/x-python",
-        "dart" => "text/x-dart",
-        "sh" => "text/x-shellscript",
-        _ => "application/octet-stream",
-    }.to_string()
 }
 
 #[derive(Deserialize)]
