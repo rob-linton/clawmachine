@@ -2,10 +2,12 @@ use claw_models::{Job, Tool, Workspace};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::process::Stdio;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+
+use crate::secrets::{credential_load_prelude, render_credentials_for_stdin};
 
 use crate::executor::ExecutionResult;
 
@@ -369,6 +371,8 @@ pub async fn docker_execute_job(
     // Translate workspace path to host path for Docker volume mount
     let host_workspace_path = translate_to_host_path(working_dir);
 
+    let has_creds = !credential_env_vars.is_empty();
+
     let mut args: Vec<String> = vec![
         "run".into(),
         "--rm".into(), // auto-remove on exit
@@ -391,10 +395,20 @@ pub async fn docker_execute_job(
         cpu,
         "--pids-limit".into(),
         config.pids_limit.clone(),
+        // Defense-in-depth: prevent privilege escalation via setuid binaries.
+        // Pairs with --user to make the root drop irreversible.
+        "--security-opt".into(),
+        "no-new-privileges".into(),
         // Mount workspace (using host path)
         "-v".into(),
         format!("{}:/workspace", host_workspace_path),
     ];
+
+    // When credentials need to be piped via stdin, attach an interactive
+    // stdin to the container. We don't allocate a TTY (no -t).
+    if has_creds {
+        args.push("-i".into());
+    }
 
     // Mount credentials (translate paths for Docker-in-Docker)
     for mount in &config.credential_mounts {
@@ -409,11 +423,9 @@ pub async fn docker_execute_job(
         args.push(format!("{}:{}:{}", host, mount.container_path, mode));
     }
 
-    // Inject credential env vars for tool authentication
-    for (key, value) in credential_env_vars {
-        args.push("-e".into());
-        args.push(format!("{}={}", key, value));
-    }
+    // Credentials are NOT passed as `-e` flags. They're piped via stdin and
+    // sourced inside the runner script's bash bootstrap. This keeps them out
+    // of `docker inspect` output. See `crate::secrets`.
 
     // Inject Anthropic API key if available (bypasses OAuth inside container)
     if let Some(key) = anthropic_api_key {
@@ -429,9 +441,14 @@ pub async fn docker_execute_job(
         .collect();
     let has_auth_scripts = !auth_scripts.is_empty();
 
-    if has_auth_scripts {
-        // Write a runner script to the workspace so the prompt is never
-        // embedded in a bash -c string (prevents shell injection).
+    // The wrapper-script path is taken whenever we need to either run auth
+    // scripts before claude OR pipe credentials via stdin. The script
+    // contains NO secrets — credentials arrive via the bootstrap that reads
+    // from `cat /dev/stdin`.
+    let needs_wrapper_script = has_auth_scripts || has_creds;
+    let runner_script_path = working_dir.join(".claw-run.sh");
+
+    if needs_wrapper_script {
         let mut claude_cmd = vec![
             "claude".to_string(),
             "-p".into(),
@@ -459,33 +476,38 @@ pub async fn docker_execute_job(
             claude_cmd.push(sp.to_string());
         }
 
-        // Write the runner script with proper quoting
+        let claude_line = claude_cmd
+            .iter()
+            .map(|a| shell_escape(a))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        let combined_auth = auth_scripts.join("\n");
+
+        // Wrapper script: bash header → credential load (if any) → auth
+        // scripts (if any) → exec claude with stdin redirected to /dev/null
+        // (the wrapper drained the real stdin via `cat`).
         let script_content = format!(
-            "#!/bin/bash\nexec {}",
-            claude_cmd
-                .iter()
-                .map(|a| shell_escape(a))
-                .collect::<Vec<_>>()
-                .join(" ")
+            "#!/bin/bash\nset -e\n{prelude}{auth}\ncd /workspace\nexec {claude_cmd} < /dev/null\n",
+            prelude = credential_load_prelude(has_creds),
+            auth = combined_auth,
+            claude_cmd = claude_line,
         );
-        let script_path = working_dir.join(".claw-run.sh");
-        std::fs::write(&script_path, &script_content)
+
+        std::fs::write(&runner_script_path, &script_content)
             .map_err(|e| format!("Failed to write runner script: {e}"))?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).ok();
+            std::fs::set_permissions(&runner_script_path, std::fs::Permissions::from_mode(0o755))
+                .ok();
         }
 
-        // Combine auth scripts
-        let combined_auth = auth_scripts.join("\n");
-
-        // Override entrypoint to run auth scripts then the runner
+        // Override entrypoint and run the wrapper script.
         args.push("--entrypoint".into());
         args.push("/bin/bash".into());
         args.push(image);
-        args.push("-c".into());
-        args.push(format!("set -e\n{}\nexec /workspace/.claw-run.sh", combined_auth));
+        args.push("/workspace/.claw-run.sh".into());
     } else {
         // No auth scripts — use normal ENTRYPOINT ["claude"] with direct args
         args.push(image);
@@ -559,13 +581,36 @@ pub async fn docker_execute_job(
     // Run container attached (not detached) — stdout comes directly to us.
     // This avoids Node.js stdout buffering issues that occur in non-TTY mode
     // when using `docker run -d` + `docker logs -f`.
-    let mut child = Command::new("docker")
-        .args(&args)
+    let mut cmd = Command::new("docker");
+    cmd.args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    if has_creds {
+        cmd.stdin(Stdio::piped());
+    } else {
+        cmd.stdin(Stdio::null());
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("Failed to start docker container: {e}"))?;
+
+    // Pipe credential payload to the wrapper script's `cat /dev/stdin` BEFORE
+    // we begin awaiting on stdout/stderr. We must close (drop) stdin so bash
+    // sees EOF and continues past the credential-load step. Order matters
+    // here: write → flush → drop, then take stdout/stderr.
+    if has_creds {
+        let payload = render_credentials_for_stdin(credential_env_vars);
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = stdin.write_all(payload.as_bytes()).await {
+                return Err(format!("Failed to write credentials to container stdin: {e}"));
+            }
+            if let Err(e) = stdin.flush().await {
+                return Err(format!("Failed to flush container stdin: {e}"));
+            }
+            drop(stdin);
+        }
+    }
 
     tracing::info!(container = %container_name, job_id = %job.id, "Docker container started");
 
@@ -616,6 +661,12 @@ pub async fn docker_execute_job(
     let duration_ms = start.elapsed().as_millis() as u64;
     let exit_status = output.map_err(|e| format!("Wait failed: {e}"))?;
     let stderr_output = stderr_handle.await.unwrap_or_default();
+
+    // Clean up the wrapper runner script. It contains no secrets but we
+    // don't want it lingering in the workspace.
+    if needs_wrapper_script {
+        let _ = std::fs::remove_file(&runner_script_path);
+    }
 
     if !exit_status.success() {
         let code = exit_status.code().unwrap_or(-1);

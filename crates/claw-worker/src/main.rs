@@ -3,6 +3,7 @@ mod environment;
 mod executor;
 mod pipeline_runner;
 mod prompt_builder;
+mod secrets;
 pub mod session_container;
 pub mod summarizer;
 mod token_refresh;

@@ -4,9 +4,10 @@
 
 use crate::docker::{DockerConfig, expand_tilde, shell_escape, translate_credential_host_path, translate_to_host_path};
 use crate::executor::{ExecutionResult, StreamState};
+use crate::secrets::{credential_load_prelude, render_credentials_for_stdin};
 use deadpool_redis::Pool;
 use std::path::{Path, PathBuf};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -92,6 +93,9 @@ pub async fn ensure_container(
         "--memory".into(), memory.to_string(),
         "--cpus".into(), cpu.to_string(),
         "--pids-limit".into(), "256".into(),
+        // Defense-in-depth: prevent privilege escalation via setuid
+        // binaries. Applies to all subsequent docker exec invocations.
+        "--security-opt".into(), "no-new-privileges".into(),
         "-w".into(), "/workspace".into(),
         "-e".into(), "HOME=/home/claw".into(),
         "-v".into(), format!("{}:/workspace", host_checkout),
@@ -181,10 +185,12 @@ pub async fn execute_chat_message(
     cmd_parts.push("--max-budget-usd".into());
     cmd_parts.push("10".into());
 
-    // Build env var exports for the runner script (fresh every message)
+    // Runtime env-var exports that need to be available to claude *and*
+    // every tool subprocess throughout the conversation. These are NOT tool
+    // credentials — they're per-message-minted runtime values that must
+    // persist past `exec claude`. They live in the script file because they
+    // are short-lived (rotated every message) and Claude needs them.
     let mut env_lines = String::new();
-
-    // API session token — lets Claude call the Claw Machine API
     if let Ok(Some(session)) = claw_redis::get_chat_session(pool, chat_id).await {
         if let Ok(token) = claw_redis::create_session(pool, &session.user_id).await {
             let api_url = std::env::var("CLAW_CHAT_API_URL")
@@ -197,10 +203,12 @@ pub async fn execute_chat_message(
         }
     }
 
-    // Credential env vars — tool credentials (AWS keys, etc.)
-    for (key, value) in credential_env_vars {
-        env_lines.push_str(&format!("export {}={}\n", key, shell_escape(value)));
-    }
+    // Tool credentials are NOT written into the script. They are piped via
+    // `docker exec -i` stdin and sourced by the bootstrap below. This keeps
+    // them out of the workspace file (which used to expose plaintext via the
+    // workspace file-browser API and got auto-committed by persistent chat
+    // workspaces).
+    let has_creds = !credential_env_vars.is_empty();
 
     // Auth scripts — run tool authentication before Claude starts
     let mut auth_lines = String::new();
@@ -212,8 +220,17 @@ pub async fn execute_chat_message(
         }
     }
 
-    // Write runner script (avoids CLI arg limits for long messages)
-    let script = format!("#!/bin/bash\nset -e\n{}{}cd /workspace\nexec {}", env_lines, auth_lines, cmd_parts.join(" "));
+    // Write runner script (avoids CLI arg limits for long messages). The
+    // script contains NO secrets — env_lines holds only the API session
+    // token (which Claude needs throughout the conversation) and the
+    // credential bootstrap reads its values from stdin at runtime.
+    let script = format!(
+        "#!/bin/bash\nset -e\n{prelude}{env}{auth}cd /workspace\nexec {cmd} < /dev/null\n",
+        prelude = credential_load_prelude(has_creds),
+        env = env_lines,
+        auth = auth_lines,
+        cmd = cmd_parts.join(" "),
+    );
     let script_path = checkout.join(".claw-chat-run.sh");
     tokio::fs::write(&script_path, &script).await
         .map_err(|e| format!("Failed to write runner script: {e}"))?;
@@ -223,14 +240,44 @@ pub async fn execute_chat_message(
         tokio::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).await.ok();
     }
 
-    // Execute via docker exec
-    let mut child = Command::new("docker")
-        .args(["exec", container_name, "bash", "/workspace/.claw-chat-run.sh"])
+    // Execute via `docker exec`. Add `-i` only when we need to pipe
+    // credentials, mirroring the docker.rs path.
+    let mut cmd = Command::new("docker");
+    let exec_args: &[&str] = if has_creds {
+        &["exec", "-i"]
+    } else {
+        &["exec"]
+    };
+    cmd.args(exec_args)
+        .args([container_name, "bash", "/workspace/.claw-chat-run.sh"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    if has_creds {
+        cmd.stdin(std::process::Stdio::piped());
+    } else {
+        cmd.stdin(std::process::Stdio::null());
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("docker exec failed: {e}"))?;
+
+    // Pipe credential payload BEFORE awaiting on stdout/stderr. Order is
+    // load-bearing: write → flush → drop, so bash sees EOF on `cat` and
+    // proceeds. Credential payloads are tiny (<4 KB) so the OS pipe buffer
+    // can absorb them without us draining stdout in parallel.
+    if has_creds {
+        let payload = render_credentials_for_stdin(credential_env_vars);
+        if let Some(mut stdin) = child.stdin.take() {
+            if let Err(e) = stdin.write_all(payload.as_bytes()).await {
+                return Err(format!("Failed to write credentials to chat stdin: {e}"));
+            }
+            if let Err(e) = stdin.flush().await {
+                return Err(format!("Failed to flush chat stdin: {e}"));
+            }
+            drop(stdin);
+        }
+    }
 
     let stdout = child.stdout.take().ok_or("No stdout")?;
     let stderr = child.stderr.take().ok_or("No stderr")?;
@@ -335,6 +382,11 @@ pub async fn execute_chat_message(
     let exit = child.wait().await.map_err(|e| format!("docker exec wait: {e}"))?;
     let stderr_output = stderr_handle.await.unwrap_or_default();
     let duration_ms = start.elapsed().as_millis() as u64;
+
+    // Clean up the runner script after exec completes. It contains no
+    // secrets after the credential-via-stdin change, but we don't want
+    // workspace clutter.
+    tokio::fs::remove_file(&script_path).await.ok();
 
     if !exit.success() {
         return Err(format!("claude exited with code {}: {}",

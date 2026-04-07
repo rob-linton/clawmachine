@@ -332,7 +332,17 @@ PUT    /api/v1/credentials/{id}      — update credential values
 DELETE /api/v1/credentials/{id}      — delete credential
 ```
 
-Credentials store encrypted key-value pairs (e.g., `AWS_ACCESS_KEY_ID`, `AZURE_CLIENT_SECRET`) used by tool auth scripts. Encryption uses AES-256-GCM with the key from `CLAW_SECRET_KEY` env var. Values are never returned in API responses. Credentials are bound to tools via `credential_bindings` on the workspace (maps tool_id → credential_id). At job time, the worker decrypts bound credentials and injects them as container env vars.
+Credentials store encrypted key-value pairs (e.g., `AWS_ACCESS_KEY_ID`, `AZURE_CLIENT_SECRET`) used by tool auth scripts. Encryption uses AES-256-GCM with the key from `CLAW_SECRET_KEY` env var. Values are never returned in API responses. Credentials are bound to tools via `credential_bindings` on the workspace (maps tool_id → credential_id).
+
+**Credential injection model**: At job time, the worker decrypts bound credentials and **pipes them to the container via stdin**, where a small bash bootstrap inside `.claw-run.sh` / `.claw-chat-run.sh` reads them with `cat /dev/stdin` and `eval`s them into the runner-script environment. From there they are inherited by auth scripts and by claude (and tool subprocesses) the same way as any other env var. This replaced the previous `docker run -e KEY=VALUE` and `export KEY=VALUE` mechanisms, which left credentials visible in `docker inspect` output and (worse) in plaintext on the host filesystem inside the chat workspace at `.claw-chat-run.sh`. After this change:
+
+- Credentials are NOT on the docker run command line — `docker inspect claw-job-{id}` no longer shows them.
+- Credentials are NOT in any file on disk inside the workspace. The `.claw-*.sh` runner scripts contain only the bash bootstrap and `cd / exec claude` line, never `export KEY=VALUE` for tool credentials.
+- Workspace `.gitignore` baseline excludes `.claw-*.sh` and `.claw-*.json` so these can never accidentally be committed.
+- Inside the container, credentials are still in `/proc/{pid}/environ` of claude and its tool subprocesses — this is intentional because tools like `aws-cli` and `gh-cli` read credentials from env vars on every invocation. Hiding them from claude entirely would break those tools and is deferred behind a future per-tool opt-in flag (`unset_credentials_after_auth`).
+- Sandbox containers and chat session containers run with `--security-opt no-new-privileges`, making the `--user 1000:1000` privilege drop irreversible.
+
+The chat session also injects two **runtime** env vars (`CLAW_API_URL` and `CLAW_SESSION`) that Claude needs throughout the conversation to call back into the Claw Machine API via the `claw-api` skill. These are not tool credentials and are written into the runner script directly (rotated per message).
 
 ## Upload Endpoints
 

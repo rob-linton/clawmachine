@@ -791,7 +791,7 @@ fn init_git_repo(path: &std::path::Path) {
     }
 
     let gitignore = path.join(".gitignore");
-    std::fs::write(&gitignore, ".claw/\n.DS_Store\nnode_modules/\n__pycache__/\ntarget/\n.env*\n").ok();
+    std::fs::write(&gitignore, ".claw/\n.claw-*.sh\n.claw-*.json\n.DS_Store\nnode_modules/\n__pycache__/\ntarget/\n.env*\n").ok();
 
     let run = |args: &[&str]| -> bool {
         Command::new("git")
@@ -861,7 +861,7 @@ async fn init_bare_repo(ws_id: Uuid, claude_md: Option<&str>, is_snapshot: bool)
         run("git", &["clone", &repo_p.to_string_lossy(), &checkout_p.to_string_lossy()], &repos_dir)?;
 
         // 3. Create .gitignore
-        let gitignore_content = ".claw/\n.DS_Store\nnode_modules/\n__pycache__/\ntarget/\n.env*\n";
+        let gitignore_content = ".claw/\n.claw-*.sh\n.claw-*.json\n.DS_Store\nnode_modules/\n__pycache__/\ntarget/\n.env*\n";
         std::fs::write(checkout_p.join(".gitignore"), gitignore_content)
             .map_err(|e| format!("write .gitignore: {e}"))?;
 
