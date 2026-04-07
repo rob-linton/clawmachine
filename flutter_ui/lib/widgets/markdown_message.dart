@@ -1,9 +1,14 @@
+import 'dart:js_interop';
+import 'dart:js_interop_unsafe';
+import 'dart:ui_web' as ui_web;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:highlight/highlight.dart' show highlight;
 import 'package:highlight/languages/all.dart' as all_languages;
+import 'package:web/web.dart' as web;
 
 /// Renders a chat message as markdown with syntax-highlighted code blocks.
 class MarkdownMessage extends StatelessWidget {
@@ -103,7 +108,110 @@ class _CodeBlockBuilder extends MarkdownElementBuilder {
     final language = parent?.replaceFirst('language-', '') ?? '';
     final code = element.textContent.trimRight();
 
+    if (language == 'mermaid') {
+      return _MermaidBlock(source: code);
+    }
+
     return _CodeBlockWidget(code: code, language: language);
+  }
+}
+
+/// Renders a Mermaid diagram by handing the source to mermaid.js (loaded
+/// from a CDN in web/index.html) and embedding the resulting SVG via an
+/// HtmlElementView. Each instance gets a unique view type so multiple
+/// diagrams in the same message render independently.
+class _MermaidBlock extends StatefulWidget {
+  final String source;
+  const _MermaidBlock({required this.source});
+
+  @override
+  State<_MermaidBlock> createState() => _MermaidBlockState();
+}
+
+class _MermaidBlockState extends State<_MermaidBlock> {
+  static int _nextId = 0;
+  late final String _viewType;
+  late final web.HTMLDivElement _container;
+
+  @override
+  void initState() {
+    super.initState();
+    final id = _nextId++;
+    _viewType = 'mermaid-block-$id';
+    _container = web.HTMLDivElement()
+      ..style.width = '100%'
+      ..style.minHeight = '40px'
+      ..style.background = '#1E1E1E'
+      ..style.padding = '12px'
+      ..style.borderRadius = '8px'
+      ..style.color = '#ddd'
+      ..style.fontFamily = 'monospace'
+      ..style.fontSize = '12px'
+      ..innerHTML = 'Rendering diagram...'.toJS as JSAny;
+    ui_web.platformViewRegistry
+        .registerViewFactory(_viewType, (int _) => _container);
+    _renderWhenReady();
+  }
+
+  void _renderWhenReady() {
+    final win = web.window as JSObject;
+    if (win.getProperty<JSBoolean?>('mermaidReady'.toJS)?.toDart == true) {
+      _render();
+    } else {
+      // mermaid.js still loading from CDN — wait for the ready event.
+      web.window.addEventListener(
+        'mermaid-ready',
+        ((web.Event _) {
+          _render();
+        }).toJS,
+      );
+    }
+  }
+
+  Future<void> _render() async {
+    try {
+      final win = web.window as JSObject;
+      final mermaid = win.getProperty<JSObject?>('mermaid'.toJS);
+      if (mermaid == null) {
+        _showError('mermaid.js not loaded');
+        return;
+      }
+      final renderId = 'mermaid-svg-${DateTime.now().microsecondsSinceEpoch}';
+      final result = await mermaid
+          .callMethod<JSPromise>(
+            'render'.toJS,
+            renderId.toJS,
+            widget.source.toJS,
+          )
+          .toDart;
+      final svg = (result as JSObject)
+          .getProperty<JSString>('svg'.toJS)
+          .toDart;
+      _container.innerHTML = svg.toJS as JSAny;
+    } catch (e) {
+      _showError('$e');
+    }
+  }
+
+  void _showError(String msg) {
+    if (!mounted) return;
+    _container.innerHTML =
+        ('<pre style="color:#f88;white-space:pre-wrap;">Mermaid render failed: $msg\n\n${_escape(widget.source)}</pre>')
+            .toJS as JSAny;
+  }
+
+  String _escape(String s) => s
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 8),
+      constraints: const BoxConstraints(minHeight: 40),
+      child: HtmlElementView(viewType: _viewType),
+    );
   }
 }
 
