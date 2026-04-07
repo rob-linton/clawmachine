@@ -1,14 +1,14 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../main.dart';
 
 /// Returns just the summary string for a tool call: "file.txt", "ls -la",
-/// "pattern", etc. Used by the activity timeline rows ("> Read file.txt").
-/// Mirrors the helper that used to live in job_detail_screen.dart.
+/// "pattern", etc. Used by the activity timeline rows ("> Read file.txt")
+/// and by the job_detail_screen.
 String toolSummaryShort(String name, Map<String, dynamic> input) {
   switch (name) {
     case 'Read':
@@ -54,22 +54,24 @@ String toolSummaryHumanized(String tool, String summary) {
 }
 
 /// Inline activity timeline rendered above an assistant message's response
-/// text. Shows each tool_use the assistant made and (when available) the
-/// tool_result it received back, in chronological order.
+/// text. Mirrors the approach the Jobs detail screen uses for its activity
+/// panel: poll `/api/v1/jobs/{id}/logs` and parse the raw stream-json log
+/// lines client-side. This is reliable because it reads from the worker's
+/// persisted log (which is now populated for chat-message jobs too) instead
+/// of trying to accumulate per-message state from SSE pub/sub events that
+/// are vulnerable to disconnects, ordering races, and matching bugs.
 ///
-/// Defaults to expanded while [isStreaming] is true; once streaming finishes
-/// it remains expanded for a smooth handover, then the user can collapse
-/// via the chevron in the header.
+/// While [isStreaming] is true, polls every 1.5 seconds for new entries.
+/// Once streaming finishes, it fetches one final time and stops polling.
+/// Completed messages mount, fetch once, and never poll again.
 class ActivityTimeline extends ConsumerStatefulWidget {
-  final List<Map<String, dynamic>> entries;
-  final bool isStreaming;
   final String? jobId;
+  final bool isStreaming;
 
   const ActivityTimeline({
     super.key,
-    required this.entries,
+    required this.jobId,
     required this.isStreaming,
-    this.jobId,
   });
 
   @override
@@ -77,44 +79,88 @@ class ActivityTimeline extends ConsumerStatefulWidget {
 }
 
 class _ActivityTimelineState extends ConsumerState<ActivityTimeline> {
+  List<String> _logLines = [];
+  Timer? _pollTimer;
   bool _expanded = true;
-  // Cache of fetched job log lines so the "Show full" button doesn't
-  // re-hit /jobs/{id}/logs on every click.
-  List<String>? _cachedLogLines;
+  bool _hasFetchedOnce = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.jobId != null) {
+      _fetchOnce();
+      if (widget.isStreaming) {
+        _startPolling();
+      }
+    }
+  }
 
   @override
   void didUpdateWidget(ActivityTimeline old) {
     super.didUpdateWidget(old);
-    // When streaming finishes, leave the timeline expanded for a smooth
-    // handover. The user can manually collapse via the chevron.
+    // jobId became available (was null, now set) → fetch + maybe poll
+    if (old.jobId != widget.jobId && widget.jobId != null) {
+      _hasFetchedOnce = false;
+      _fetchOnce();
+      if (widget.isStreaming) _startPolling();
+    }
+    // Streaming just stopped → final fetch + stop polling
     if (old.isStreaming && !widget.isStreaming) {
-      // No-op: already expanded by default. Listed for parallel symmetry
-      // with the thinking-section pattern.
+      _pollTimer?.cancel();
+      _pollTimer = null;
+      _fetchOnce();
+    }
+    // Streaming just started → start polling
+    if (!old.isStreaming && widget.isStreaming && _pollTimer == null) {
+      _startPolling();
+    }
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
+  }
+
+  void _startPolling() {
+    _pollTimer?.cancel();
+    _pollTimer = Timer.periodic(
+      const Duration(milliseconds: 1500),
+      (_) => _fetchOnce(),
+    );
+  }
+
+  Future<void> _fetchOnce() async {
+    final jobId = widget.jobId;
+    if (jobId == null) return;
+    try {
+      final logs = await ref.read(apiClientProvider).getLogs(jobId);
+      if (!mounted) return;
+      // Only setState if we got new content (avoid rebuild churn).
+      if (logs.length != _logLines.length || !_hasFetchedOnce) {
+        setState(() {
+          _logLines = logs;
+          _hasFetchedOnce = true;
+        });
+      }
+    } catch (_) {
+      // Polling errors are silent — next tick will retry. The first fetch
+      // for a freshly-submitted job may 404 briefly while the worker is
+      // still claiming it; that's expected.
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final entries = widget.entries;
+    final entries = _parseEntries();
     if (entries.isEmpty) return const SizedBox.shrink();
 
-    // Pair tool_use entries with their tool_result by tool_use_id.
-    final completedIds = entries
-        .where((e) => e['type'] == 'tool_result')
-        .map((e) => e['tool_use_id'])
-        .toSet();
-    final resultsByToolUseId = <String, Map<String, dynamic>>{};
-    for (final e in entries) {
-      if (e['type'] == 'tool_result') {
-        final id = e['tool_use_id'] as String?;
-        if (id != null && id.isNotEmpty) resultsByToolUseId[id] = e;
-      }
-    }
+    final stepCount = entries.where((e) => e.kind == _EntryKind.toolUse).length;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       decoration: BoxDecoration(
-        color: Colors.grey.shade900.withValues(alpha: 0.3),
+        color: const Color(0xFF1E1E2E),
         borderRadius: BorderRadius.circular(6),
       ),
       child: Column(
@@ -125,19 +171,30 @@ class _ActivityTimelineState extends ConsumerState<ActivityTimeline> {
             onTap: () => setState(() => _expanded = !_expanded),
             borderRadius: BorderRadius.circular(6),
             child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               child: Row(
                 children: [
                   Icon(Icons.bolt, size: 14, color: Colors.grey.shade400),
-                  const SizedBox(width: 4),
+                  const SizedBox(width: 6),
                   Text(
-                    'Activity (${entries.where((e) => e['type'] == 'tool_use').length} steps)',
+                    'Activity ($stepCount steps)',
                     style: TextStyle(
                       color: Colors.grey.shade400,
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
+                  if (widget.isStreaming) ...[
+                    const SizedBox(width: 8),
+                    SizedBox(
+                      width: 10,
+                      height: 10,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: Colors.grey.shade500,
+                      ),
+                    ),
+                  ],
                   const Spacer(),
                   Icon(
                     _expanded ? Icons.expand_less : Icons.expand_more,
@@ -150,15 +207,30 @@ class _ActivityTimelineState extends ConsumerState<ActivityTimeline> {
           ),
           if (_expanded)
             Padding(
-              padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (final entry in entries)
-                    if (entry['type'] == 'tool_use')
-                      _buildToolUseRow(entry, completedIds, resultsByToolUseId)
-                    else if (entry['type'] == 'tool_result')
-                      _buildToolResultRow(entry),
+                  for (final e in entries) _buildEntry(e),
+                  if (widget.jobId != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: TextButton.icon(
+                        icon: const Icon(Icons.open_in_new, size: 12),
+                        label: const Text(
+                          'Open full job',
+                          style: TextStyle(fontSize: 11),
+                        ),
+                        style: TextButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 2),
+                          minimumSize: const Size(0, 0),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        onPressed: () => context.go('/jobs/${widget.jobId}'),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -167,205 +239,174 @@ class _ActivityTimelineState extends ConsumerState<ActivityTimeline> {
     );
   }
 
-  Widget _buildToolUseRow(
-    Map<String, dynamic> entry,
-    Set<dynamic> completedIds,
-    Map<String, Map<String, dynamic>> resultsByToolUseId,
-  ) {
-    final tool = entry['tool'] as String? ?? '?';
-    final summary = entry['summary'] as String? ?? '';
-    final toolUseId = entry['tool_use_id'] as String? ?? '';
-    final isCancelled = entry['cancelled'] == true;
-    final result = resultsByToolUseId[toolUseId];
-    final hasResult = result != null;
-    final isError = hasResult && result['is_error'] == true;
-    final isInflight = !hasResult && !isCancelled;
-
-    Widget statusIcon;
-    if (isCancelled) {
-      statusIcon = Icon(Icons.block, size: 12, color: Colors.grey.shade600);
-    } else if (isInflight) {
-      statusIcon = widget.isStreaming
-          ? SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Colors.grey.shade500,
-              ),
-            )
-          : Icon(Icons.help_outline, size: 12, color: Colors.grey.shade600);
-    } else if (isError) {
-      statusIcon = const Icon(Icons.close, size: 12, color: Colors.redAccent);
-    } else {
-      statusIcon = Icon(Icons.check, size: 12, color: Colors.green.shade400);
-    }
-
-    final textStyle = TextStyle(
-      color: isCancelled ? Colors.grey.shade600 : Colors.blue.shade300,
-      fontFamily: 'monospace',
-      fontSize: 12,
-      decoration:
-          isCancelled ? TextDecoration.lineThrough : TextDecoration.none,
-    );
-
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 2),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 14, child: Center(child: statusIcon)),
-          const SizedBox(width: 6),
-          Expanded(
-            child: SelectableText(
-              '> $tool ${summary.isNotEmpty ? summary : ""}',
-              style: textStyle,
+  Widget _buildEntry(_LogEntry e) {
+    switch (e.kind) {
+      case _EntryKind.text:
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: SelectableText(
+            e.text,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              height: 1.4,
             ),
           ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildToolResultRow(Map<String, dynamic> entry) {
-    final output = entry['output'] as String? ?? '';
-    final truncated = entry['truncated'] == true;
-    final isError = entry['is_error'] == true;
-    if (output.isEmpty && !truncated) return const SizedBox.shrink();
-
-    final color = isError ? Colors.red.shade300 : Colors.grey.shade400;
-
-    return Padding(
-      padding: const EdgeInsets.only(left: 20, bottom: 4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SelectableText(
-            output,
+        );
+      case _EntryKind.thinking:
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: SelectableText(
+            e.text.length > 300
+                ? '${e.text.substring(0, 300)}...'
+                : e.text,
             style: TextStyle(
-              color: color,
+              color: Colors.grey.shade600,
+              fontStyle: FontStyle.italic,
+              fontSize: 11,
+              height: 1.3,
+            ),
+          ),
+        );
+      case _EntryKind.toolUse:
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: SelectableText(
+            '> ${e.toolName} ${e.text}',
+            style: TextStyle(
+              color: Colors.blue.shade300,
+              fontFamily: 'monospace',
+              fontSize: 12,
+            ),
+          ),
+        );
+      case _EntryKind.toolResult:
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 4, left: 12),
+          child: SelectableText(
+            e.text,
+            style: TextStyle(
+              color: e.isError ? Colors.red.shade300 : Colors.grey.shade400,
               fontFamily: 'monospace',
               fontSize: 11,
               height: 1.3,
             ),
           ),
-          if (truncated)
-            TextButton.icon(
-              icon: const Icon(Icons.unfold_more, size: 12),
-              label: const Text('Show full', style: TextStyle(fontSize: 11)),
-              style: TextButton.styleFrom(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                minimumSize: const Size(0, 0),
-                tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                visualDensity: VisualDensity.compact,
-              ),
-              onPressed: widget.jobId == null
-                  ? null
-                  : () => _showFullOutput(entry),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Future<void> _showFullOutput(Map<String, dynamic> entry) async {
-    final jobId = widget.jobId;
-    if (jobId == null) return;
-    final toolUseId = entry['tool_use_id'] as String? ?? '';
-    final fallbackOutput = entry['output'] as String? ?? '';
-
-    try {
-      _cachedLogLines ??= await ref.read(apiClientProvider).getLogs(jobId);
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to load full output: $e')),
         );
-      }
-      return;
-    }
-
-    final fullText = _findToolResultInLogs(_cachedLogLines!, toolUseId) ??
-        '$fallbackOutput\n\n[Could not find full output in job logs — showing truncated view]';
-    if (!mounted) return;
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Row(
-          children: [
-            const Expanded(child: Text('Tool output', style: TextStyle(fontSize: 14))),
-            IconButton(
-              icon: const Icon(Icons.copy, size: 18),
-              tooltip: 'Copy',
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: fullText));
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text('Copied'),
-                    duration: Duration(seconds: 1),
-                  ),
-                );
-              },
-            ),
-            IconButton(
-              icon: const Icon(Icons.open_in_new, size: 18),
-              tooltip: 'Open in job',
-              onPressed: () {
-                Navigator.pop(ctx);
-                context.go('/jobs/$jobId');
-              },
-            ),
-          ],
-        ),
-        content: SizedBox(
-          width: 800,
-          height: 600,
-          child: SingleChildScrollView(
-            child: SelectableText(
-              fullText,
-              style: const TextStyle(
-                fontFamily: 'monospace',
-                fontSize: 12,
-                height: 1.4,
-              ),
+      case _EntryKind.result:
+        return Padding(
+          padding: const EdgeInsets.only(top: 6),
+          child: SelectableText(
+            e.text,
+            style: TextStyle(
+              color: Colors.green.shade400,
+              fontFamily: 'monospace',
+              fontSize: 11,
             ),
           ),
-        ),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
-        ],
-      ),
-    );
+        );
+    }
   }
 
-  /// Walk the raw stream-json log lines, find a `user` message containing a
-  /// `tool_result` block whose `tool_use_id` matches, and extract the text
-  /// content. Mirrors the Rust `extract_tool_result_text` helper.
-  String? _findToolResultInLogs(List<String> lines, String toolUseId) {
-    for (final raw in lines) {
+  /// Parse the raw stream-json log lines into typed activity entries.
+  /// Mirrors job_detail_screen.dart's `_parseLogEntries` (which renders to
+  /// widgets directly); we return structured data so the bubble can style
+  /// the entries differently for inline display.
+  List<_LogEntry> _parseEntries() {
+    final entries = <_LogEntry>[];
+    for (final raw in _logLines) {
       try {
         final val = json.decode(raw);
         if (val is! Map) continue;
-        if (val['type'] != 'user') continue;
-        final content = val['message']?['content'] as List?;
-        if (content == null) continue;
-        for (final item in content) {
-          if (item is! Map) continue;
-          if (item['type'] != 'tool_result') continue;
-          if (item['tool_use_id'] != toolUseId) continue;
-          final c = item['content'];
-          if (c is String) return c;
-          if (c is List) {
-            return c
-                .whereType<Map>()
-                .map((m) => m['text'])
-                .whereType<String>()
-                .join('\n');
+        final type = val['type'] as String?;
+
+        if (type == 'assistant') {
+          final content = val['message']?['content'] as List<dynamic>? ?? [];
+          for (final item in content) {
+            if (item is! Map) continue;
+            final ctype = item['type'] as String?;
+            if (ctype == 'text') {
+              final text = item['text'] as String? ?? '';
+              if (text.isNotEmpty) {
+                entries.add(_LogEntry(kind: _EntryKind.text, text: text));
+              }
+            } else if (ctype == 'tool_use') {
+              final name = item['name'] as String? ?? '?';
+              final input = (item['input'] as Map?)?.cast<String, dynamic>() ?? {};
+              entries.add(_LogEntry(
+                kind: _EntryKind.toolUse,
+                toolName: name,
+                text: toolSummaryShort(name, input),
+              ));
+            } else if (ctype == 'thinking') {
+              final text = item['thinking'] as String? ?? '';
+              if (text.isNotEmpty) {
+                entries.add(_LogEntry(kind: _EntryKind.thinking, text: text));
+              }
+            }
+          }
+        } else if (type == 'user') {
+          final content = val['message']?['content'] as List<dynamic>? ?? [];
+          for (final item in content) {
+            if (item is! Map) continue;
+            if (item['type'] != 'tool_result') continue;
+            final isError = item['is_error'] == true;
+            final text = _extractToolResultText(item['content']);
+            if (text.isEmpty) continue;
+            final truncated = text.length > 500 ? '${text.substring(0, 500)}...' : text;
+            entries.add(_LogEntry(
+              kind: _EntryKind.toolResult,
+              text: truncated,
+              isError: isError,
+            ));
+          }
+        } else if (type == 'result') {
+          final result = val['result'] as String? ?? '';
+          final cost = val['total_cost_usd'] as num? ?? 0;
+          final dur = val['duration_ms'] as num? ?? 0;
+          if (result.isNotEmpty || cost > 0) {
+            entries.add(_LogEntry(
+              kind: _EntryKind.result,
+              text: '— Result (cost: \$${cost.toStringAsFixed(4)}, '
+                  '${(dur / 1000).toStringAsFixed(1)}s)',
+            ));
           }
         }
-      } catch (_) {}
+        // Skip 'system' type
+      } catch (_) {
+        // Non-JSON line — silently skip (the worker may emit non-JSON
+        // diagnostics during startup/teardown).
+      }
     }
-    return null;
+    return entries;
+  }
+
+  String _extractToolResultText(dynamic content) {
+    if (content is String) return content;
+    if (content is List) {
+      return content
+          .whereType<Map>()
+          .map((m) => m['text'])
+          .whereType<String>()
+          .join('\n');
+    }
+    return '';
   }
 }
+
+enum _EntryKind { text, thinking, toolUse, toolResult, result }
+
+class _LogEntry {
+  final _EntryKind kind;
+  final String text;
+  final String toolName;
+  final bool isError;
+
+  _LogEntry({
+    required this.kind,
+    this.text = '',
+    this.toolName = '',
+    this.isError = false,
+  });
+}
+

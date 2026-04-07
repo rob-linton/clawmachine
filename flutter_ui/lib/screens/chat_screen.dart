@@ -502,8 +502,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                                   model: _selectedModel)
                               : null,
                           artifacts: isAssistant ? msgArtifacts : const [],
-                          activity: (msg['_activity'] as List?)
-                              ?.cast<Map<String, dynamic>>(),
                           onArtifactTap: _showArtifactViewer,
                           onArtifactDownload: (a) => _downloadArtifact(
                               (a['id'] as num).toInt(),
@@ -677,7 +675,6 @@ class _MessageBubble extends StatefulWidget {
   final String? toolStatus;
   final VoidCallback? onRetry;
   final List<Map<String, dynamic>> artifacts;
-  final List<Map<String, dynamic>>? activity;
   final void Function(Map<String, dynamic>)? onArtifactTap;
   final void Function(Map<String, dynamic>)? onArtifactDownload;
   final void Function(String absolutePath)? onFileDownload;
@@ -690,7 +687,6 @@ class _MessageBubble extends StatefulWidget {
     this.toolStatus,
     this.onRetry,
     this.artifacts = const [],
-    this.activity,
     this.onArtifactTap,
     this.onArtifactDownload,
     this.onFileDownload,
@@ -795,16 +791,17 @@ class _MessageBubbleState extends State<_MessageBubble> {
                         expanded: _thinkingExpanded,
                         isStreaming: widget.isStreaming),
                 ],
-                // Inline activity timeline — shows tool calls + truncated
-                // results as they stream. Replaces the old transient
-                // _toolStatus caption (which got dropped because every step
-                // is now visible in the timeline with its own in-flight
-                // spinner).
-                if (!isUser && (widget.activity?.isNotEmpty ?? false))
+                // Inline activity timeline — polls /jobs/{id}/logs and
+                // parses the raw stream-json log lines, mirroring the
+                // proven approach from the Jobs detail screen. Reliable
+                // because it reads from the worker's persisted log file
+                // (populated for chat-message jobs as of §5) instead of
+                // trying to accumulate per-message state from in-flight
+                // SSE events.
+                if (!isUser && widget.message['job_id'] is String)
                   ActivityTimeline(
-                    entries: widget.activity!,
+                    jobId: widget.message['job_id'] as String,
                     isStreaming: widget.isStreaming,
-                    jobId: widget.message['job_id'] as String?,
                   ),
                 if (widget.isThinking &&
                     !hasContent &&

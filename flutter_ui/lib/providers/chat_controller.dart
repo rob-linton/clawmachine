@@ -8,7 +8,6 @@ import 'package:web/web.dart' as web;
 import '../main.dart';
 import '../services/api_client.dart';
 import '../services/event_service.dart';
-import '../widgets/tool_activity.dart';
 
 /// Immutable snapshot of all chat-related state.
 ///
@@ -154,14 +153,10 @@ class ChatController extends StateNotifier<ChatState> {
       }).toList();
       serverMessages.addAll(optimistic);
 
-      // Carry forward transient client-side fields (`_activity`,
-      // `_thinkingText`) from the previous in-memory message to the new
-      // server-stored copy when they share the same (seq, role). Without
-      // this, the inline activity timeline would vanish the moment
-      // refreshMessages replaces the optimistic placeholder with the
-      // server message — because the server doesn't store the per-event
-      // activity log, only the final ChatMessage. Survives until a hard
-      // page refresh; see plan §4 known limitations.
+      // Carry forward transient client-side `_thinkingText` from the
+      // previous in-memory message to the new server-stored copy. (The
+      // inline activity timeline used to be carried here too, but it now
+      // polls /jobs/{id}/logs directly so there's nothing to preserve.)
       final existingByKey = <String, Map<String, dynamic>>{};
       for (final m in state.messages) {
         existingByKey['${m['seq']}_${m['role']}'] = m;
@@ -169,9 +164,6 @@ class ChatController extends StateNotifier<ChatState> {
       for (final newMsg in serverMessages) {
         final existing = existingByKey['${newMsg['seq']}_${newMsg['role']}'];
         if (existing == null) continue;
-        if (existing['_activity'] is List && newMsg['_activity'] == null) {
-          newMsg['_activity'] = existing['_activity'];
-        }
         if (existing['_thinkingText'] is String &&
             newMsg['_thinkingText'] == null) {
           newMsg['_thinkingText'] = existing['_thinkingText'];
@@ -515,72 +507,13 @@ class ChatController extends StateNotifier<ChatState> {
         // reasoning checkpoints, not per-token) so the 50ms coalesce buys
         // nothing — flush immediately for prompt visibility.
         _flushNow();
-      } else if (eventType == 'tool_use') {
-        final tool = parsed['tool'] as String? ?? '';
-        final summary = parsed['input_summary'] as String? ?? '';
-        final toolUseId = parsed['tool_use_id'] as String? ?? '';
-        final toolStatus = toolSummaryHumanized(tool, summary);
-        for (int i = state.messages.length - 1; i >= 0; i--) {
-          final msg = state.messages[i];
-          if (msg['role'] != 'assistant') continue;
-          final msgSeq = (msg['seq'] as num?)?.toInt();
-          if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
-          if (msg['_thinking'] == true ||
-              (eventSeq != null && msgSeq == eventSeq)) {
-            msg['_toolStatus'] = toolStatus;
-            // Accumulate the call into the per-message activity timeline.
-            final newActivity = List<Map<String, dynamic>>.from(
-                (msg['_activity'] as List?)?.cast<Map<String, dynamic>>() ??
-                    const []);
-            newActivity.add({
-              'type': 'tool_use',
-              'tool': tool,
-              'summary': summary,
-              'tool_use_id': toolUseId,
-            });
-            msg['_activity'] = newActivity;
-            break;
-          }
-        }
-        state = state.copyWith(toolStatus: toolStatus);
-        // Use _scheduleFlush (NOT _flushNow) so tool events don't fight
-        // text-event coalescing during a streaming turn — _flushNow would
-        // cancel the in-flight text coalesce timer on every tool call.
-        _scheduleFlush();
-      } else if (eventType == 'tool_result') {
-        // Each tool_use's result. Match to the originating tool_use by
-        // tool_use_id and append into the same per-message activity list.
-        final toolUseId = parsed['tool_use_id'] as String? ?? '';
-        final output = parsed['output'] as String? ?? '';
-        final truncated = parsed['truncated'] == true;
-        final isError = parsed['is_error'] == true;
-        for (int i = state.messages.length - 1; i >= 0; i--) {
-          final msg = state.messages[i];
-          if (msg['role'] != 'assistant') continue;
-          final msgSeq = (msg['seq'] as num?)?.toInt();
-          if (eventSeq != null && msgSeq != null && eventSeq != msgSeq) continue;
-          // Match the same way the tool_use branch does — by seq, or by
-          // _thinking flag for the in-flight optimistic placeholder. The
-          // earlier "has _activity" disjunct could pick the wrong message
-          // if the latest assistant has no activity yet but a previous one
-          // does.
-          if (msg['_thinking'] == true ||
-              (eventSeq != null && msgSeq == eventSeq)) {
-            final newActivity = List<Map<String, dynamic>>.from(
-                (msg['_activity'] as List?)?.cast<Map<String, dynamic>>() ??
-                    const []);
-            newActivity.add({
-              'type': 'tool_result',
-              'tool_use_id': toolUseId,
-              'output': output,
-              'truncated': truncated,
-              'is_error': isError,
-            });
-            msg['_activity'] = newActivity;
-            break;
-          }
-        }
-        _scheduleFlush();
+      } else if (eventType == 'tool_use' || eventType == 'tool_result') {
+        // The inline activity timeline now polls /api/v1/jobs/{id}/logs
+        // directly (mirroring the Jobs detail screen) instead of trying
+        // to accumulate tool events from this brittle SSE stream. We no
+        // longer need to react to these events here. Left as a no-op
+        // branch so the controller doesn't fall through to the unknown-
+        // event handler.
       } else if (eventType == 'text' && parsed['content'] != null) {
         for (int i = state.messages.length - 1; i >= 0; i--) {
           final msg = state.messages[i];
@@ -616,23 +549,6 @@ class ChatController extends StateNotifier<ChatState> {
             final existing = msg['content'] as String? ?? '';
             msg['content'] =
                 existing.isEmpty ? '[Cancelled]' : '$existing\n\n_[Cancelled]_';
-            // Mark any unfinished tool_use entries as cancelled so the
-            // activity timeline can replace their in-flight spinner with a
-            // cancelled indicator instead of leaving them stuck spinning.
-            final activity = (msg['_activity'] as List?)
-                ?.cast<Map<String, dynamic>>();
-            if (activity != null) {
-              final completedIds = activity
-                  .where((e) => e['type'] == 'tool_result')
-                  .map((e) => e['tool_use_id'])
-                  .toSet();
-              for (final entry in activity) {
-                if (entry['type'] == 'tool_use' &&
-                    !completedIds.contains(entry['tool_use_id'])) {
-                  entry['cancelled'] = true;
-                }
-              }
-            }
             break;
           }
         }
