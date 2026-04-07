@@ -257,6 +257,13 @@ class ChatController extends StateNotifier<ChatState> {
             m['timestamp'] = postRttNow
                 .add(const Duration(milliseconds: 1))
                 .toIso8601String();
+            // Stamp the job_id on the optimistic placeholder so the
+            // inline ActivityTimeline (which polls /jobs/{id}/logs) has
+            // a target to fetch from while streaming. Without this, the
+            // timeline only renders once the server-stored assistant
+            // message replaces the optimistic copy AFTER the worker
+            // finishes — far too late to be useful.
+            if (jobId != null) m['job_id'] = jobId;
           }
         }
       }
@@ -320,6 +327,9 @@ class ChatController extends StateNotifier<ChatState> {
             m['timestamp'] = postRttNow
                 .add(const Duration(milliseconds: 1))
                 .toIso8601String();
+            // Stamp the job_id so the "View activity" link on the task
+            // bubble has a target.
+            if (jobId != null) m['job_id'] = jobId;
           }
         }
       }
